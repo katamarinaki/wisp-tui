@@ -113,7 +113,7 @@ Mirrors the ask-wisp proxy hardening:
 
 ```sh
 cd wisp-tui   # the checkout
-.venv/bin/python -m pytest tests/    # 139 tests, no network/sockets
+.venv/bin/python -m pytest tests/    # 140 tests, no network/sockets
 .venv/bin/python -m mypy             # strict, src + tests
 ```
 

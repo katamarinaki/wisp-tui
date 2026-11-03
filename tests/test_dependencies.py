@@ -40,6 +40,35 @@ def test_installed_versions_match_lock(lock: str) -> None:
     assert not mismatches, "venv drifted from lock:\n" + "\n".join(mismatches)
 
 
+def runtime_closure(root: str) -> set[str]:
+    """Every distribution ``root`` needs at runtime here, following extras
+    such as ``markdown-it-py[linkify]`` and evaluating environment markers."""
+    from importlib.metadata import requires
+    from packaging.requirements import Requirement
+
+    visited: set[tuple[str, frozenset[str]]] = set()
+    pending: list[tuple[str, frozenset[str]]] = [(root, frozenset())]
+    while pending:
+        name, extras = pending.pop()
+        node = (name.lower().replace("_", "-"), extras)
+        if node in visited:
+            continue
+        visited.add(node)
+        for spec in requires(name) or []:
+            requirement = Requirement(spec)
+            if requirement.marker is None or any(
+                    requirement.marker.evaluate({"extra": extra})
+                    for extra in ["", *sorted(extras)]):
+                pending.append((requirement.name, frozenset(requirement.extras)))
+    return {name for name, _ in visited}
+
+
+def test_runtime_lock_is_complete() -> None:
+    """A fresh install from requirements.txt must not pull unpinned packages."""
+    missing = runtime_closure("textual") - set(pins("requirements.txt"))
+    assert not missing, f"unpinned runtime dependencies: {sorted(missing)}"
+
+
 def test_pyproject_range_admits_locked_textual() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text()
     match = re.search(r'"textual~=(\d+)\.(\d+)\.(\d+)"', pyproject)
