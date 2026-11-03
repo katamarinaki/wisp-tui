@@ -44,6 +44,33 @@ share the `pi-ask-wisp` run token — revoking it breaks both (see
 wisp-homeserver-report README for revocation). A dedicated token can be minted
 later with the Wisp CLI if desired.
 
+## Updating the app
+
+Quit the TUI, then run from anywhere:
+
+```bash
+wi update                # or: wisp-tui update / scripts/wisp-tui update
+wi -c                    # relaunch and continue your saved session
+```
+
+The launcher fetches fresh `main` from `origin`, switches the checkout to
+`main` and fast-forwards it, then installs the pinned dependencies from
+`requirements-dev.txt` into the project `.venv`. It does not update from
+`develop`, push anything, restart Wisp, contact the runtime, or read/change
+private config and session records. The update command works without loading
+Textual. `wi update --help` describes it without making changes.
+
+Updates refuse tracked/untracked local changes, in-progress Git operations,
+and commits on the current branch or local `main` that are absent from the
+fetched `main`. Nothing is reset, stashed or deleted. Resolve the reported
+problem deliberately and retry; do not force-reset work you want to keep.
+If dependency installation fails, the checkout may already have advanced;
+fix the dependency/network issue and rerun the same command to finish.
+
+Existing installations need one normal `git pull --ff-only` on their current
+branch after this feature lands there, before `wi update` is available. The
+owner must merge this feature from `develop` to `main` for main installations.
+
 ## Features
 
 - **Saved sessions (Pi-style).** Every session you use here is recorded
@@ -142,7 +169,7 @@ Mirrors the ask-wisp proxy hardening:
 
 ```sh
 cd wisp-tui   # the checkout
-.venv/bin/python -m pytest tests/    # 184 tests, no network/sockets
+.venv/bin/python -m pytest tests/    # 204 tests, no network/sockets
 .venv/bin/python -m mypy             # strict, src + tests
 ```
 

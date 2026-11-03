@@ -21,7 +21,9 @@ def program_name() -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog=program_name(),
-        description="Terminal chat client for the local Wisp runtime (loopback only).")
+        description="Terminal chat client for the local Wisp runtime (loopback only).",
+        epilog=f"Update the checkout from main: {program_name()} update "
+               "(launcher only; see update --help).")
     parser.add_argument("--check", action="store_true",
                         help="Authenticated health check only; no TUI, no inference.")
     start = parser.add_mutually_exclusive_group()

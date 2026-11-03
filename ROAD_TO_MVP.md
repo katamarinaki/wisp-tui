@@ -163,13 +163,18 @@ not a release criterion.
 ## Maintenance alongside the MVP
 
 - Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **184 passing tests**, strict mypy passing.
+  Current baseline: **204 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
 - [x] Local Git repository (`main` baseline, work on branches). No remote yet.
 - [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held
       to 8.2.x, drift test, documented upgrade checklist (README).
 - [x] Public remote `katamarinaki/wisp-tui`; CI runs pytest + strict mypy on
       GitHub-hosted runners (`main`, `develop`, PRs). Work lands on `develop`.
+- [x] `wi update` / `wisp-tui update`: fetch fresh `origin/main`, safely
+      switch/fast-forward to `main`, refresh pinned project-venv dependencies.
+      Refuse dirty/divergent checkouts and in-progress Git operations; no
+      reset/stash, private config/state access, or runtime calls. Offline
+      regression tests use temporary local Git repositories and stub pip.
 
 ## Explicitly out of scope
 
