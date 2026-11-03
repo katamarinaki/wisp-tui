@@ -7,6 +7,7 @@ the UI thread via ``call_from_thread``.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -16,22 +17,27 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from rich.console import RenderableType
 from textual import events
+from textual._compositor import InlineUpdate
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
 from textual.widget import AwaitMount, Widget
-from textual.widgets import ListItem, ListView, Markdown, Static, TextArea
+from textual.widgets import Collapsible, ListItem, ListView, Markdown, Static, TextArea
 
 from .client import ClientError, WispClient, TERMINAL_RUN_STATUSES, safe_code
 from .config import Config
 from .composer import ComposerError, ComposerState, ComposerStore, bounded_history
 from .editor import PromptInput
-from .history import ChatMessage, HistoryError, checkpoint_covers_answer, parse_history
+from .history import ChatMessage, HistoryError, checkpoint_covers_answer, parse_history, tool_history_results
 from .runs import RunFollower, find_active_run
 from .sessions import SessionStore
 from .submissions import MAX_DRAFT_BYTES, PendingSubmission, SubmissionError, SubmissionStore
+from .terminal import ChangedRowsUpdate, InlineRenderer
+from .tool_data import detail_text
+from .tool_view import ToolCallView
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # A session ID or a prefix of one (as shown in pickers), for --resume / /resume.
@@ -87,6 +93,12 @@ setting and last finished run's reported tokens visible (↑ input, ↓ output,
 Tokens update when a run finishes, not live; context occupancy is unavailable.
 The launch directory belongs to this client, not Wisp's tools.
 
+Tool entries stay above the current answer. Click a tool title to expand or
+collapse its details, or Tab to the title and press Enter. Live inputs may be
+sanitized; outputs load from stored session history when a unique call ID is
+available. Long details scroll inside the expanded entry. Collapse/expand
+retries a missing result. Opening details never executes or approves a tool.
+
 While a run is active you will see tool calls as they happen. When Wisp needs
 approval for a tool, a dialog appears: **y** approve, **n** deny, **p** allow
 for this project, **g** allow globally, **Esc** deny. Normal questions consume
@@ -136,10 +148,13 @@ class StreamView:
 
     Re-rendering the whole answer per delta is quadratic. Instead, a single
     async renderer appends only the new suffix (coalescing deltas that arrive
-    meanwhile) and falls back to a full update when the text is replaced
-    (``gap``/final output that is not a continuation). It waits for the
-    widget's mount, so no delta can be lost to Markdown's initial update.
+    meanwhile, at most ten batches per second) and falls back to a full update
+    when the text is replaced (``gap``/final output that is not a continuation).
+    It waits for the widget's mount, so no delta can be lost to Markdown's
+    initial update.
     """
+
+    UPDATE_INTERVAL = 0.1
 
     def __init__(self, app: App[Any], widget: Markdown, mounted: AwaitMount,
                  on_rendered: Callable[[], None]) -> None:
@@ -150,6 +165,7 @@ class StreamView:
         self.target = ""
         self.rendered = ""
         self._running = False
+        self._flush_now = asyncio.Event()
 
     def set_text(self, text: str) -> None:
         self.target = text
@@ -157,10 +173,20 @@ class StreamView:
             self._running = True
             self.app.run_worker(self._render(), group="render", exclusive=False)
 
+    def flush(self) -> None:
+        """Finish the latest answer without waiting for the next display batch."""
+        if self._running or self.rendered != self.target:
+            self._flush_now.set()
+
     async def _render(self) -> None:
         try:
             await self._mounted
             while self.rendered != self.target and self.widget.is_attached:
+                try:
+                    await asyncio.wait_for(self._flush_now.wait(), timeout=self.UPDATE_INTERVAL)
+                except TimeoutError:
+                    pass
+                self._flush_now.clear()
                 target = self.target
                 if target.startswith(self.rendered):
                     await self.widget.append(target[len(self.rendered):])
@@ -361,6 +387,35 @@ class WispTuiApp(App[None]):
     }
     .system, .tool { color: ansi_default; text-style: dim; }
     .error { color: $error; }
+    #chat > ToolCallView {
+        height: auto;
+        margin: 0 1 1 1;
+        padding: 0;
+        border: none;
+        background: transparent;
+        background-tint: transparent;
+        color: ansi_default;
+    }
+    #chat ToolCallView > Contents { padding: 0; background: transparent; }
+    #chat ToolCallView CollapsibleTitle,
+    #chat ToolCallView CollapsibleTitle:hover,
+    #chat ToolCallView CollapsibleTitle:focus {
+        padding: 0;
+        max-width: 100%;
+        background: transparent;
+        background-tint: transparent;
+        color: ansi_default;
+        text-style: none;
+    }
+    #chat ToolCallView CollapsibleTitle:focus { text-style: underline; }
+    #chat .tool-detail-scroll {
+        height: auto;
+        max-height: 16;
+        padding: 0 0 0 2;
+        background: transparent;
+        scrollbar-size: 0 0;
+    }
+    #chat .tool-details { height: auto; background: transparent; color: ansi_default; }
     #bottom { dock: bottom; height: auto; padding: 0 1; }
     #input {
         height: auto;
@@ -433,6 +488,7 @@ class WispTuiApp(App[None]):
         # hardcoded theme color. The app then renders on the terminal's own
         # background, matching the user's terminal exactly.
         super().__init__(ansi_color=True)
+        self._inline_renderer = InlineRenderer()
         self.client = client
         self.config = config
         self.startup = startup or Startup()
@@ -484,6 +540,11 @@ class WispTuiApp(App[None]):
         self._history_refresh_token: object | None = None
         self._chat_epoch = 0
         self._chat_items: deque[Widget] = deque()
+        self._tool_calls: dict[str, ToolCallView] = {}
+        self._saw_live_tool_events = False
+        self._tool_history_token: object | None = None
+        self._tool_history_targets: tuple[ToolCallView, ...] = ()
+        self._tool_history_again = False
         self._trimmed_count = 0
         self._trim_marker: Static | None = None
         self._status_state = "connecting…"
@@ -580,8 +641,16 @@ class WispTuiApp(App[None]):
         self._render_activity()
 
     def on_resize(self, event: events.Resize) -> None:
+        # The inline driver clears the terminal on resize, even if its final
+        # dimensions happen to match the previous ones.
+        self._inline_renderer.invalidate()
         self.query_one("#bottom").set_class(event.size.width < 80, "narrow")
         self._render_status(event.size.width)
+
+    def _display(self, screen: Screen[Any], renderable: RenderableType | None) -> None:
+        if isinstance(renderable, InlineUpdate):
+            renderable = ChangedRowsUpdate(renderable, self._inline_renderer, self.size.width)
+        super()._display(screen, renderable)
 
     def _render_activity(self) -> None:
         indicator = self._activity_indicator
@@ -656,10 +725,14 @@ class WispTuiApp(App[None]):
     def _scroll_down(self) -> None:
         self.query_one("#chat", VerticalScroll).scroll_end(animate=False)
 
-    def _mount_chat(self, widget: Widget) -> AwaitMount:
-        """Append a chat item, dropping the oldest beyond MAX_CHAT_ITEMS."""
-        mounted = self.query_one("#chat", VerticalScroll).mount(widget)
-        self._chat_items.append(widget)
+    def _mount_chat(self, widget: Widget, before: Widget | None = None) -> AwaitMount:
+        """Mount in display order, dropping the oldest beyond MAX_CHAT_ITEMS."""
+        if before is not None and before in self._chat_items:
+            mounted = self.query_one("#chat", VerticalScroll).mount(widget, before=before)
+            self._chat_items.insert(self._chat_items.index(before), widget)
+        else:
+            mounted = self.query_one("#chat", VerticalScroll).mount(widget)
+            self._chat_items.append(widget)
         self._trim_chat()
         return mounted
 
@@ -674,6 +747,8 @@ class WispTuiApp(App[None]):
                 self._chat_items.appendleft(oldest)
                 oldest = second
             oldest.remove()
+            self._tool_calls = {key: view for key, view in self._tool_calls.items()
+                                if view is not oldest}
             removed += 1
         if removed:
             self._trimmed_count += removed
@@ -705,6 +780,10 @@ class WispTuiApp(App[None]):
         self._pending_view_history = None
         self.query_one("#chat", VerticalScroll).remove_children()
         self._chat_items.clear()
+        self._tool_calls.clear()
+        self._tool_history_token = None
+        self._tool_history_targets = ()
+        self._tool_history_again = False
         # A still-running answer continues in a fresh widget (full text so far).
         self._stream_view = None
         self._trim_marker = None
@@ -716,12 +795,137 @@ class WispTuiApp(App[None]):
         self._mount_chat(Static(_safe_text(text), classes=cls, markup=False))
         self._scroll_down()
 
+    def _tool_event(self, event: dict[str, Any], *, completed: bool,
+                    input_text: str | None = None, historical: bool = False,
+                    terminal: bool = False) -> ToolCallView:
+        call_id = event.get("toolCallId")
+        key = call_id if isinstance(call_id, str) and 0 < len(call_id) <= 200 else ""
+        if not historical and not terminal:
+            self._saw_live_tool_events = True
+        view = self._tool_calls.get(key) if key else None
+        if view is not None:
+            view.update_event(event, completed=completed)
+        else:
+            view = ToolCallView(event, completed=completed, historical=historical)
+            view.session_id = self.session_id
+            if terminal:
+                view.terminal_summary = True
+                view.update_event({}, completed=completed)
+            before = self._stream_view.widget if self._stream_view is not None else None
+            self._mount_chat(view, before=before)
+            if key and view in self._chat_items:
+                self._tool_calls[key] = view
+        if input_text is not None:
+            # Checkpoint arguments have already been bounded/formatted.
+            view.apply_history(input_text=input_text)
+        self._scroll_down()
+        if completed and not view.collapsed:
+            self._request_tool_history()
+        return view
+
     def _add_message(self, message: ChatMessage) -> None:
         if message.role == "assistant":
-            self._mount_chat(Markdown(message.text, classes="assistant"))
+            if message.text.strip():
+                self._mount_chat(Markdown(message.text, classes="assistant"))
+            for call in message.tool_calls:
+                self._tool_event({"name": call.name, "toolCallId": call.call_id},
+                                 completed=False, input_text=call.input_text, historical=True)
+        elif message.role == "tool":
+            view = self._tool_event({"name": message.tool_name, "toolCallId": message.tool_call_id},
+                                    completed=True, historical=True)
+            view.apply_history(output_text=detail_text(message.text), status=message.tool_status,
+                               pruned=message.tool_output_pruned)
         else:
+            if message.role == "user":
+                self._tool_calls.clear()
             self._mount_chat(Static(message.text, classes=message.role, markup=False))
         self._scroll_down()
+
+    def _tool_targets(self) -> tuple[ToolCallView, ...]:
+        return tuple(view for view in self._chat_items if isinstance(view, ToolCallView)
+                     and view.session_id == self.session_id and view.call_id
+                     and view.output_text is None)
+
+    def on_collapsible_expanded(self, event: Collapsible.Expanded) -> None:
+        if (isinstance(event.collapsible, ToolCallView) and event.collapsible.call_id
+                and event.collapsible.output_text is None):
+            self._request_tool_history(force_after_current=True)
+
+    def _apply_tool_history(self, messages: list[ChatMessage], targets: tuple[ToolCallView, ...]) -> None:
+        matched, ambiguous = tool_history_results(messages, {view.call_id for view in targets})
+        for view in targets:
+            if (view not in self._chat_items or view.session_id != self.session_id
+                    or view.output_text is not None):
+                continue
+            if view.call_id in ambiguous:
+                view.set_result_notice("Stored call ID is ambiguous; result not matched.")
+            elif view.call_id in matched:
+                details = matched[view.call_id]
+                view.apply_history(details.input_text, details.output_text,
+                                   details.status, details.pruned)
+            else:
+                view.set_result_notice("Result not in stored history yet. Collapse and expand to retry.")
+
+    def _request_tool_history(self, *, force_after_current: bool = False) -> None:
+        targets = self._tool_targets()
+        session_id = self.session_id
+        if not targets or session_id is None or self._history_refresh_token is not None:
+            return
+        if self._tool_history_token is not None:
+            self._tool_history_again |= force_after_current or any(
+                view not in self._tool_history_targets for view in targets if not view.collapsed)
+            return
+        token = object()
+        epoch = self._chat_epoch
+        self._tool_history_token = token
+        self._tool_history_targets = targets
+        for view in targets:
+            view.set_result_notice("Loading stored result…")
+
+        def work() -> None:
+            try:
+                payload = self.client.request("GET", f"/v1/sessions/{session_id}/history", timeout=5.0)
+                messages = parse_history(payload)
+            except ClientError as error:
+                code = safe_code(str(error), "history_unavailable")
+            except HistoryError:
+                code = "unexpected_history_shape"
+            except Exception:
+                code = "history_unavailable"
+            else:
+                self.call_from_thread(self._tool_history_loaded, token, session_id, epoch,
+                                      targets, messages)
+                return
+            self.call_from_thread(self._tool_history_failed, token, session_id, epoch, targets, code)
+
+        self._run_threaded(work, group="tool-history",
+                           on_done=lambda: self._tool_history_done(token))
+
+    def _tool_history_current(self, token: object, session_id: str, epoch: int) -> bool:
+        return (self._tool_history_token is token and self.session_id == session_id
+                and self._chat_epoch == epoch)
+
+    def _tool_history_loaded(self, token: object, session_id: str, epoch: int,
+                             targets: tuple[ToolCallView, ...], messages: list[ChatMessage]) -> None:
+        if self._tool_history_current(token, session_id, epoch):
+            self._apply_tool_history(messages, targets)
+
+    def _tool_history_failed(self, token: object, session_id: str, epoch: int,
+                             targets: tuple[ToolCallView, ...], code: str) -> None:
+        if self._tool_history_current(token, session_id, epoch):
+            for view in targets:
+                if view in self._chat_items and view.output_text is None:
+                    view.set_result_notice(f"{code} · collapse and expand to retry.")
+
+    def _tool_history_done(self, token: object) -> None:
+        if self._tool_history_token is not token:
+            return
+        again = self._tool_history_again
+        self._tool_history_token = None
+        self._tool_history_targets = ()
+        self._tool_history_again = False
+        if again:
+            self._request_tool_history()
 
     def _begin_stream(self, initial: str = "") -> StreamView:
         widget = Markdown(classes="assistant")
@@ -1112,6 +1316,8 @@ class WispTuiApp(App[None]):
 
     def _turn_started(self, run_id: str, history: list[ChatMessage] | None = None) -> None:
         self.active_run = run_id
+        self._tool_calls.clear()
+        self._saw_live_tool_events = False
         self._reattach_history = list(history) if history is not None else None
         self._cancel_requested = False
         self._delta_text = ""
@@ -1192,14 +1398,14 @@ class WispTuiApp(App[None]):
             text = event.get("text")
             self._delta_text = text if isinstance(text, str) else ""
             self._show_stream_text(self._delta_text)
+            if self._stream_view is not None:
+                self._stream_view.flush()
         elif kind == "tool_call.started":
-            self._sysline(f"tool {event.get('name', '?')} …", "tool")
+            self._tool_event(event, completed=False)
         elif kind == "tool_call":
             ok = event.get("ok") is True
             duration = event.get("durationMs")
-            seconds = f" {duration / 1000:.1f}s" if isinstance(duration, (int, float)) else ""
-            mark = "ok" if ok else "FAILED"
-            self._sysline(f"tool {event.get('name', '?')} → {mark}{seconds}", "tool")
+            self._tool_event(event, completed=True)
             self._record({"type": "tool", "runId": self.active_run,
                           "name": _safe_text(str(event.get("name", "?")), 200), "ok": ok,
                           "durationMs": duration if isinstance(duration, (int, float)) else None})
@@ -1317,16 +1523,28 @@ class WispTuiApp(App[None]):
         saved_history = self._reattach_history
         answer = ""
         data = outcome if isinstance(outcome, dict) else {}
+        tool_calls = data.get("toolCalls")
+        if isinstance(tool_calls, list) and not self._saw_live_tool_events:
+            for call in tool_calls[-self.MAX_CHAT_ITEMS:]:
+                if not isinstance(call, dict) or not isinstance(call.get("name"), str):
+                    continue
+                # 0.1.8 strips call IDs and results from these aggregate records.
+                # They are a fallback, never another copy of observed live calls.
+                details = {key: call[key] for key in ("name", "args", "ok", "durationMs")
+                           if key in call}
+                self._tool_event(details, completed=True, terminal=True)
         self._last_usage = self._usage_line(data.get("usage"))
         self._render_metadata()
         if kind == "run.completed":
             text = ""
             output = data.get("output")
-            if isinstance(output, dict) and isinstance(output.get("text"), str):
+            has_final_text = isinstance(output, dict) and isinstance(output.get("text"), str)
+            if has_final_text:
+                assert isinstance(output, dict)
                 text = output["text"]
-            if text:
-                self._show_stream_text(text)
-            answer = text or self._delta_text
+                if text or self._stream_view is not None:
+                    self._show_stream_text(text)
+            answer = text if has_final_text else self._delta_text
             if answer:
                 self._record({"type": "message", "role": "assistant", "text": answer,
                               "runId": self.active_run})
@@ -1348,6 +1566,8 @@ class WispTuiApp(App[None]):
         self._finish_run()
         if kind == "run.completed" and saved_history is not None and answer:
             self._refresh_finished_history(saved_history, answer)
+        elif any(not view.collapsed for view in self._tool_targets()):
+            self._request_tool_history(force_after_current=True)
 
     def _refresh_finished_history(self, before: list[ChatMessage], answer: str) -> None:
         """Reconcile replay with one fresh checkpoint, never text-dedup old turns."""
@@ -1385,8 +1605,10 @@ class WispTuiApp(App[None]):
     def _history_refreshed(self, token: object, session_id: str, epoch: int,
                            before: list[ChatMessage], messages: list[ChatMessage],
                            answer: str) -> None:
-        if (not self._history_refresh_current(token, session_id, epoch)
-                or not checkpoint_covers_answer(before, messages, answer)):
+        if not self._history_refresh_current(token, session_id, epoch):
+            return
+        self._apply_tool_history(messages, self._tool_targets())
+        if not checkpoint_covers_answer(before, messages, answer):
             return
         hidden = max(0, len(messages) - self.MAX_CHAT_ITEMS)
         self._reset_chat(hidden)
@@ -1397,12 +1619,19 @@ class WispTuiApp(App[None]):
                                 code: str) -> None:
         if self._history_refresh_current(token, session_id, epoch):
             self._status(f"history refresh failed: {safe_code(code, 'history_unavailable')}")
+            for view in self._tool_targets():
+                view.set_result_notice("history_unavailable · collapse and expand to retry.")
 
     def _history_refresh_done(self, token: object) -> None:
         if self._history_refresh_token is token:
             self._history_refresh_token = None
 
     def _finish_run(self) -> None:
+        if self._stream_view is not None:
+            self._stream_view.flush()
+        for item in self._chat_items:
+            if isinstance(item, ToolCallView) and not item.completed and not item.historical:
+                item.mark_unreported()
         if self._follower is not None:
             self._follower.stop()
         self._dismiss_approval()
@@ -1811,6 +2040,9 @@ class WispTuiApp(App[None]):
             self._sysline(line, "tool")
 
     def on_unmount(self) -> None:
+        self._tool_history_token = None
+        self._tool_history_targets = ()
+        self._tool_history_again = False
         if self._composer_timer is not None:
             self._composer_timer.stop()
         self._flush_composer()

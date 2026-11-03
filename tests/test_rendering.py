@@ -1,6 +1,7 @@
 """Literal display of runtime text and incremental streaming; scripted client only."""
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -12,8 +13,9 @@ from textual.widgets._markdown import MarkdownBlock
 
 from tests.helpers import RID, SID
 from tests.test_app import eventually, make_app
-from wisp_tui.app import ApprovalModal, ModelPicker, SessionPicker, server_session_label
+from wisp_tui.app import ApprovalModal, ModelPicker, SessionPicker, StreamView, server_session_label
 from wisp_tui.history import ChatMessage
+from wisp_tui.tool_view import ToolCallView
 
 # Text that Textual markup would restyle, swallow, or crash on.
 TRICKY = [
@@ -62,7 +64,9 @@ async def test_chat_lines_status_and_commands_are_literal(
         await pilot.pause()
 
         lines = [plain(w) for w in app.query("#chat > Static")]
-        assert f"tool {text} …" in lines
+        tool = app.query_one(ToolCallView)
+        assert tool.title == f"tool {text} …"
+        assert text in plain(tool.query_one("CollapsibleTitle", Static))
         assert f"transcribed: {text}" in lines
         assert any(line.startswith(f"unknown command /x{text.split()[0]}") for line in lines)
         assert plain(app.query_one("#status", Static)).startswith(text)
@@ -191,3 +195,56 @@ async def test_clear_during_stream_continues_answer_in_fresh_widget(
         assert app._stream_view is not None and answers[0] is app._stream_view.widget
         await eventually(lambda: app._stream_view is not None
                          and app._stream_view.rendered == expected)
+
+
+async def test_fast_deltas_are_batched_without_losing_the_final_text(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    app, _ = make_app([], monkeypatch)
+    appends: list[str] = []
+    original_append = Markdown.append
+
+    def counting_append(self: Markdown, markdown: str) -> Any:
+        appends.append(markdown)
+        return original_append(self, markdown)
+
+    monkeypatch.setattr(Markdown, "append", counting_append)
+    async with app.run_test():
+        await eventually(lambda: "ready" in app._status_state)
+        app.session_id = SID
+        app._turn_started(RID)
+        deltas = [f"word{index} " for index in range(100)]
+        for delta in deltas:
+            app._append_delta(delta)
+            await asyncio.sleep(0.002)
+        view = app._stream_view
+        assert view is not None
+        app._finalize_run("run.completed", {})
+        await app.workers.wait_for_complete()
+        expected = "".join(deltas)
+        assert view.rendered == view.widget.source == expected
+        assert "".join(appends) == expected
+        assert 1 <= len(appends) < len(deltas) // 3
+
+
+@pytest.mark.parametrize("kind, outcome, expected", [
+    ("run.completed", {}, "streamed text"),
+    ("run.completed", {"output": {"text": "Final replacement."}}, "Final replacement."),
+    ("run.cancelled", {}, "streamed text"),
+])
+async def test_terminal_outcome_flushes_the_answer_without_waiting_for_a_batch(
+        monkeypatch: pytest.MonkeyPatch, kind: str, outcome: dict[str, Any],
+        expected: str) -> None:
+    monkeypatch.setattr(StreamView, "UPDATE_INTERVAL", 30.0)
+    app, _ = make_app([], monkeypatch)
+    async with app.run_test() as pilot:
+        await eventually(lambda: "ready" in app._status_state)
+        app.session_id = SID
+        app._turn_started(RID)
+        app._append_delta("streamed text")
+        view = app._stream_view
+        assert view is not None
+        await pilot.pause()
+        assert view.rendered == ""
+        app._finalize_run(kind, outcome)
+        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=2.0)
+        assert view.rendered == view.widget.source == expected

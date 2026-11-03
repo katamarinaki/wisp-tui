@@ -11,6 +11,7 @@ from tests.helpers import RID, SID
 from tests.test_app import eventually, make_app
 from wisp_tui.app import WispTuiApp
 from wisp_tui.history import ChatMessage
+from wisp_tui.tool_view import ToolCallView
 
 LIMIT = 5
 
@@ -28,6 +29,8 @@ def chat_items(app: WispTuiApp) -> list[str]:
             items.append("MARKER: " + str(child.render()))
         elif isinstance(child, Markdown):
             items.append(child.source)
+        elif isinstance(child, ToolCallView):
+            items.append(child.title)
         elif isinstance(child, Static):
             items.append(str(child.render()))
     return items

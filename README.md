@@ -91,7 +91,7 @@ owner must merge this feature from `develop` to `main` for main installations.
 - **Saved sessions (Pi-style).** Every session you use here is recorded
   locally as JSONL: `~/.local/state/wisp-tui/sessions/<time>_<id>.jsonl`
   (0600 file, 0700 dir, owner-checked, no symlinks, 16 MiB cap per file). It
-  holds your prompts, final answers, tool results, approval decisions (with
+  holds your prompts, final answers, tool summaries, approval decisions (with
   the tool and arguments you approved) and run outcomes — not every streamed
   delta. `-c`/`-r`/`/resume` use these records; the conversation itself is
   still loaded from the Wisp runtime, which remains the source of truth (if a
@@ -143,6 +143,14 @@ owner must merge this feature from `develop` to `main` for main installations.
   (opening a session mounts just that tail); a dim marker at the top counts
   what is hidden. Wisp keeps the full history — older turns are still in the
   session context, just not rendered here.
+- Inline repaints send only changed rows, so a spinner or cursor blink does
+  not repeatedly retransmit the visible conversation. Fast streamed deltas
+  are coalesced into at most ten Markdown updates per second; gap snapshots and
+  terminal outcomes flush the latest answer immediately. Resize and changes in
+  inline height use Textual's full repaint path. Scripted 180-column/50-row quiet-work capture:
+  about 209 KB → 4.4 KB over 1.5 seconds, with the same spinner cadence. This
+  reduces terminal traffic; live Mac/SSH/iTerm2 responsiveness still needs an
+  owner-run check.
 - **A completed run is one answered prompt, not the end of the conversation.**
   The answer simply ends, with no completion announcement; sending a follow-up
   keeps the same session and runtime history. After quitting, `wi -c` continues the latest
@@ -178,6 +186,23 @@ owner must merge this feature from `develop` to `main` for main installations.
   followed over SSE (`GET /v1/runs/{id}/events`): `text.delta` streaming,
   `tool_call` lines, `gap` recovery (server text wins), `Last-Event-ID` resume
   after timeouts and after answering a parked prompt.
+- **Expandable tool details:** tool entries stay above the active answer, even
+  when progress events arrive after text has started streaming. Click a title
+  to expand/collapse, or Tab to it and press Enter. Inputs and outputs are
+  literal text, with no markup or command execution. The expanded body scrolls
+  within 16 rows; each field shows up to 12,288 characters or 200 lines, followed
+  by an explicit truncation marker when needed. In runtime 0.1.8, live completion
+  events provide sanitized inputs/status but no results. Expanding an identified
+  entry loads its result through the existing session-history route, using only
+  unique call IDs. Reads are bounded/coalesced, preserve the expanded state and
+  newer drafts, and do not block submitting work. Missing/failed/ambiguous reads
+  remain explicit; collapse/expand retries. Live execution inputs, model-request
+  history inputs, stored outputs and pruned summaries are labelled separately.
+  Terminal summaries have no call IDs/results and do not duplicate a live trace;
+  unidentified entries point to reopening the session's stored tool history.
+  Registry success and stored-message status are separate observations.
+  Expanding a tool never executes it or answers an approval prompt. Static
+  evidence and remaining limits: [runtime contract notes](RUNTIME_CONTRACT.md).
 - Approval dialog for `confirmation.required`: **y** approve, **n/Esc** deny,
   **p** allow for project, **g** allow globally. Answers are sent to
   `POST /v1/runs/{id}/confirmations/{promptId}` and the stream resumes.
@@ -281,7 +306,7 @@ Mirrors the ask-wisp proxy hardening:
 
 ```sh
 cd wisp-tui   # the checkout
-.venv/bin/python -m pytest tests/    # 358 tests, no network/sockets
+.venv/bin/python -m pytest tests/    # 466 tests, no network/sockets
 .venv/bin/python -m mypy             # strict, src + tests
 ```
 
@@ -295,6 +320,10 @@ background (SGR 39/49). A second interactive PTY fixture feeds actual bracketed
 paste, Ctrl+J and Enter bytes: no request is sent until explicit Enter, and
 editor selections/brackets must not add a painted background. Neither fixture
 loads private config or contacts Wisp. Live smoke: `wisp-tui --check` (no inference).
+Quiet-work PTY coverage also checks that the spinner still animates without
+retransmitting the transcript or sending more than 6 KB over its one-second
+measurement window at 40/100 columns. Relative-cursor tests cover changed rows,
+Unicode, right/bottom edges, modal restoration, resize and full-frame fallback.
 
 ## Layout
 
@@ -307,6 +336,9 @@ src/wisp_tui/history.py  LangGraph checkpoint history → chat messages
 src/wisp_tui/runs.py     run-record validation, single-owner following/recovery
 src/wisp_tui/editor.py   multiline composer, explicit send/newline and literal paste
 src/wisp_tui/composer.py private bounded prompt recall and unsent draft storage
+src/wisp_tui/terminal.py changed-row inline updates with full repaint fallback
+src/wisp_tui/tool_data.py bounded literal tool detail formatting
+src/wisp_tui/tool_view.py expandable tool input/output entries
 src/wisp_tui/app.py      Textual application, workers, approval modal
 src/wisp_tui/__main__.py CLI entry point (--check, --session)
 scripts/wisp-tui         launcher (project venv)
@@ -363,6 +395,10 @@ changed behavior before. To upgrade:
      (`48;5;23` only), answers in default foreground (SGR 39).
    - `test_rendering.py`: runtime text still shown literally (no markup);
      streamed answers still match a full render without per-delta updates.
+   - `test_terminal_updates.py` and the quiet-work PTY fixture: the adapter
+     relies on Textual's pinned `InlineUpdate`/`App._display` cursor contract;
+     changed-row updates must return to the inline origin without scrolling,
+     and resize/height changes must still use full updates.
    - `test_layout.py`: gutters/spacing (e.g. `margin-bottom` alone resets
      the other margins in 8.2).
 3. Launch `wisp-tui` once over SSH and eyeball a long answer and a prompt.

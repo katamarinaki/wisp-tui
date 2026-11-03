@@ -145,6 +145,14 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       tail; marker counts hidden items; the streaming answer is never dropped;
       `/clear` mid-answer continues in a fresh widget). 500-exchange session:
       load 22s → ~1s, streaming 2k chars 27s → ~2s (headless benchmark).
+- [x] Reduce terminal traffic during work: compare inline rows and emit only
+      changes, preserving Textual's cursor/sync handling and full repaint on
+      resize/height changes. Coalesce rapid deltas into at most ten Markdown
+      updates per second; gap snapshots and terminal outcomes flush immediately.
+      Scripted quiet work at 180×50: ~209 KB → ~4.4 KB over 1.5 s (98% reduction), with the
+      same spinner cadence. Offline PTY traffic/background checks, Unicode,
+      right/bottom edges, modal restoration, batching and final-flush coverage.
+      Owner-run Mac/SSH/iTerm2 responsiveness remains part of live acceptance.
 - [x] Fresh session per launch (created lazily by the first message, titled
       from it); `/new` is lazy too. Sessions used here are recorded locally
       as private JSONL (prompts, answers, tools, approval decisions, outcomes)
@@ -195,8 +203,19 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       and shutdown; only explicit new text replaces it. Two-client regression
       coverage includes fresh and other-session drafts. Latest edits before
       the 350 ms debounce may be lost on abrupt exit; normal exit flushes them.
-- [ ] Show useful tool arguments/results where the runtime actually supplies
-      them. Keep long output collapsible/bounded and approval details legible.
+- [x] Show tool entries above the active answer, with click/Enter expansion
+      of reported input/output and a bounded, scrollable body. Handle optional
+      live/terminal tool details and checkpoint tool calls/results; use explicit
+      call IDs, never names, to update entries. Keep missing data explicit,
+      literal text and approvals separate. Offline ordering, parallel calls,
+      replay/clear, truncation, keyboard/mouse, resize/theme and PTY background
+      checks. Align with the supplied static runtime 0.1.8 report: live inputs are
+      sanitized and results come only from history. Add bounded/coalesced lazy
+      reads with unique-ID matching, safe retry, summary/source labels and stale
+      callback guards, without blocking input. Avoid duplicate terminal summaries
+      and respect the final assistant text instead of aggregating model rounds.
+      Missing IDs/results and nested coverage remain explicit limits; actual SSH
+      behavior still needs live acceptance. No new routes or tool execution.
 - [ ] Stop auto-follow when the user scrolls up; offer an obvious way to resume.
 - [ ] Check long streamed output, narrow terminals, resize, and modal key handling.
       Preserve the default-background and inline-mode guarantees.
@@ -227,7 +246,7 @@ not a release criterion.
 ## Maintenance alongside the MVP
 
 - Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **402 passing tests**, strict mypy passing.
+  Current baseline: **466 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
 - [x] Local Git repository (`main` baseline, work on branches). No remote yet.
 - [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held

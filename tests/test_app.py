@@ -10,6 +10,7 @@ from wisp_tui.editor import PromptInput as Input
 from wisp_tui.app import WispTuiApp
 from tests.helpers import RID, SID, ScriptedClient
 from wisp_tui.config import Config
+from wisp_tui.tool_view import ToolCallView
 
 
 def text_of(widget: object) -> str:
@@ -27,6 +28,8 @@ def chat_text(app: WispTuiApp) -> str:
     for child in app.query("#chat > *"):
         if isinstance(child, Markdown):
             parts.append(str(child.source))
+        elif isinstance(child, ToolCallView):
+            parts.append(child.title)
         else:
             parts.append(str(child.render()))
     return "\n".join(parts)

@@ -136,3 +136,33 @@ def test_bracketed_paste_and_newline_bytes_require_explicit_send(width: int) -> 
     extended = [codes for codes in sgr if re.search(rb"(?:^|[;:])48(?:[;:]|$)", codes)]
     assert all(re.search(rb"(?:^|;)48;5;23(?:;|$)", codes) for codes in extended), \
         "editor selection/brackets painted a non-default background"
+
+
+@pytest.mark.parametrize("width", [40, 100])
+def test_busy_spinner_does_not_retransmit_the_unchanged_chat(width: int) -> None:
+    capture = capture_terminal("tests.traffic_terminal_fixture", width)
+    result_line = capture.split(b"TRAFFIC_RESULT=", 1)[1].splitlines()[0]
+    result = json.loads(result_line)
+    assert 4 <= result["frames"] <= 20, "spinner must still animate at a bounded rate"
+    assert result["transcript_rewrites"] == 0, "idle spinner retransmitted the chat"
+    assert result["bytes"] < 6000, "one second of quiet work flooded the terminal"
+    assert b"\x1b[?1049h" not in capture, "alternate screen was enabled"
+    sgr = re.findall(rb"\x1b\[([0-9;:]*)m", capture)
+    assert not any(re.search(rb"(?:^|[;:])48(?:[;:]|$)", codes) for codes in sgr), \
+        "quiet-work repaint painted a background"
+
+
+@pytest.mark.parametrize("width", [40, 100])
+def test_tool_details_fold_with_real_keys_without_painting_a_background(width: int) -> None:
+    capture = capture_terminal("tests.tool_terminal_fixture", width, (
+        (b"TOOL_READY", b"\r"),
+        (b"TOOL_EXPANDED", b"\r"),
+    ))
+    result = json.loads(capture.split(b"TOOL_RESULT=", 1)[1].splitlines()[0])
+    assert result == {"expanded": True, "collapsed": True, "draft": "keep draft"}
+    assert b"SCRIPTED_TOOL_OUTPUT [/]" in capture
+    assert b"Input" in capture and b"Output" in capture
+    assert b"\x1b[?1049h" not in capture, "alternate screen was enabled"
+    sgr = re.findall(rb"\x1b\[([0-9;:]*)m", capture)
+    assert not any(re.search(rb"(?:^|[;:])48(?:[;:]|$)", codes) for codes in sgr), \
+        "expanded/focused tool details painted a background"
