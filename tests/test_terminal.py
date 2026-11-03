@@ -16,6 +16,8 @@ import time
 
 import pytest
 
+from tests.helpers import SID
+
 
 @pytest.mark.parametrize("width", [40, 100])
 def test_inline_terminal_keeps_default_background(width: int) -> None:
@@ -28,7 +30,8 @@ def test_inline_terminal_keeps_default_background(width: int) -> None:
                 [sys.executable, "-m", "tests.terminal_fixture"],
                 cwd=root, stdin=slave, stdout=slave, stderr=slave,
                 env={"TERM": "xterm-256color", "LANG": "C.UTF-8",
-                     "PYTHONPATH": str(root / "src")}) as process:
+                     "PYTHONPATH": str(root / "src"),
+                     "WISP_TUI_PROG": "wi"}) as process:
             os.close(slave)
             slave = -1
             deadline = time.monotonic() + 10.0
@@ -58,6 +61,11 @@ def test_inline_terminal_keeps_default_background(width: int) -> None:
         if slave >= 0:
             os.close(slave)
     capture = bytes(output)
+    hint = f"To continue: wi --resume {SID}".encode()
+    assert capture.rstrip().endswith(hint), "resume hint missing after terminal exit"
+    assert capture.count(hint) == 1, "resume hint printed more than once"
+    assert capture.rfind(b"\x1b[?25h") < capture.index(hint), \
+        "resume hint printed before the cursor was restored"
     prompt_styles = re.findall(rb"\x1b\[([0-9;:]*)mShow the server status", capture)
     assert prompt_styles, "prompt was not rendered"
     # Prompt blocks: muted dark teal (xterm-256 #23) with light-grey text
