@@ -52,7 +52,7 @@ class UsabilityFixture(WispTuiApp):
         if isinstance(modal, ApprovalModal):
             details = modal.query_one("#approval-details", VerticalScroll)
             await eventually(lambda: details.max_scroll_y > 0
-                             and details.scroll_y == details.max_scroll_y)
+                             and details.scroll_y == details.max_scroll_y and modal.armed)
             modal.query_one(title_id, Static).update("APPROVAL_SCROLLED")
         await asyncio.wait_for(answered.wait(), timeout=5)
         return decisions[0]

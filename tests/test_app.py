@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from wisp_tui.editor import PromptInput as Input
 
-from wisp_tui.app import WispTuiApp
+from wisp_tui.app import ApprovalModal, WispTuiApp
 from tests.helpers import RID, SID, ScriptedClient
 from wisp_tui.config import Config
 from wisp_tui.tool_view import ToolCallView
@@ -40,6 +40,11 @@ async def eventually(condition: Any, timeout: float = 5.0) -> None:
         if asyncio.get_event_loop().time() > deadline:
             raise AssertionError("condition not met within timeout")
         await asyncio.sleep(0.05)
+
+
+async def approval_armed(app: WispTuiApp) -> None:
+    """Wait until the approval dialog accepts decision keys (ApprovalModal.ARM_DELAY)."""
+    await eventually(lambda: isinstance(app.screen, ApprovalModal) and app.screen.armed)
 
 
 def make_app(events: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch) -> tuple[
@@ -118,6 +123,7 @@ async def test_confirmation_flow_approves(monkeypatch: pytest.MonkeyPatch) -> No
         # the approval dialog appears
         await eventually(lambda: len(app.screen_stack) > 1)
         assert "restart_jellyfin" in str(screen_text(app))
+        await approval_armed(app)
         await pilot.press("y")  # approve
         await eventually(lambda: app.active_run is None)
         confirms = [c for c in client.calls if "/confirmations/" in c[1]]

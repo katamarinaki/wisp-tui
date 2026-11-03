@@ -218,6 +218,10 @@ owner must merge this feature from `develop` to `main` for main installations.
   `POST /v1/runs/{id}/confirmations/{promptId}` and the stream resumes.
   Long details scroll with Up/Down, PageUp/PageDown, Home/End or the mouse;
   decision keys stay visible when the terminal is narrowed or resized.
+  Letter keys take effect only after the dialog has been shown for 0.5 s with
+  no decision key pressed, so type-ahead or key repeat cannot answer it (Esc
+  denies at once). Arguments are shown in full; above 200k characters only
+  deny is available.
   Session/model pickers use bold underlined selection text on the terminal's
   default background, including focused and hovered entries.
 - One follower owns each run's stream and parked polling. Current run records
@@ -316,6 +320,11 @@ Mirrors the ask-wisp proxy hardening:
   strings only — no raw bodies, headers or tokens.
 - Interactive approvals are the *only* privileged action, and they are always
   explicit per prompt (no auto-approve, no bypass toggles from the TUI).
+- Runtime text (answers, history, tool names, titles, model IDs) has terminal
+  control characters (ESC/CSI/OSC, C1, DEL) replaced before display, and links
+  in answers are never opened by a click.
+- The launcher runs Python with `-P` (and setup with `-I`), so modules in the
+  directory you start it from are never imported.
 
 ## Verification
 

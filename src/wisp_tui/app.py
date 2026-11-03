@@ -11,6 +11,7 @@ import asyncio
 import json
 import re
 import time
+import unicodedata
 import uuid
 from collections import deque
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from rich.console import RenderableType
 from textual import events
 from textual._compositor import InlineUpdate
 from textual.app import App, ComposeResult
+from textual.await_complete import AwaitComplete
 from textual.await_remove import AwaitRemove
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
@@ -111,17 +113,25 @@ Tab pauses following so new output will not pull you away from its details.
 
 While a run is active you will see tool calls as they happen. When Wisp needs
 approval for a tool, a dialog appears: **y** approve, **n** deny, **p** allow
-for this project, **g** allow globally, **Esc** deny. Use Up/Down or PageUp/PageDown
+for this project, **g** allow globally, **Esc** deny. Letter keys work once the
+dialog has been shown for half a second, so typing ahead cannot answer it. Use Up/Down or PageUp/PageDown
 to scroll long approval details; decision keys stay visible. Ctrl+C still
 cancels work from approvals and pickers; press twice to leave. Normal questions consume
 the Wisp account balance, exactly like Telegram/Desk sessions.
 """
 
 
+def _terminal_text(text: str) -> str:
+    """Replace C0/DEL/C1 controls (ESC, CSI, OSC…) so runtime text cannot drive the terminal."""
+    # CR is dropped (as Textual did) so CRLF text and chunked appends stay clean.
+    return "".join("�" if unicodedata.category(char) == "Cc" and char not in "\n\t" else char
+                   for char in text.replace("\r", ""))
+
+
 def _safe_text(value: Any, limit: int = 4000) -> str:
     if not isinstance(value, str):
         return ""
-    return value if len(value) <= limit else value[: limit - 1] + "…"
+    return _terminal_text(value if len(value) <= limit else value[: limit - 1] + "…")
 
 
 def _metadata_text(value: Any, limit: int = 100) -> str:
@@ -130,12 +140,31 @@ def _metadata_text(value: Any, limit: int = 100) -> str:
     return "".join(char if char.isprintable() else "�" for char in text)
 
 
-def _pretty_args(args: Any) -> str:
+APPROVAL_ARGS_LIMIT = 200_000
+
+
+def _pretty_args(args: Any, limit: int = 4000) -> str:
     try:
         rendered = json.dumps(args, indent=2, ensure_ascii=False, default=str)
     except (TypeError, ValueError):
         rendered = repr(args)
-    return _safe_text(rendered)
+    # Also hide bidi overrides and zero-width characters: the owner reads these to approve.
+    return "".join(char if char.isprintable() or char in "\n\t" else "�"
+                   for char in _safe_text(rendered, limit))
+
+
+class AnswerMarkdown(Markdown):
+    """Model-authored Markdown: controls neutralized, links never opened."""
+
+    def __init__(self, markdown: str | None = None, *, classes: str | None = None) -> None:
+        super().__init__(None if markdown is None else _terminal_text(markdown),
+                         classes=classes, open_links=False)
+
+    def update(self, markdown: str) -> AwaitComplete:
+        return super().update(_terminal_text(markdown))
+
+    def append(self, markdown: str) -> AwaitComplete:
+        return super().append(_terminal_text(markdown))
 
 
 FRESH_STATUS = "ready · new session — your first message starts it (/resume, F2)"
@@ -221,19 +250,30 @@ class ApprovalModal(ModalScreen[str | None]):
     can_focus = True
 
     BINDINGS = [
-        ("y", "approve", "Approve"),
-        ("n", "deny", "Deny"),
-        ("p", "allow_project", "Allow for project"),
-        ("g", "allow_global", "Allow globally"),
-        ("escape", "deny", "Deny"),
+        ("y", "decide('approve')", "Approve"),
+        ("n", "decide('deny')", "Deny"),
+        ("p", "decide('allow_project')", "Allow for project"),
+        ("g", "decide('allow_global')", "Allow globally"),
+        ("escape", "deny_now", "Deny"),
         ("ctrl+c", "app.cancel", "Cancel/exit"),
     ]
+
+    # Letter keys stay inert until the dialog has been on screen with no decision
+    # key pressed for this long, so type-ahead or key repeat cannot answer it.
+    ARM_DELAY = 0.5
 
     def __init__(self, tool: str, args: Any, note: str = "") -> None:
         super().__init__()
         self.tool = tool
         self.args = args
         self.note = note
+        self.armed = False
+        self._arm_timer: Timer | None = None
+        args_text = _pretty_args(args, APPROVAL_ARGS_LIMIT + 1)
+        # A decision must never cover arguments the owner could not read.
+        self.reviewable = len(args_text) <= APPROVAL_ARGS_LIMIT
+        self.args_text = args_text if self.reviewable else (
+            args_text[:4000] + "\n… arguments too large to review; only deny is available")
 
     def compose(self) -> ComposeResult:
         with Vertical(id="approval-dialog"):
@@ -241,36 +281,42 @@ class ApprovalModal(ModalScreen[str | None]):
             # Textual markup would hide/alter bracketed text (or crash).
             yield Static("Wisp asks for approval", id="approval-title", markup=False)
             with VerticalScroll(id="approval-details"):
-                yield Static(f"Tool: {self.tool}", id="approval-tool", markup=False)
+                yield Static(f"Tool: {_metadata_text(self.tool, 200)}", id="approval-tool",
+                             markup=False)
                 if self.note:
                     yield Static(self.note, id="approval-note", markup=False)
-                yield Static(_pretty_args(self.args), id="approval-args", markup=False)
-            yield Static("↑↓/PgUp/PgDn scroll · y approve · n/Esc deny · "
-                         "p allow for project · g allow globally",
-                         id="approval-hint", markup=False)
+                yield Static(self.args_text, id="approval-args", markup=False)
+            hint = ("↑↓/PgUp/PgDn scroll · y approve · n/Esc deny · "
+                    "p allow for project · g allow globally") if self.reviewable else (
+                    "↑↓/PgUp/PgDn scroll · n/Esc deny (arguments too large to approve)")
+            yield Static(hint, id="approval-hint", markup=False)
 
     def on_mount(self) -> None:
         self.query_one("#approval-details", VerticalScroll).focus()
+        self._arm_timer = self.set_timer(self.ARM_DELAY, self._arm)
 
-    def action_approve(self) -> None:
-        self.dismiss("approve")
+    def _arm(self) -> None:
+        self.armed = True
 
-    def action_deny(self) -> None:
+    def action_decide(self, decision: str) -> None:
+        if not self.armed:
+            if self._arm_timer is not None:
+                self._arm_timer.reset()
+            return
+        if decision != "deny" and not self.reviewable:
+            return
+        self.dismiss(decision)
+
+    def action_deny_now(self) -> None:
         self.dismiss("deny")
-
-    def action_allow_project(self) -> None:
-        self.dismiss("allow_project")
-
-    def action_allow_global(self) -> None:
-        self.dismiss("allow_global")
 
 
 def server_session_label(session: dict[str, Any]) -> str:
     sid = str(session.get("id", ""))
-    title = _safe_text(session.get("title"), 60) or "(untitled)"
-    origin = session.get("origin", "?")
-    count = session.get("messageCount", "?")
-    updated = _safe_text(session.get("updatedAt"), 20).replace("T", " ")
+    title = _metadata_text(session.get("title"), 60) or "(untitled)"
+    origin = _metadata_text(str(session.get("origin", "?")), 40)
+    count = _metadata_text(str(session.get("messageCount", "?")), 12)
+    updated = _metadata_text(session.get("updatedAt"), 20).replace("T", " ")
     return f"{title}  ·  {origin}  ·  {count} msg  ·  {updated}  ·  {sid[:8]}"
 
 
@@ -323,7 +369,7 @@ class ModelPicker(ModalScreen[dict[str, Any] | None]):
 
     def _label(self, option: dict[str, Any]) -> str:
         if option.get("mode") == "model":
-            name = str(option.get("model"))
+            name = _metadata_text(str(option.get("model")), 200)
             suffix = " · reasoning" if option.get("thinking") else ""
             return f"Model: {name}{suffix}"
         return f"Mode: {option.get('mode')}"
@@ -880,7 +926,7 @@ class WispTuiApp(App[None]):
     def _add_message(self, message: ChatMessage) -> None:
         if message.role == "assistant":
             if message.text.strip():
-                self._mount_chat(Markdown(message.text, classes="assistant"))
+                self._mount_chat(AnswerMarkdown(message.text, classes="assistant"))
             for call in message.tool_calls:
                 self._tool_event({"name": call.name, "toolCallId": call.call_id},
                                  completed=False, input_text=call.input_text, historical=True)
@@ -892,7 +938,8 @@ class WispTuiApp(App[None]):
         else:
             if message.role == "user":
                 self._tool_calls.clear()
-            self._mount_chat(Static(message.text, classes=message.role, markup=False))
+            self._mount_chat(Static(_terminal_text(message.text), classes=message.role,
+                                    markup=False))
         self._scroll_down()
 
     def _tool_targets(self) -> tuple[ToolCallView, ...]:
@@ -987,7 +1034,7 @@ class WispTuiApp(App[None]):
             self._request_tool_history()
 
     def _begin_stream(self, initial: str = "") -> StreamView:
-        widget = Markdown(classes="assistant")
+        widget = AnswerMarkdown(classes="assistant")
         view = StreamView(self, widget, self._mount_chat(widget), self._scroll_down)
         view.set_text(initial)
         self._scroll_down()
@@ -1529,16 +1576,17 @@ class WispTuiApp(App[None]):
             return
         if self._approval_prompt_id != prompt_id:
             return
+        modal = self._approval_modal
         self._approval_modal = None
         self._approval_prompt_id = None
         if decision not in ("approve", "deny", "allow_project", "allow_global"):
             return
         if prompt_id in self._approval_inflight | self._answered_prompts:
             return
-        tool, args = next(((t, a) for _, pid, t, a in self.pending_prompts if pid == prompt_id),
-                          ("?", None))
+        # Record exactly what the owner was shown when deciding.
+        tool, args_text = (modal.tool, modal.args_text) if modal is not None else ("?", "")
         self._record({"type": "approval", "runId": run_id, "promptId": prompt_id,
-                      "tool": _safe_text(tool, 200), "args": _pretty_args(args),
+                      "tool": _safe_text(tool, 200), "args": args_text,
                       "decision": decision})
         self.pending_prompts = deque(p for p in self.pending_prompts if p[1] != prompt_id)
         self._approval_inflight.add(prompt_id)

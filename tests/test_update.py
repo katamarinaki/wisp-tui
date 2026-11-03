@@ -207,9 +207,8 @@ def test_subprocess_diagnostics_never_echo_raw_output(
         update._command(tmp_path, ["git"], "safe_code")
 
 
-@pytest.mark.parametrize("args", [["--help"], ["--check"]])
-def test_symlink_launcher_dispatches_update_without_textual_or_config(
-        tmp_path: Path, args: list[str]) -> None:
+def launcher_checkout(tmp_path: Path) -> Path:
+    """A minimal checkout with only the launcher and updater; returns a `wi` symlink."""
     root = tmp_path / "app"
     (root / "scripts").mkdir(parents=True)
     (root / "src/wisp_tui").mkdir(parents=True)
@@ -221,8 +220,28 @@ def test_symlink_launcher_dispatches_update_without_textual_or_config(
     (root / ".venv/bin/python").symlink_to(sys.executable)
     wi = tmp_path / "wi"
     wi.symlink_to(root / "scripts/wisp-tui")
+    return wi
+
+
+@pytest.mark.parametrize("args", [["--help"], ["--check"]])
+def test_symlink_launcher_dispatches_update_without_textual_or_config(
+        tmp_path: Path, args: list[str]) -> None:
+    wi = launcher_checkout(tmp_path)
+    root = tmp_path / "app"
     result = subprocess.run([str(wi), "update", *args], cwd=tmp_path,
                             capture_output=True, text=True, check=False)
     assert result.returncode == (0 if args == ["--help"] else 2)
     assert "wi update" in result.stdout + result.stderr
     assert not (root / ".git").exists()
+
+
+def test_launcher_never_imports_modules_from_the_launch_directory(tmp_path: Path) -> None:
+    wi = launcher_checkout(tmp_path)
+    launch = tmp_path / "untrusted"
+    (launch / "wisp_tui").mkdir(parents=True)
+    (launch / "wisp_tui/__init__.py").write_text("open('MARKER', 'w').write('cwd')\n")
+    (launch / "wisp_tui/update.py").write_text("raise SystemExit(0)\n")
+    result = subprocess.run([str(wi), "update", "--help"], cwd=launch,
+                            capture_output=True, text=True, check=False)
+    assert result.returncode == 0 and "wi update" in result.stdout
+    assert not (launch / "MARKER").exists()

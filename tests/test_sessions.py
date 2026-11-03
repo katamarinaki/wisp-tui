@@ -12,7 +12,7 @@ import pytest
 from wisp_tui.editor import PromptInput as Input
 
 from tests.helpers import RID, SID, ScriptedClient
-from tests.test_app import chat_text, eventually, make_app
+from tests.test_app import approval_armed, chat_text, eventually, make_app
 from wisp_tui import __main__ as cli
 from wisp_tui.app import ModelPicker, SessionPicker, Startup, WispTuiApp
 from wisp_tui.client import ClientError
@@ -374,6 +374,7 @@ async def test_approval_decision_is_recorded_with_what_was_approved(
         app.query_one("#input", Input).value = "restart jellyfin"
         await pilot.press("enter")
         await eventually(lambda: len(app.screen_stack) > 1)
+        await approval_armed(app)
         await pilot.press("y")
         await eventually(lambda: app._status_state == "")
         lines = entries(app.sessions, SID)

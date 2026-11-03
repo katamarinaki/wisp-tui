@@ -9,7 +9,7 @@ import pytest
 from wisp_tui.editor import PromptInput as Input
 
 from tests.helpers import RID, SID, RequestGate
-from tests.test_app import chat_text, eventually, make_app
+from tests.test_app import approval_armed, chat_text, eventually, make_app
 from tests.test_runs import record
 from wisp_tui.client import ClientError
 from wisp_tui.runs import RunFollower
@@ -118,9 +118,11 @@ async def test_multiple_prompts_do_not_start_competing_followers(
         owner = app._follower
         try:
             await eventually(lambda: app._approval_prompt_id == "prompt-1")
+            await approval_armed(app)
             await pilot.press("y")
             await eventually(gate.entered.is_set)
             await eventually(lambda: app._approval_prompt_id == "prompt-2")
+            await approval_armed(app)
             await pilot.press("n")
             await eventually(lambda: "prompt-2" in client.answered_prompts)
             app._start_follow()
@@ -147,6 +149,7 @@ async def test_failed_approval_is_reconciled_not_automatically_reposted(
         app._turn_started(RID)
         app._start_follow()
         await eventually(lambda: app._approval_prompt_id == "prompt-1")
+        await approval_armed(app)
         await pilot.press("y")
         await eventually(lambda: "approval error" in chat_text(app))
         await eventually(lambda: app._approval_prompt_id == "prompt-1")
@@ -172,6 +175,7 @@ async def test_already_resolved_approval_404_reconciles_terminal_record(
         app._turn_started(RID)
         app._start_follow()
         await eventually(lambda: app._approval_prompt_id == "prompt-1")
+        await approval_armed(app)
         client.replies[("GET", RUN_PATH)] = deque([record("cancelled")])
         await pilot.press("y")
         await eventually(lambda: app._status_state == "run cancelled")

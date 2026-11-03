@@ -1,6 +1,7 @@
 """Combined terminal workflows, entirely offline with the scripted runtime."""
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -11,7 +12,7 @@ from textual.widgets import ListItem, ListView, Markdown, Static
 from tests.helpers import RID, SID
 from tests.test_app import eventually, make_app
 from tests.test_rendering import rendered_blocks
-from wisp_tui.app import ApprovalModal, ModelPicker, SessionPicker
+from wisp_tui.app import APPROVAL_ARGS_LIMIT, ApprovalModal, ModelPicker, SessionPicker
 from wisp_tui.editor import PromptInput
 
 
@@ -51,6 +52,7 @@ async def test_long_approval_keeps_keys_visible_and_details_scrollable(
         await pilot.pause()
         assert app.screen is modal and not decisions
         assert editor.value == "keep\nmy draft"
+        await eventually(lambda: modal.armed)
         await pilot.press(key)
         await pilot.pause()
         assert decisions == [decision]
@@ -108,6 +110,50 @@ async def test_picker_navigation_resize_and_highlight_keep_default_background(
         assert choices == [expected, None]
         assert editor.value == "unsent\ndraft"
         assert all(method == "GET" for method, _, _ in client.calls)
+
+
+async def test_approval_ignores_type_ahead_and_key_repeat(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ApprovalModal, "ARM_DELAY", 1.0)
+    app, client = make_app([], monkeypatch)
+    async with app.run_test() as pilot:
+        decisions: list[str | None] = []
+        modal = ApprovalModal("example", {})
+        app.push_screen(modal, decisions.append)
+        await pilot.press("g")  # typed ahead as the dialog appears
+        for _ in range(8):  # a held key keeps the dialog disarmed
+            await asyncio.sleep(0.1)
+            await pilot.press("y")
+        await pilot.pause()
+        assert not decisions and not modal.armed and app.screen is modal
+        await eventually(lambda: modal.armed)
+        await pilot.press("p")
+        await pilot.pause()
+        assert decisions == ["allow_project"]
+        assert not any(method == "POST" for method, _, _ in client.calls)
+
+
+async def test_approval_shows_full_args_and_refuses_unreviewable_ones(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    app, _ = make_app([], monkeypatch)
+    async with app.run_test() as pilot:
+        decisions: list[str | None] = []
+        long = ApprovalModal("shell", {"command": "echo " + "a" * 5000 + "; TAIL_MARKER"})
+        app.push_screen(long, decisions.append)
+        await eventually(lambda: long.armed)
+        assert "TAIL_MARKER" in str(long.query_one("#approval-args", Static).render())
+        await pilot.press("escape")
+        await pilot.pause()
+        huge = ApprovalModal("shell", {"command": "a" * APPROVAL_ARGS_LIMIT})
+        app.push_screen(huge, decisions.append)
+        await eventually(lambda: huge.armed)
+        await pilot.press("y", "p", "g")
+        await pilot.pause()
+        assert app.screen is huge and decisions == ["deny"]
+        assert "too large to approve" in str(huge.query_one("#approval-hint", Static).render())
+        await pilot.press("n")
+        await pilot.pause()
+        assert decisions == ["deny", "deny"]
 
 
 @pytest.mark.parametrize("modal_kind", ["approval", "session", "model"])

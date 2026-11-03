@@ -135,6 +135,10 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
 - [x] Show approval details, tool names, titles and model IDs exactly as sent
       (no Textual markup: bracketed text was hidden/altered, `[/]` crashed the
       TUI). Regression tests cover approvals, chat lines, status and pickers.
+- [x] Neutralize terminal control characters in all runtime-text sinks, never
+      open answer links on click, arm approval keys after a 0.5 s quiet period,
+      show full approval arguments (deny-only above 200k characters), and keep
+      the launcher/setup from importing modules from the launch directory.
 - [x] Treat quiet SSE windows during long tool calls as liveness re-checks, not
       disconnects; only real failures exhaust retries.
 - [x] Stream answers incrementally (serialized `Markdown.append`, coalesced
