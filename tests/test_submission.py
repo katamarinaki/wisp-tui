@@ -5,7 +5,7 @@ from collections import deque
 from typing import Any
 
 import pytest
-from textual.widgets import Input
+from wisp_tui.editor import PromptInput as Input
 
 from tests.helpers import RID, SID, RequestGate
 from tests.test_app import chat_text, eventually, make_app

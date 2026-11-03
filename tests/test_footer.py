@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from textual.widgets import Input, Markdown, Static
+from textual.widgets import Markdown, Static
+from wisp_tui.editor import PromptInput as Input
 
 from tests.helpers import RID, SID, RequestGate
 from tests.test_app import chat_text, eventually, make_app, text_of
@@ -71,7 +72,8 @@ async def test_selection_stays_visible_through_run_status_changes(
         assert footer(app, "usage-info") == "last run tokens: input: 3, output: 4"
         assert app.session_id == SID and app.active_run is None
         assert app._status_state == ""
-        assert footer(app, "status") == "F1 help · F2 sessions · F3 model · Ctrl+C cancel/exit"
+        assert footer(app, "status") == (
+            "Enter send · Ctrl+J newline · F1 help · F2 sessions · F3 model · Ctrl+C cancel/exit")
 
 
 async def test_follow_up_uses_same_session_and_updates_last_run_not_context(

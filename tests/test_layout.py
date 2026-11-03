@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import pytest
 from textual.containers import VerticalScroll
-from textual.widgets import Input, Markdown
+from textual.widgets import Markdown
+from wisp_tui.editor import PromptInput as Input
 
 from tests.test_app import make_app
 from wisp_tui.history import ChatMessage

@@ -21,10 +21,11 @@ from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widget import AwaitMount, Widget
-from textual.widgets import Input, ListItem, ListView, Markdown, Static
+from textual.widgets import ListItem, ListView, Markdown, Static
 
 from .client import ClientError, WispClient, TERMINAL_RUN_STATUSES, safe_code
 from .config import Config
+from .editor import PromptInput
 from .history import ChatMessage, HistoryError, checkpoint_covers_answer, parse_history
 from .runs import RunFollower, find_active_run
 from .sessions import SessionStore
@@ -34,18 +35,25 @@ UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 # A session ID or a prefix of one (as shown in pickers), for --resume / /resume.
 RESUME_QUERY_RE = re.compile(r"[0-9a-f][0-9a-f-]{3,35}")
 
-HINTS = "F1 help · F2 sessions · F3 model · Ctrl+C cancel/exit"
+HINTS = "Enter send · Ctrl+J newline · F1 help · F2 sessions · F3 model · Ctrl+C cancel/exit"
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 HELP_TEXT = """**wisp-tui** — chat with the local Wisp runtime.
 
 | Key | Action |
 |---|---|
-| Enter | Send the input line |
+| Enter | Send the whole prompt |
+| Ctrl+J | Insert a newline (SSH-safe) |
+| Shift+Enter | Insert a newline if your terminal distinguishes it |
 | F1 | This help |
 | F2 | Session picker |
 | F3 | Model / mode picker |
 | Ctrl+C | Cancel the active run — press twice to leave |
+
+Bracketed paste stays literal in the editor until you press Enter. Slash
+commands execute only when the entire input is a single line; multiline text
+starting with `/` is a prompt, not a sequence of commands. Ctrl+J works over
+ordinary SSH; Shift+Enter may arrive as plain Enter in some terminals.
 
 **Commands:** `/new [title]`, `/resume`, `/sessions`, `/model`, `/cancel`, `/retry`, `/reconnect`, `/status`, `/clear`, `/help`, `/quit`.
 
@@ -341,6 +349,10 @@ class WispTuiApp(App[None]):
     .error { color: $error; }
     #bottom { dock: bottom; height: auto; padding: 0 1; }
     #input {
+        height: auto;
+        min-height: 3;
+        max-height: 8;
+        scrollbar-size: 0 0;
         border-top: solid ansi_bright_black;
         border-bottom: solid ansi_bright_black;
         border-left: none;
@@ -453,7 +465,7 @@ class WispTuiApp(App[None]):
         yield VerticalScroll(id="chat")
         with Container(id="bottom"):
             yield self._activity_indicator
-            yield Input(placeholder="Message Wisp — /help for commands", id="input")
+            yield PromptInput()
             yield Static("", id="status", markup=False)
             yield Static("", id="session-info", markup=False)
             yield Static("", id="thinking-info", markup=False)
@@ -465,7 +477,7 @@ class WispTuiApp(App[None]):
         self._render_status()
         self._render_metadata()
         self._restore_pending()
-        self.query_one("#input", Input).focus()
+        self.query_one("#input", PromptInput).focus()
         self._run_threaded(self._bootstrap_worker)
 
     # -- thread helpers ---------------------------------------------------------
@@ -666,11 +678,11 @@ class WispTuiApp(App[None]):
 
     # -- input handling -----------------------------------------------------------
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
         text = event.value.strip()
         if not text:
             return
-        if text.startswith("/"):
+        if text.startswith("/") and "\n" not in event.value and "\r" not in event.value:
             event.input.value = ""
             self._handle_command(text)
             return
@@ -678,6 +690,8 @@ class WispTuiApp(App[None]):
             self._sysline("Session/history load in progress — your draft is kept.")
             return
         if self.session_id is None:
+            if not self._draft_fits(event.value):
+                return
             # Fresh start: create the Wisp session now, then submit. Nothing is
             # created on the server until there is something to send.
             draft = event.value
@@ -706,7 +720,7 @@ class WispTuiApp(App[None]):
         self.session_id = pending.session_id
         self.session_title = "Recovered submission"
         self.title = "Wisp — recovered submission"
-        editor = self.query_one("#input", Input)
+        editor = self.query_one("#input", PromptInput)
         if not editor.value:
             editor.value = pending.draft
         self._render_metadata()
@@ -794,6 +808,12 @@ class WispTuiApp(App[None]):
         if retry:
             self._submit_pending()
 
+    def _draft_fits(self, draft: str) -> bool:
+        if len(draft.encode("utf-8")) > MAX_DRAFT_BYTES:
+            self._sysline("Prompt exceeds the safe recovery limit (128 KiB). Split it; your draft is kept.")
+            return False
+        return True
+
     def _start_submission(self, draft: str) -> None:
         if self._history_refresh_token is not None:
             self._sysline("History refresh in progress — your draft is kept.")
@@ -809,8 +829,7 @@ class WispTuiApp(App[None]):
         if self.active_run is not None:
             self._sysline("A run is already active — /cancel (Ctrl+C) it first. Your draft is kept.")
             return
-        if len(draft.encode("utf-8")) > MAX_DRAFT_BYTES:
-            self._sysline("Prompt exceeds the safe recovery limit (128 KiB). Split it; your draft is kept.")
+        if not self._draft_fits(draft):
             return
         self._pending_submission = PendingSubmission(
             self.session_id, draft, self.config.max_turns,
@@ -871,7 +890,7 @@ class WispTuiApp(App[None]):
                       "Use /retry to resend the original request with the same ID. "
                       "Wi will recover a durably saved request after exit. "
                       "A pending_state error must be resolved before any new work.", "error")
-        editor = self.query_one("#input", Input)
+        editor = self.query_one("#input", PromptInput)
         if not editor.value and self._pending_submission is not None:
             editor.value = self._pending_submission.draft
 
@@ -882,7 +901,7 @@ class WispTuiApp(App[None]):
         self._retry_after_recovery = False
         self._submitting = False
         self._pending_submission = None
-        editor = self.query_one("#input", Input)
+        editor = self.query_one("#input", PromptInput)
         if editor.value == pending.draft:
             editor.value = ""
         self._add_message(ChatMessage(role="user", text=pending.draft.strip()))
