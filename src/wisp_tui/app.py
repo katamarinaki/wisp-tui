@@ -295,14 +295,16 @@ class WispTuiApp(App[None]):
         text-style: bold;
     }
     /* Deliberate, owner-requested exception to the unpainted background:
-       prompt blocks use the terminal's cyan *palette* color (SGR 46), never a
-       hardcoded RGB/256 color (SGR 48;...). Everything else stays transparent. */
+       prompt blocks only use a muted dark teal (palette cyan was too bright).
+       #005f5f is exactly xterm-256 entry 23, so 256-color and truecolor
+       terminals show the same shade; the fixed light-grey text keeps contrast
+       on light and dark themes. Everything else stays transparent. */
     #chat > .user {
         width: 100%;
         margin: 0 0 1 0;
         border: none;
-        background: ansi_cyan;
-        color: ansi_black;
+        background: #005f5f;
+        color: #dadada;
         text-style: bold;
         padding: 1 2;
     }

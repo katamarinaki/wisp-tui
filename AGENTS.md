@@ -26,11 +26,11 @@ reattachment. Do not expand this into a general-purpose Pi replacement.
   `Screen { background: transparent; }` in the CSS and `ansi_color=True` in
   `WispTuiApp.__init__` work together to emit SGR 49. Changing any of these
   (or re-enabling the ANSI→truecolor filter) paints a hardcoded background.
-  Verify with a pty capture that no `48;...` SGR is emitted.
+  Verify with a pty capture that no other `48;...` SGR is emitted.
   Sole owner-approved exception: user prompt blocks (`#chat > .user`) are
-  filled with `ansi_cyan` (palette SGR 46, terminal decides the shade). Keep
-  it a palette color — never RGB/256 — and don't extend fills elsewhere
-  without asking.
+  filled with muted dark teal `#005f5f` (xterm-256 #23, `48;5;23`) with fixed
+  light-grey text. Palette cyan was rejected as too bright. Don't change the
+  shade or extend fills to other elements without asking.
 - Tests must not use network, sockets or real inference. Use the scripted
   client in `tests/helpers.py`.
 - Error strings shown to the user are safe codes only; never surface raw HTTP
