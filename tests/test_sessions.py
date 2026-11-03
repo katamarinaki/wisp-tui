@@ -251,6 +251,87 @@ async def test_resume_picker_lists_saved_sessions_newest_first(
         assert "past answer" in chat_text(app)
 
 
+SIBLING = "3bf1ba87-0000-4000-8000-000000000000"  # shares SID's 8-char prefix
+
+
+def test_find_matches_prefixes_newest_first(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    for session_id, mtime in ((SID, 1_000), (SIBLING, 2_000), (OTHER, 3_000)):
+        store.record(session_id, {"text": "x"})
+        os.utime(store.path_for(session_id) or "", (mtime, mtime))
+    assert store.find("3bf1ba87") == [SIBLING, SID]
+    assert store.find("3BF1BA87-760E") == [SID]
+    assert store.find("ffff") == []
+
+
+async def test_resume_by_unique_prefix_opens_it(
+        monkeypatch: pytest.MonkeyPatch, private_state_dir: Path) -> None:
+    seed(private_state_dir, (SID, "restart jellyfin", 1_000), (OTHER, "check disks", 2_000))
+    app, client = make_app([], monkeypatch)
+    app.startup = Startup("resume", "3bf1")
+    async with app.run_test():
+        await eventually(lambda: app.session_id == SID and not app._session_busy)
+        assert "past answer" in chat_text(app)
+        assert len(app.screen_stack) == 1
+
+
+async def test_resume_ambiguous_prefix_offers_only_the_matches(
+        monkeypatch: pytest.MonkeyPatch, private_state_dir: Path) -> None:
+    seed(private_state_dir, (SID, "one", 1_000), (SIBLING, "two", 2_000),
+         (OTHER, "unrelated", 3_000))
+    app, client = make_app([], monkeypatch)
+    app.startup = Startup("resume", "3bf1ba87")
+    async with app.run_test() as pilot:
+        await eventually(lambda: isinstance(app.screen, SessionPicker))
+        picker = app.screen
+        assert isinstance(picker, SessionPicker)
+        assert [sid for sid, _ in picker.entries] == [SIBLING, SID]
+        assert "3bf1ba87" in picker.heading
+        await pilot.press("down", "enter")
+        await eventually(lambda: app.session_id == SID and not app._session_busy)
+
+
+async def test_resume_unknown_prefix_stays_fresh(
+        monkeypatch: pytest.MonkeyPatch, private_state_dir: Path) -> None:
+    seed(private_state_dir, (SID, "one", 1_000))
+    app, client = make_app([], monkeypatch)
+    app.startup = Startup("resume", "ffff")
+    async with app.run_test():
+        await eventually(lambda: "No saved session matches 'ffff'" in chat_text(app))
+        assert app.session_id is None
+        assert [c[:2] for c in client.calls] == [("GET", "/v1/health")]
+
+
+async def test_resume_full_id_not_saved_locally_opens_wisp_session(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    app, client = make_app([], monkeypatch)
+    app.startup = Startup("resume", SID)
+    async with app.run_test():
+        await eventually(lambda: app.session_id == SID and not app._session_busy)
+        assert "past answer" in chat_text(app)
+
+
+@pytest.mark.parametrize("command, expected", [
+    ("/resume 3bf1", None),
+    ("/resume 3BF1BA87", None),
+    ("/resume nope!", "Usage: /resume"),
+])
+async def test_resume_command_accepts_a_prefix(
+        monkeypatch: pytest.MonkeyPatch, private_state_dir: Path,
+        command: str, expected: str | None) -> None:
+    seed(private_state_dir, (SID, "one", 1_000), (OTHER, "two", 2_000))
+    app, _ = make_app([], monkeypatch)
+    async with app.run_test() as pilot:
+        await eventually(lambda: "new session" in app._status_state)
+        app.query_one("#input", Input).value = command
+        await pilot.press("enter")
+        if expected is None:
+            await eventually(lambda: app.session_id == SID and not app._session_busy)
+        else:
+            await eventually(lambda: expected in chat_text(app))
+            assert app.session_id is None
+
+
 async def test_resume_command_and_empty_store(monkeypatch: pytest.MonkeyPatch) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test() as pilot:
@@ -326,6 +407,9 @@ async def test_record_failure_is_reported_once(
     (["-c"], Startup("continue")),
     (["--continue"], Startup("continue")),
     (["-r"], Startup("resume")),
+    (["-r", "3bf1ba87"], Startup("resume", "3bf1ba87")),
+    (["--resume", "3BF1BA87"], Startup("resume", "3bf1ba87")),
+    (["--resume", SID], Startup("resume", SID)),
     (["--session", SID], Startup("session", SID)),
 ])
 def test_cli_selects_startup(monkeypatch: pytest.MonkeyPatch, argv: list[str],
@@ -340,7 +424,10 @@ def test_cli_selects_startup(monkeypatch: pytest.MonkeyPatch, argv: list[str],
     assert seen == [expected]
 
 
-@pytest.mark.parametrize("argv", [["--session", "nope"], ["-c", "-r"], ["-r", "--session", SID]])
+@pytest.mark.parametrize("argv", [
+    ["--session", "nope"], ["-c", "-r"], ["-r", "--session", SID],
+    ["--resume", "zz"], ["--resume", "abc"], ["-r", "3bf1ba87", "-c"],
+])
 def test_cli_rejects_bad_combinations(argv: list[str]) -> None:
     with pytest.raises(SystemExit) as raised:
         cli.main(argv)

@@ -29,6 +29,8 @@ from .runs import RunFollower, find_active_run
 from .sessions import SessionStore
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+# A session ID or a prefix of one (as shown in pickers), for --resume / /resume.
+RESUME_QUERY_RE = re.compile(r"[0-9a-f][0-9a-f-]{3,35}")
 
 HINTS = "F1 help · F2 sessions · F3 model · Ctrl+C cancel/exit"
 
@@ -47,6 +49,7 @@ HELP_TEXT = """**wisp-tui** — chat with the local Wisp runtime.
 **Sessions:** every launch starts fresh; your first message creates the Wisp
 session. `/new` starts another one. Sessions you use here are saved locally
 (`~/.local/state/wisp-tui/sessions/`): `/resume` (or `wisp-tui -r`) picks one,
+`/resume 3bf1ba87` (or `wisp-tui -r 3bf1ba87`) opens it by ID prefix, and
 `wisp-tui -c` continues the most recent. `/sessions` (F2) lists all Wisp
 sessions, including Telegram/desktop ones.
 
@@ -100,6 +103,7 @@ FRESH_STATUS = "ready · new session — your first message starts it (/resume, 
 class Startup:
     """How the app starts: a fresh session (default) or an existing one."""
     mode: str = "new"  # "new" | "continue" | "resume" | "session"
+    # "session": a full UUID. "resume": optional ID or prefix ("" = picker).
     session_id: str = ""
 
 
@@ -483,7 +487,7 @@ class WispTuiApp(App[None]):
             else:
                 self._sysline("No saved sessions yet — starting a new one.")
         elif mode == "resume":
-            self.action_resume()
+            self.action_resume(self.startup.session_id)
 
     # -- chat rendering (main thread only) --------------------------------------
 
@@ -1075,16 +1079,36 @@ class WispTuiApp(App[None]):
         self._reset_chat()
         self._status(FRESH_STATUS)
 
-    def action_resume(self) -> None:
+    def action_resume(self, query: str = "") -> None:
+        """Saved-session picker; with an ID or prefix, open the match directly."""
         if self._approval_modal is not None:
             return
-        summaries = self.sessions.list()
+        query = query.strip().lower()
+        if query and not RESUME_QUERY_RE.fullmatch(query):
+            self._sysline("Usage: /resume [session ID or prefix, 4+ hex characters]")
+            return
+        summaries = self.sessions.list(limit=10_000) if query else self.sessions.list()
+        if query:
+            matches = self.sessions.find(query)
+            if len(matches) == 1:
+                self._open_session(matches[0])
+                return
+            if not matches:
+                if UUID_RE.fullmatch(query):
+                    # Not saved here, but a full ID may still be a Wisp session.
+                    self._open_session(query)
+                    return
+                self._sysline(f"No saved session matches '{query}'. F2 lists all Wisp sessions.")
+                return
+            wanted = set(matches)
+            summaries = [item for item in summaries if item.id in wanted]
         if not summaries:
             self._sysline("No saved sessions yet — sessions are saved as you chat.")
             return
+        heading = (f"Saved sessions matching '{query}'" if query
+                   else "Saved sessions (newest first)")
         self.push_screen(SessionPicker([(item.id, item.label()) for item in summaries],
-                                       "Saved sessions (newest first)"),
-                         self._picker_answered)
+                                       heading), self._picker_answered)
 
     def action_sessions(self) -> None:
         def work() -> None:
@@ -1226,7 +1250,7 @@ class WispTuiApp(App[None]):
         elif command == "/new":
             self._start_fresh(_safe_text(argument, 80))
         elif command == "/resume":
-            self.action_resume()
+            self.action_resume(argument)
         elif command == "/sessions":
             self.action_sessions()
         elif command == "/model":

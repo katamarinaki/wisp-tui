@@ -5,7 +5,7 @@ import argparse
 import sys
 
 from . import __version__
-from .app import Startup, WispTuiApp, UUID_RE
+from .app import RESUME_QUERY_RE, Startup, WispTuiApp, UUID_RE
 from .client import WispClient, ClientError
 from .config import ConfigError, load_config
 
@@ -19,14 +19,17 @@ def main(argv: list[str] | None = None) -> int:
     start = parser.add_mutually_exclusive_group()
     start.add_argument("-c", "--continue", dest="resume_latest", action="store_true",
                        help="Continue the most recent locally saved session.")
-    start.add_argument("-r", "--resume", action="store_true",
-                       help="Pick a locally saved session to resume.")
+    start.add_argument("-r", "--resume", nargs="?", const="", default=None, metavar="ID",
+                       help="Resume a locally saved session: a picker, or the session "
+                            "whose ID starts with ID (e.g. the 8 characters shown).")
     start.add_argument("--session", metavar="UUID",
                        help="Open a specific Wisp session.")
     parser.add_argument("--version", action="version", version="wisp-tui " + __version__)
     args = parser.parse_args(argv)
     if args.session is not None and not UUID_RE.fullmatch(args.session):
         parser.error("--session expects a session UUID")
+    if args.resume and not RESUME_QUERY_RE.fullmatch(args.resume.lower()):
+        parser.error("--resume expects a session ID or prefix (4+ hex characters)")
     try:
         config = load_config()
     except ConfigError as error:
@@ -51,8 +54,8 @@ def main(argv: list[str] | None = None) -> int:
         startup = Startup("session", args.session)
     elif args.resume_latest:
         startup = Startup("continue")
-    elif args.resume:
-        startup = Startup("resume")
+    elif args.resume is not None:
+        startup = Startup("resume", args.resume.lower())
     else:
         startup = Startup()
     app = WispTuiApp(client, config, startup)

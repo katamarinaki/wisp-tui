@@ -133,6 +133,15 @@ class SessionStore:
         matches = [path for path, sid, _ in self._files() if sid == session_id]
         return min(matches) if matches else None
 
+    def find(self, prefix: str) -> list[str]:
+        """Saved session IDs starting with ``prefix`` (case-insensitive), newest first."""
+        prefix = prefix.lower()
+        newest: dict[str, float] = {}
+        for _, sid, mtime in self._files():
+            if sid.startswith(prefix):
+                newest[sid] = max(mtime, newest.get(sid, mtime))
+        return sorted(newest, key=lambda sid: newest[sid], reverse=True)
+
     def latest(self) -> str | None:
         files = self._files()
         return max(files, key=lambda item: item[2])[1] if files else None

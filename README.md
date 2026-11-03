@@ -20,6 +20,7 @@ wisp-tui                 # new session (from anywhere, via the launcher symlink)
 scripts/wisp-tui         # same, from the checkout
 wisp-tui -c              # --continue: the most recent locally saved session
 wisp-tui -r              # --resume: pick a locally saved session
+wisp-tui -r 3bf1ba87     # resume the saved session whose ID starts with this
 wisp-tui --session UUID  # open a specific Wisp session
 wisp-tui --check         # authenticated health check, no TUI, no inference
 ```
@@ -27,6 +28,11 @@ wisp-tui --check         # authenticated health check, no TUI, no inference
 Like Pi, every launch starts a **new session**. Nothing is created on the
 runtime until you send the first message; its first line becomes the session
 title (`/new Title` sets one explicitly).
+
+`--resume ID` (and `/resume ID` inside the app) takes a full session ID or a
+prefix of 4+ characters, such as the 8 shown in the pickers. One match opens
+directly; several show a picker of just those; a full ID that is not saved
+locally still opens the Wisp session.
 
 First-time setup: `scripts/setup` copies the credential from the ask-wisp
 config into `~/.config/wisp-tui/config.json` (0600). Both tools currently
@@ -132,7 +138,7 @@ Mirrors the ask-wisp proxy hardening:
 
 ```sh
 cd wisp-tui   # the checkout
-.venv/bin/python -m pytest tests/    # 165 tests, no network/sockets
+.venv/bin/python -m pytest tests/    # 179 tests, no network/sockets
 .venv/bin/python -m mypy             # strict, src + tests
 ```
 
