@@ -41,7 +41,8 @@ To continue: wi --resume 3bf1ba87-6a56-4cef-89ad-358930302894
 The command uses your launcher name (`wi` or `wisp-tui`) and the full ID of the
 final active session. An unused fresh session prints no hint. This resumes the
 conversation. Pending submissions are recovered independently of this hint;
-unsent drafts are not saved.
+unsent session drafts restore when you resume the matching session. An unsent
+draft from a fresh session restores on an ordinary fresh launch.
 
 Shorter command: symlink the launcher under any name, e.g.
 `ln -s "$PWD/scripts/wisp-tui" ~/.local/bin/wi`; help and errors then use
@@ -118,6 +119,26 @@ owner must merge this feature from `develop` to `main` for main installations.
   with selected text. Busy/error states retain the draft; acknowledgements do
   not erase newer edits or pasted text. The 128 KiB UTF-8 prompt limit is checked
   before creating a fresh session as well as before reserving a submission.
+- **Prompt recall and draft recovery:** Ctrl+P/Ctrl+N browse acknowledged prompts
+  and return to your current draft. Edits made while browsing are retained for
+  that browsing pass, and recall is undoable; Up/Down remain multiline cursor
+  movement. Ctrl+Shift+P keeps the command palette available on terminals that
+  distinguish it. Recall contains at most 50 prompts and 256 KiB of UTF-8 text,
+  with consecutive duplicates collapsed; commands and unacknowledged requests
+  do not enter recall. One unsent draft (up to 128 KiB) is saved after 350 ms of
+  inactivity and flushed on normal exit. A session draft restores only into
+  the matching resumed session and never replaces text entered while loading;
+  a fresh draft restores on a fresh launch. A plain fresh launch points to the
+  session holding a saved draft. Typing new prompt text replaces that one saved
+  draft; nothing is sent automatically.
+  State lives in `~/.local/state/wisp-tui/composer-<runtime-fingerprint>.json`
+  (0600, owner-checked, 0700 directory), using atomic replacement and fsync.
+  Runtime fingerprints isolate histories without saving runtime configuration.
+  An advisory lock prevents competing clients from overwriting the file. A
+  second client or a storage error leaves editing/chat available with a safe
+  recovery error code; prompt recall still works in memory. Recent edits before
+  the debounce fires can be lost on abrupt termination. Oversized drafts stay
+  in the editor with a warning, leaving the previous saved draft intact.
 - Long sessions stay fast: only the newest 60 chat items are kept on screen
   (opening a session mounts just that tail); a dim marker at the top counts
   what is hidden. Wisp keeps the full history — older turns are still in the
@@ -208,7 +229,13 @@ owner must merge this feature from `develop` to `main` for main installations.
   request. Only `/retry` explicitly resends the recovered request, never a new
   editor draft; if requested during that read, it waits for the check to finish.
   Read failures keep the request reserved and still permit explicit retry.
-  Unsent drafts and cancellation intent remain memory-only.
+  A newer unsent draft is recovered separately from the original request;
+  `/retry` still submits only the original. A draft tagged with a durably
+  acknowledged request is discarded after a crash before the UI cleared it.
+  An unrelated saved draft survives inspection, retry and shutdown of a
+  recovered request, including one submitted by a second client while the
+  composer lease was busy. New prompt text deliberately replaces the saved slot.
+  Cancellation intent remains memory-only.
   Retries older than 23 hours or with a reversed wall clock are refused; they
   stay reserved for manual reconciliation. Server-side deduplication and
   key expiry still depend on the runtime's idempotency contract; see
@@ -279,6 +306,7 @@ src/wisp_tui/client.py   loopback HTTP client, route allowlist, SSE parser
 src/wisp_tui/history.py  LangGraph checkpoint history → chat messages
 src/wisp_tui/runs.py     run-record validation, single-owner following/recovery
 src/wisp_tui/editor.py   multiline composer, explicit send/newline and literal paste
+src/wisp_tui/composer.py private bounded prompt recall and unsent draft storage
 src/wisp_tui/app.py      Textual application, workers, approval modal
 src/wisp_tui/__main__.py CLI entry point (--check, --session)
 scripts/wisp-tui         launcher (project venv)
@@ -293,7 +321,8 @@ tests/                   pytest suite incl. Textual pilot app tests
 - Safe multiline paste requires terminal **bracketed paste**, enabled by Textual.
   Unbracketed carriage returns are indistinguishable from physical Enter; there
   is no timing-based guess that can make those safe. Actual Mac/SSH acceptance
-  remains pending. Unsent drafts and previous-prompt history are not persisted.
+  remains pending. Draft recovery and recall cover local TUI input only;
+  prompts sent through other clients are not imported into recall.
 - Recovery is tested with scripted responses, not yet a funded end-to-end SSH
   task. Discovery covers v1 runs; internal/desktop-origin runs are not included
   by the runtime's default run listing. Do not assume a disconnect cancelled

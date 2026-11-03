@@ -60,8 +60,15 @@ avoiding an unlink/directory-sync window. If a retry sees this known ID, it
 attaches without another POST. A late acknowledgement cannot replace a newer
 reservation. These are offline client guarantees, not proof of Wisp's actual
 idempotency-key retention or replay behavior. Old/clock-ambiguous requests stay
-blocked for manual reconciliation; unsent drafts and cancel intent are not
+blocked for manual reconciliation; cancel intent is not
 recovered.
+
+Unsent editor text is saved separately from this request journal. Composer
+snapshots can tag an unchanged draft with its in-flight request ID; startup
+discards that snapshot only when the validated journal acknowledges the same
+request, session and text. Editing clears the tag. A newer cached draft never
+changes the original request used by `/retry`, and recall/recovery adds no
+runtime requests or inferred acknowledgements.
 
 A restored request now loads its original session, checkpoint history and v1
 active-run summary using bounded GETs only. This view supplies the title and

@@ -22,10 +22,11 @@ from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widget import AwaitMount, Widget
-from textual.widgets import ListItem, ListView, Markdown, Static
+from textual.widgets import ListItem, ListView, Markdown, Static, TextArea
 
 from .client import ClientError, WispClient, TERMINAL_RUN_STATUSES, safe_code
 from .config import Config
+from .composer import ComposerError, ComposerState, ComposerStore, bounded_history
 from .editor import PromptInput
 from .history import ChatMessage, HistoryError, checkpoint_covers_answer, parse_history
 from .runs import RunFollower, find_active_run
@@ -46,6 +47,8 @@ HELP_TEXT = """**wisp-tui** — chat with the local Wisp runtime.
 | Enter | Send the whole prompt |
 | Ctrl+J | Insert a newline (SSH-safe) |
 | Shift+Enter | Insert a newline if your terminal distinguishes it |
+| Ctrl+P / Ctrl+N | Previous / next submitted prompt; return to your draft |
+| Ctrl+Shift+P | Command palette, where the terminal distinguishes it |
 | F1 | This help |
 | F2 | Session picker |
 | F3 | Model / mode picker |
@@ -67,8 +70,15 @@ sessions, including Telegram/desktop ones.
 
 `/retry` retries an unacknowledged submission with its original input and request
 ID. It never sends your newer draft. Pending requests are saved privately before
-submission and recovered after exit, without automatic resubmission. Unsent
-drafts are still memory-only. A state error blocks new work until resolved.
+submission and recovered after exit, without automatic resubmission. A pending
+request state error blocks new work until resolved.
+
+Ctrl+P/Ctrl+N browse your last 50 acknowledged prompts, preserving the current
+draft and edits made while browsing. Up/Down still move within multiline text.
+One unsent draft is saved locally after a short pause and on exit, up to 128 KiB.
+A fresh draft restores on a fresh launch; a session draft restores when you
+resume that session. Starting new text replaces the one saved draft. Nothing
+is sent automatically. Input history/recovery errors leave editing available.
 
 A finished run is one answered prompt, not the end of the conversation: just
 send your next message. The footer keeps the session, model/mode, thinking
@@ -307,6 +317,8 @@ class ModelPicker(ModalScreen[dict[str, Any] | None]):
 
 class WispTuiApp(App[None]):
     TITLE = "wisp-tui"
+    # Free the SSH-safe Ctrl+P byte for prompt recall; keep the palette available.
+    COMMAND_PALETTE_BINDING = "ctrl+shift+p"
     CSS = """
     App { background: ansi_default; }
     Screen { background: transparent; color: ansi_default; }
@@ -426,6 +438,16 @@ class WispTuiApp(App[None]):
         self.startup = startup or Startup()
         self.sessions = sessions or SessionStore()
         self.submissions = submissions or SubmissionStore(client.url)
+        self.composer = ComposerStore(client.url, self.submissions.root)
+        self._prompt_history: tuple[str, ...] = ()
+        self._composer_editor: PromptInput | None = None
+        self._composer_available = False
+        self._composer_dirty = False
+        self._composer_draft = ""
+        self._composer_submission_key: str | None = None
+        self._composer_timer: Timer | None = None
+        self._composer_errors: set[str] = set()
+        self._recoverable_draft: ComposerState | None = None
         self._pending_state_error = False
         # Title for the session that the next first message will create.
         self._fresh_title = ""
@@ -493,6 +515,7 @@ class WispTuiApp(App[None]):
         self._render_status()
         self._render_metadata()
         self._restore_pending()
+        self._restore_composer()
         self.query_one("#input", PromptInput).focus()
         self._run_threaded(self._bootstrap_worker)
 
@@ -717,7 +740,124 @@ class WispTuiApp(App[None]):
 
     # -- input handling -----------------------------------------------------------
 
+    def _composer_warning(self, code: str) -> None:
+        if code not in self._composer_errors:
+            self._composer_errors.add(code)
+            message = f"Input history/draft recovery: {code}. Current text is kept in memory."
+            if self._composer_editor is not None and self._composer_editor.is_attached:
+                self._sysline(message, "error")
+            else:
+                self.console.print(f"Input history/draft was not saved: {code}")
+
+    def _restore_composer(self) -> None:
+        editor = self.query_one("#input", PromptInput)
+        self._composer_editor = editor
+        try:
+            state = self.composer.load()
+        except ComposerError as error:
+            self._composer_warning(str(error))
+            return
+        self._composer_available = True
+        self._prompt_history = state.history
+        acknowledged = self.submissions.loaded_acknowledgement
+        if acknowledged is not None:
+            self._prompt_history = bounded_history((*self._prompt_history, acknowledged.draft))
+            # An ack may be durable before the UI clears/saves the editor.
+            # Only a draft explicitly tagged with this request can be discarded.
+            if (state.session_id == acknowledged.session_id
+                    and state.draft == acknowledged.draft
+                    and state.submission_key == acknowledged.key):
+                state = ComposerState(self._prompt_history)
+                self._composer_dirty = True
+            elif self._prompt_history != state.history:
+                self._composer_dirty = True
+        editor.set_prompt_history(self._prompt_history)
+        self._recoverable_draft = state if state.draft else None
+        pending = self._pending_submission
+        if pending is not None and state.draft and state.session_id == pending.session_id:
+            editor.value = state.draft
+            self._recoverable_draft = None
+            self._composer_submission_key = state.submission_key
+        else:
+            self._composer_submission_key = pending.key if pending is not None else None
+        self._composer_draft = editor.value
+        if pending is not None:
+            self._composer_dirty = True
+        elif self.startup.mode == "new":
+            self._restore_matching_draft()
+        self._announce_saved_draft()
+
+    def _announce_saved_draft(self) -> None:
+        if self._recoverable_draft is not None:
+            session = self._recoverable_draft.session_id
+            target = f"session {session}" if session else "a fresh session"
+            command = f"/resume {session}" if session else "/new"
+            when = (" after the pending request is acknowledged"
+                    if self._pending_submission is not None else "")
+            self._sysline(f"Saved unsent draft for {target}. Use {command}{when} "
+                          "to recover it; the saved draft was not sent.")
+
+    def _restore_matching_draft(self) -> None:
+        editor = self._composer_editor
+        state = self._recoverable_draft
+        if (editor is not None and state is not None and not editor.value
+                and state.session_id == self.session_id):
+            editor.value = state.draft
+            self._composer_draft = state.draft
+            self._composer_submission_key = state.submission_key
+            self._recoverable_draft = None
+            self._sysline("Recovered unsent draft. Nothing was sent; Enter sends it when ready.")
+
+    def _capture_composer(self) -> None:
+        editor = self._composer_editor
+        if editor is not None and editor.value != self._composer_draft:
+            self._composer_draft = editor.value
+            self._composer_submission_key = None
+            if editor.value and not self._composer_command(editor.value):
+                self._recoverable_draft = None
+            self._composer_dirty = True
+
+    @staticmethod
+    def _composer_command(text: str) -> bool:
+        return text.lstrip().startswith("/") and "\n" not in text and "\r" not in text
+
+    def _queue_composer_save(self) -> None:
+        if self._composer_timer is not None:
+            self._composer_timer.stop()
+        if self._composer_available and self._composer_dirty:
+            self._composer_timer = self.set_timer(0.35, self._flush_composer)
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if event.text_area is self._composer_editor:
+            self._capture_composer()
+            self._queue_composer_save()
+
+    def _flush_composer(self) -> None:
+        self._capture_composer()
+        if not self._composer_available or not self._composer_dirty:
+            return
+        if len(self._composer_draft.encode("utf-8")) > MAX_DRAFT_BYTES:
+            self._composer_warning("draft_too_large_to_save")
+            return
+        try:
+            draft = "" if self._composer_command(self._composer_draft) else self._composer_draft
+            recovery = self._recoverable_draft
+            # Unmatched saved text is independent of a restored pending request.
+            # Only an explicit editor change or matching restore claims its slot.
+            if recovery is not None:
+                state = ComposerState(self._prompt_history, recovery.draft,
+                                      recovery.session_id, recovery.submission_key)
+            else:
+                state = ComposerState(self._prompt_history, draft,
+                                      self.session_id, self._composer_submission_key)
+            self.composer.save(state)
+        except ComposerError as error:
+            self._composer_warning(str(error))
+        else:
+            self._composer_dirty = False
+
     def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
+        self._capture_composer()
         text = event.value.strip()
         if not text:
             return
@@ -762,6 +902,10 @@ class WispTuiApp(App[None]):
         editor = self.query_one("#input", PromptInput)
         if not editor.value:
             editor.value = pending.draft
+            self._composer_draft = pending.draft
+            self._composer_submission_key = pending.key
+            self._composer_dirty = True
+            self._queue_composer_save()
         self._render_metadata()
         self._status("unacknowledged submission restored · /retry")
         self._sysline("Recovered an unacknowledged request. Nothing was resubmitted. "
@@ -833,6 +977,7 @@ class WispTuiApp(App[None]):
         else:
             self._sysline("No active v1 run reported. This is not proof the request was rejected.",
                           "tool")
+        self._announce_saved_draft()
 
     def _pending_view_failed(self, token: object, pending: PendingSubmission, code: str) -> None:
         if self._pending_view_current(token, pending):
@@ -870,9 +1015,14 @@ class WispTuiApp(App[None]):
             return
         if not self._draft_fits(draft):
             return
+        self._capture_composer()
         self._pending_submission = PendingSubmission(
             self.session_id, draft, self.config.max_turns,
             "wisp-tui:" + str(uuid.uuid4()))
+        if self._composer_draft == draft:
+            self._composer_submission_key = self._pending_submission.key
+        self._composer_dirty = True
+        self._flush_composer()
         self._submit_pending()
 
     def _submit_pending(self) -> None:
@@ -932,6 +1082,10 @@ class WispTuiApp(App[None]):
         editor = self.query_one("#input", PromptInput)
         if not editor.value and self._pending_submission is not None:
             editor.value = self._pending_submission.draft
+            self._composer_draft = editor.value
+            self._composer_submission_key = self._pending_submission.key
+            self._composer_dirty = True
+            self._queue_composer_save()
 
     def _submission_accepted(self, pending: PendingSubmission, run_id: str) -> None:
         history = self._pending_view_history
@@ -943,6 +1097,10 @@ class WispTuiApp(App[None]):
         editor = self.query_one("#input", PromptInput)
         if editor.value == pending.draft:
             editor.value = ""
+        self._prompt_history = bounded_history((*self._prompt_history, pending.draft))
+        editor.set_prompt_history(self._prompt_history)
+        self._composer_dirty = True
+        self._flush_composer()
         self._add_message(ChatMessage(role="user", text=pending.draft.strip()))
         self._record({"type": "message", "role": "user", "text": pending.draft.strip(),
                       "runId": run_id}, pending.session_id)
@@ -1353,6 +1511,10 @@ class WispTuiApp(App[None]):
             self._last_usage = ""
         self.session_id = session_id
         self._selection_updated(session, session_id)
+        self._restore_matching_draft()
+        if self._composer_editor is not None and self._composer_editor.value:
+            self._composer_dirty = True
+            self._queue_composer_save()
         self.session_title = _safe_text(session.get("title"), 80) or "(untitled)"
         self.title = f"Wisp — {self.session_title}"
         # Only mount the tail of long histories (see MAX_CHAT_ITEMS).
@@ -1427,6 +1589,10 @@ class WispTuiApp(App[None]):
         self._release_session_change()
         self.session_id = None
         self.session_title = ""
+        self._restore_matching_draft()
+        if self._composer_editor is not None and self._composer_editor.value:
+            self._composer_dirty = True
+            self._queue_composer_save()
         self._selection = {}
         self._last_usage = ""
         self._render_metadata()
@@ -1645,6 +1811,11 @@ class WispTuiApp(App[None]):
             self._sysline(line, "tool")
 
     def on_unmount(self) -> None:
+        if self._composer_timer is not None:
+            self._composer_timer.stop()
+        self._flush_composer()
+        self.composer.close()
+        self._composer_available = False
         self._recovery_view_token = None
         self._retry_after_recovery = False
         self._pending_view_history = None

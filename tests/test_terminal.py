@@ -123,11 +123,14 @@ def test_bracketed_paste_and_newline_bytes_require_explicit_send(width: int) -> 
         (b"EDITOR_READY", b"\x1b[200~" + PASTE.encode() + b"\x1b[201~"),
         (b"EDITOR_PASTE_READY", b"\x1b[1;5F\ntail"),  # Ctrl+End, Ctrl+J, text
         (b"EDITOR_NEWLINE_READY", b"\r"),  # Only this physical Enter sends.
+        (b"EDITOR_HISTORY_READY", b"\x10"),  # Ctrl+P recalls without sending.
+        (b"EDITOR_RECALL_READY", b"\x0e"),  # Ctrl+N restores the empty draft.
     ))
     assert b"\x1b[?2004h" in capture, "bracketed paste was not enabled"
     result_line = capture.split(b"EDITOR_RESULT=", 1)[1].splitlines()[0]
     result = json.loads(result_line)
     assert result == {"paste_checked": True, "newline_checked": True,
+                      "history_checked": True, "scratch_checked": True,
                       "inputs": [PROMPT.strip()]}
     sgr = re.findall(rb"\x1b\[([0-9;:]*)m", capture)
     extended = [codes for codes in sgr if re.search(rb"(?:^|[;:])48(?:[;:]|$)", codes)]

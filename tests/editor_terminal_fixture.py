@@ -25,6 +25,9 @@ class EditorTerminalFixture(WispTuiApp):
     client: ScriptedClient
     paste_checked = False
     newline_checked = False
+    history_ready = False
+    history_checked = False
+    scratch_checked = False
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -32,8 +35,16 @@ class EditorTerminalFixture(WispTuiApp):
         self._status("EDITOR_READY")
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        super().on_text_area_changed(event)
         editor = self.query_one("#input", PromptInput)
-        if editor.value == NORMALIZED:
+        if self.history_ready:
+            if editor.value == PROMPT:
+                self.history_checked = True
+                self._status("EDITOR_RECALL_READY")
+            elif self.history_checked and editor.value == "":
+                self.scratch_checked = True
+                self.set_timer(0.1, self.exit)
+        elif editor.value == NORMALIZED:
             assert all(method == "GET" for method, _, _ in self.client.calls)
             self.paste_checked = True
             # The capture must cover selected text and matching brackets, not
@@ -47,7 +58,8 @@ class EditorTerminalFixture(WispTuiApp):
 
     def _finalize_run(self, kind: str, outcome: Any) -> None:
         super()._finalize_run(kind, outcome)
-        self.set_timer(0.1, self.exit)
+        self.history_ready = True
+        self._status("EDITOR_HISTORY_READY")
 
 
 def main() -> None:
@@ -64,6 +76,7 @@ def main() -> None:
                   if method == "POST" and path.endswith("/runs") and body is not None]
         print("EDITOR_RESULT=" + json.dumps({
             "paste_checked": app.paste_checked, "newline_checked": app.newline_checked,
+            "history_checked": app.history_checked, "scratch_checked": app.scratch_checked,
             "inputs": inputs}))
 
 

@@ -54,7 +54,8 @@ exit, pending verification against the installed runtime's actual contract.
 - [x] Automated PTY check for inline rendering/default background, including a
       scripted transcript and approval dialog (no runtime contact).
 
-**Current limits:** unsent drafts and cancellation intent remain in memory.
+**Current limits:** cancellation intent remains in memory. One unsent draft is
+saved separately with a short debounce; abrupt exit can lose the latest edits.
 Pending request identity is saved privately before POST and restored without
 automatic replay. `/retry` deliberately resends the original task, not the
 current editor contents. Exactly-once behavior depends on Wisp's idempotency
@@ -182,7 +183,18 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       on explicit Enter. Cover CRLF/CR, Unicode, tabs/blank lines, undo, pending
       retry identity, modals, resize and default-background selections/brackets.
       **Limit:** unbracketed carriage returns cannot be distinguished from Enter.
-- [ ] Minimal input history/draft recovery; no elaborate editor framework.
+- [x] Minimal input history/draft recovery: Ctrl+P/Ctrl+N recall acknowledged
+      prompts without changing Up/Down editing, retain the current draft and
+      browsing edits, and keep recall undoable. Save 50 prompts/256 KiB and one
+      128 KiB unsent draft in private, bounded, runtime-isolated state with a
+      writer lease. Restore only into the matching fresh/resumed session;
+      retain newer drafts across pending-request recovery and suppress a draft
+      tagged with an acknowledged request. No automatic send. Offline storage,
+      restart, draft/ack, modal and actual PTY-key checks. Preserve an unrelated
+      saved draft across another client's pending request, inspection, retry
+      and shutdown; only explicit new text replaces it. Two-client regression
+      coverage includes fresh and other-session drafts. Latest edits before
+      the 350 ms debounce may be lost on abrupt exit; normal exit flushes them.
 - [ ] Show useful tool arguments/results where the runtime actually supplies
       them. Keep long output collapsible/bounded and approval details legible.
 - [ ] Stop auto-follow when the user scrolls up; offer an obvious way to resume.
@@ -215,7 +227,7 @@ not a release criterion.
 ## Maintenance alongside the MVP
 
 - Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **364 passing tests**, strict mypy passing.
+  Current baseline: **402 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
 - [x] Local Git repository (`main` baseline, work on branches). No remote yet.
 - [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held
