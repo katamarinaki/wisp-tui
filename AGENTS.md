@@ -10,6 +10,18 @@ as work lands. The only target workflow is Mac → SSH → homeserver → Wisp:
 reliable task submission, progress, explicit approvals, cancellation, and
 reattachment. Do not expand this into a general-purpose Pi replacement.
 
+## Git workflow
+
+- Repo: `github.com/katamarinaki/wisp-tui` (**public**). Commit and push to
+  `develop`; no PRs for routine work. The owner merges `develop` → `main`.
+  Never push to or merge into `main` yourself.
+- CI (`.github/workflows/ci.yml`) runs pytest + strict mypy on pushes to
+  `main`/`develop` and on PRs, on GitHub-hosted runners only. Never use the
+  homeserver's self-hosted runner here: fork PRs would execute code on it.
+- Because the repo is public, keep infrastructure identifiers out of code,
+  tests and docs: no real IPs/hostnames/usernames or private ops notes. Use
+  documentation addresses (e.g. `192.0.2.10`, `100.64.0.1`) in tests.
+
 ## Rules
 
 - **Never** put credentials, tokens or the config contents in code, tests,

@@ -162,7 +162,8 @@ not a release criterion.
 - [x] Local Git repository (`main` baseline, work on branches). No remote yet.
 - [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held
       to 8.2.x, drift test, documented upgrade checklist (README).
-- [ ] Remote + CI running pytest/mypy (owner decision: where to host).
+- [x] Public remote `katamarinaki/wisp-tui`; CI runs pytest + strict mypy on
+      GitHub-hosted runners (`main`, `develop`, PRs). Work lands on `develop`.
 
 ## Explicitly out of scope
 
