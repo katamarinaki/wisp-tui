@@ -80,6 +80,7 @@ def test_inline_terminal_keeps_default_background(width: int) -> None:
         "answer did not use the terminal's default foreground"
     assert all(b"49" in codes.split(b";") for codes in response_styles), \
         "answer did not use the terminal's default background"
+    assert b"Working" in capture
     assert b"thinking: on" in capture
     assert b"context: unavailable" in capture
     assert b"input: 3" in capture

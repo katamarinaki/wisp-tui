@@ -28,8 +28,35 @@ current status; it must not be replaced by a fresh key on an ambiguous failure.
 The documented default key TTL is 24 hours, configurable at the runtime. The TUI
 refuses replay at 23 hours, but cannot guarantee this margin against a runtime
 configured with a shorter TTL. It does not inspect administrative configuration.
-Pending submissions currently survive only for the lifetime of the TUI process.
 A 409 can mean that work may already have acted; never silently start over.
+
+### Durable client request identity
+
+Before any POST, the TUI writes the original session, unmodified draft, max-turns
+option, key and wall-clock creation time into a bounded, owner-only journal
+under the private state directory. It stores an endpoint fingerprint, never a
+credential or config contents. `confirmationMode: interactive` and `wait: false`
+are fixed by the versioned format. File fsync, atomic replacement and directory
+fsync must succeed before network submission. A persisted wall-clock age and
+process-local monotonic age both bound retries; a future creation time is
+refused rather than refreshing the TTL after clock reversal/restart.
+
+A lease protects the slot across Wi processes. The UI restores an orphaned
+request before normal startup/session selection, without posting or changing
+its identity. Only explicit `/retry` can resend it. Reservation checks repeat
+under the lease immediately before POST, so an already-open client cannot
+replace another process's ambiguous request. A different configured endpoint,
+unsafe or corrupt storage, I/O failure, or an occupied slot blocks new work.
+
+A valid run acknowledgement is saved with the original identity before the UI
+releases its reservation. The acknowledged record stays until the next request,
+avoiding an unlink/directory-sync window. If a retry sees this known ID, it
+attaches without another POST. A late acknowledgement cannot replace a newer
+reservation. These are offline client guarantees, not proof of Wisp's actual
+idempotency-key retention or replay behavior. Old/clock-ambiguous requests stay
+blocked for manual reconciliation; unsent drafts and cancel intent are not
+recovered. Older checkpoint history is not automatically loaded for a restored
+unacknowledged request; history/replay presentation remains a separate item.
 
 ## Discovery and records
 
@@ -112,5 +139,9 @@ No routes, telemetry event kinds, or inference requests were added for the foote
 failure, bounded retry, and stop behavior. `tests/test_recovery.py` exercises
 reattachment, open-dialog external resolution, multiple prompts, failed approval
 POSTs, cancellation, stale callbacks, long gaps, and old request replay refusal.
-All runtime responses are synthetic. Actual Mac SSH/inference/approval behavior
+`tests/test_submissions.py` additionally covers durable-before-POST ordering,
+restart identity/options, no automatic replay, lease contention (including a
+separate process), failed file/directory syncs, stale acknowledgements, clock
+and TTL refusal, endpoint binding, bounded/unsafe/malformed files, and fail-closed
+UI behavior. All runtime responses are synthetic. Actual Mac SSH/inference/approval behavior
 is still an owner-approved acceptance step in [Road to MVP](ROAD_TO_MVP.md).

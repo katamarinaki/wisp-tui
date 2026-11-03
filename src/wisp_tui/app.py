@@ -12,13 +12,14 @@ import re
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 from textual.app import App, ComposeResult
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.timer import Timer
 from textual.widget import AwaitMount, Widget
 from textual.widgets import Input, ListItem, ListView, Markdown, Static
 
@@ -27,12 +28,14 @@ from .config import Config
 from .history import ChatMessage, parse_history
 from .runs import RunFollower, find_active_run
 from .sessions import SessionStore
+from .submissions import MAX_DRAFT_BYTES, PendingSubmission, SubmissionError, SubmissionStore
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # A session ID or a prefix of one (as shown in pickers), for --resume / /resume.
 RESUME_QUERY_RE = re.compile(r"[0-9a-f][0-9a-f-]{3,35}")
 
 HINTS = "F1 help · F2 sessions · F3 model · Ctrl+C cancel/exit"
+SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 HELP_TEXT = """**wisp-tui** — chat with the local Wisp runtime.
 
@@ -54,8 +57,9 @@ session. `/new` starts another one. Sessions you use here are saved locally
 sessions, including Telegram/desktop ones.
 
 `/retry` retries an unacknowledged submission with its original input and request
-ID. It never sends your newer draft. Drafts and pending submissions are held in
-memory only; quitting does not save them.
+ID. It never sends your newer draft. Pending requests are saved privately before
+submission and recovered after exit, without automatic resubmission. Unsent
+drafts are still memory-only. A state error blocks new work until resolved.
 
 A finished run is one answered prompt, not the end of the conversation: just
 send your next message. The footer keeps the session, model/mode, thinking
@@ -88,24 +92,6 @@ def _pretty_args(args: Any) -> str:
     except (TypeError, ValueError):
         rendered = repr(args)
     return _safe_text(rendered)
-
-
-@dataclass(frozen=True)
-class PendingSubmission:
-    session_id: str
-    draft: str
-    max_turns: int
-    key: str
-    created_at: float = field(default_factory=time.monotonic)
-
-    def body(self) -> dict[str, Any]:
-        return {
-            "input": self.draft.strip(),
-            "confirmationMode": "interactive",
-            "wait": False,
-            "maxTurns": self.max_turns,
-            "idempotencyKey": self.key,
-        }
 
 
 FRESH_STATUS = "ready · new session — your first message starts it (/resume, F2)"
@@ -364,7 +350,8 @@ class WispTuiApp(App[None]):
         padding: 0;
     }
     #input:focus { background-tint: transparent; }
-    #status, #session-info, #thinking-info, #usage-info, #location {
+    #activity { display: none; }
+    #activity, #status, #session-info, #thinking-info, #usage-info, #location {
         height: 1;
         background: transparent;
         color: ansi_default;
@@ -402,7 +389,8 @@ class WispTuiApp(App[None]):
 
     def __init__(self, client: WispClient, config: Config,
                  startup: Startup | None = None,
-                 sessions: SessionStore | None = None) -> None:
+                 sessions: SessionStore | None = None,
+                 submissions: SubmissionStore | None = None) -> None:
         # ansi_color=True disables the ANSI→truecolor filter, so
         # `background: ansi_default` reaches the terminal as SGR 49
         # ("terminal default background") instead of being rewritten to a
@@ -413,6 +401,8 @@ class WispTuiApp(App[None]):
         self.config = config
         self.startup = startup or Startup()
         self.sessions = sessions or SessionStore()
+        self.submissions = submissions or SubmissionStore(client.url)
+        self._pending_state_error = False
         # Title for the session that the next first message will create.
         self._fresh_title = ""
         self._record_error_shown = False
@@ -445,6 +435,9 @@ class WispTuiApp(App[None]):
         self._trimmed_count = 0
         self._trim_marker: Static | None = None
         self._status_state = "connecting…"
+        self._activity_frame = 0
+        self._activity_indicator = Static("", id="activity", markup=False)
+        self._activity_timer: Timer | None = None
         self._cancel_requested = False
         self._last_ctrl_c = -10.0
 
@@ -453,6 +446,7 @@ class WispTuiApp(App[None]):
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="chat")
         with Container(id="bottom"):
+            yield self._activity_indicator
             yield Input(placeholder="Message Wisp — /help for commands", id="input")
             yield Static("", id="status", markup=False)
             yield Static("", id="session-info", markup=False)
@@ -461,8 +455,10 @@ class WispTuiApp(App[None]):
             yield Static("", id="location", markup=False)
 
     def on_mount(self) -> None:
+        self._activity_timer = self.set_interval(0.1, self._tick_activity, pause=True)
         self._render_status()
         self._render_metadata()
+        self._restore_pending()
         self.query_one("#input", Input).focus()
         self._run_threaded(self._bootstrap_worker)
 
@@ -498,7 +494,7 @@ class WispTuiApp(App[None]):
 
     def _bootstrap_complete(self) -> None:
         # A slow health check must not replace a session the user just opened.
-        if self.session_id is not None or self._session_busy:
+        if self.session_id is not None or self._session_busy or self._pending_state_error:
             return
         self._status(FRESH_STATUS)
         mode = self.startup.mode
@@ -522,6 +518,37 @@ class WispTuiApp(App[None]):
     def _render_status(self) -> None:
         line = f"{self._status_state} · {HINTS}" if self._status_state else HINTS
         self.query_one("#status", Static).update(_safe_text(line, 250))
+        self._render_activity()
+
+    def _render_activity(self) -> None:
+        indicator = self._activity_indicator
+        # A queued tick may arrive after the screen's children are unmounted.
+        if not indicator.is_attached:
+            if self._activity_timer is not None:
+                self._activity_timer.pause()
+            return
+        busy = self._submitting or self.active_run is not None
+        indicator.display = busy
+        if not busy:
+            indicator.update("")
+            self._activity_frame = 0
+            if self._activity_timer is not None:
+                self._activity_timer.pause()
+            return
+        label = "Working"
+        if self._disconnected:
+            label = "Reconnecting"
+        elif self._cancel_requested:
+            label = "Cancelling"
+        elif self._approval_modal is not None or self._status_state.startswith("run parked"):
+            label = "Waiting for approval"
+        indicator.update(f"{SPINNER_FRAMES[self._activity_frame]} {label}")
+        if self._activity_timer is not None:
+            self._activity_timer.resume()
+
+    def _tick_activity(self) -> None:
+        self._activity_frame = (self._activity_frame + 1) % len(SPINNER_FRAMES)
+        self._render_activity()
 
     def _metadata_lines(self) -> list[str]:
         session = self.session_id[:8] if self.session_id else "new"
@@ -645,7 +672,38 @@ class WispTuiApp(App[None]):
             return
         self._start_submission(event.value)
 
+    def _restore_pending(self) -> None:
+        was_error = self._pending_state_error
+        try:
+            pending = self.submissions.load()
+        except SubmissionError as error:
+            self._pending_state_error = True
+            self._status(f"{error} · /retry to recheck")
+            self._sysline("Pending-request state is unavailable or in use. New submissions "
+                          "are blocked; /retry rechecks without starting fresh work.", "error")
+            return
+        self._pending_state_error = False
+        if pending is None:
+            if was_error:
+                self._status(FRESH_STATUS if self.session_id is None else "session ready")
+            return
+        self._pending_submission = pending
+        self.session_id = pending.session_id
+        self.session_title = "Recovered submission"
+        self.title = "Wisp — recovered submission"
+        editor = self.query_one("#input", Input)
+        if not editor.value:
+            editor.value = pending.draft
+        self._render_metadata()
+        self._status("unacknowledged submission restored · /retry")
+        self._sysline("Recovered an unacknowledged request. Nothing was resubmitted. "
+                      "/retry explicitly reuses the original input, options and request ID. "
+                      "Session/model changes stay blocked until it is acknowledged.")
+
     def _start_submission(self, draft: str) -> None:
+        if self._pending_state_error:
+            self._sysline("Pending-request state must be recovered first (/retry). Your draft is kept.")
+            return
         if self.session_id is None:
             return
         if self._pending_submission is not None:
@@ -654,12 +712,19 @@ class WispTuiApp(App[None]):
         if self.active_run is not None:
             self._sysline("A run is already active — /cancel (Ctrl+C) it first. Your draft is kept.")
             return
+        if len(draft.encode("utf-8")) > MAX_DRAFT_BYTES:
+            self._sysline("Prompt exceeds the safe recovery limit (128 KiB). Split it; your draft is kept.")
+            return
         self._pending_submission = PendingSubmission(
             self.session_id, draft, self.config.max_turns,
             "wisp-tui:" + str(uuid.uuid4()))
         self._submit_pending()
 
     def _submit_pending(self) -> None:
+        if self._pending_state_error:
+            self._restore_pending()
+            if self._pending_state_error:
+                return
         pending = self._pending_submission
         if pending is None:
             self._sysline("No pending submission to retry.")
@@ -667,22 +732,27 @@ class WispTuiApp(App[None]):
         if self._submitting:
             self._sysline("Submission already in progress — please wait.")
             return
-        if time.monotonic() - pending.created_at >= 23 * 3600:
-            self._status("pending_submission_expired")
-            self._sysline("This request is too old to retry safely. Inspect the session "
-                          "in another client before starting more work.", "error")
+        retry_error = pending.retry_error()
+        if retry_error:
+            self._status(retry_error)
+            self._sysline("This request's age cannot be retried safely. Inspect the session "
+                          "in another client; new work remains blocked.", "error")
             return
         self._submitting = True
         self._status("submitting…")
 
         def work() -> None:
             try:
-                result = self.client.request(
-                    "POST", f"/v1/sessions/{pending.session_id}/runs", pending.body())
-                run_id = result.get("runId") if isinstance(result, dict) else None
+                run_id = self.submissions.prepare(pending)
+                if run_id is None:
+                    # Never contact Wisp until the original request is durable.
+                    result = self.client.request(
+                        "POST", f"/v1/sessions/{pending.session_id}/runs", pending.body())
+                    run_id = result.get("runId") if isinstance(result, dict) else None
                 if not isinstance(run_id, str) or not UUID_RE.fullmatch(run_id):
                     raise ClientError("invalid_run_reference")
-            except ClientError as error:
+                self.submissions.acknowledge(pending, run_id)
+            except (ClientError, SubmissionError) as error:
                 self.call_from_thread(self._submission_failed, str(error))
                 return
             except Exception:
@@ -697,7 +767,8 @@ class WispTuiApp(App[None]):
         self._status(f"submission error: {code} · /retry")
         self._sysline("Submission not acknowledged; it may exist server-side. "
                       "Use /retry to resend the original request with the same ID. "
-                      "Quitting loses this pending request.", "error")
+                      "Wi will recover a durably saved request after exit. "
+                      "A pending_state error must be resolved before any new work.", "error")
         editor = self.query_one("#input", Input)
         if not editor.value and self._pending_submission is not None:
             editor.value = self._pending_submission.draft
@@ -965,6 +1036,7 @@ class WispTuiApp(App[None]):
         self._delta_text = ""
         self._stream_view = None
         self.pending_prompts.clear()
+        self._render_activity()
 
     @staticmethod
     def _usage_line(usage: Any) -> str:
@@ -980,6 +1052,9 @@ class WispTuiApp(App[None]):
     # -- sessions ----------------------------------------------------------------
 
     def _reserve_session_change(self) -> bool:
+        if self._pending_state_error:
+            self._sysline("Pending-request state must be recovered first (/retry).")
+            return False
         if self._session_busy:
             self._sysline("Session change already in progress — please wait.")
             return False
@@ -1333,7 +1408,7 @@ class WispTuiApp(App[None]):
             f"session: {self.session_id or 'none'}"
             + (f" ({self.session_title})" if self.session_id else ""),
             f"active run: {self.active_run or 'none'}",
-            f"submission: {'sending' if self._submitting else 'unacknowledged' if self._pending_submission else 'none'}",
+            f"submission: {'state_error' if self._pending_state_error else 'sending' if self._submitting else 'unacknowledged' if self._pending_submission else 'none'}",
             f"max turns: {self.config.max_turns}",
             *self._metadata_lines(),
             "Wisp working directory: unavailable (not the client launch directory)",
@@ -1343,6 +1418,9 @@ class WispTuiApp(App[None]):
             self._sysline(line, "tool")
 
     def on_unmount(self) -> None:
+        if self._activity_timer is not None:
+            self._activity_timer.stop()
+        self.submissions.close()
         # Stop local following only; quitting never cancels server-side work.
         if self._follower is not None:
             self._follower.stop()
