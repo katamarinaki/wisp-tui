@@ -91,6 +91,21 @@ POST fails, keep the run and allow an explicit retry. During submission, remembe
 the cancel intent and send it after the run ID is acknowledged; do not claim the
 run cannot act before acknowledgement. Previously completed actions are not undone.
 
+## Session metadata display boundaries
+
+The footer uses the session response's `effectiveSelection` for the reported
+model/mode and boolean thinking setting, and terminal outcome `usage` fields
+`inputTokens`, `outputTokens`, `totalTokens` for the last finished run observed
+in this process. Only nonnegative integer counts are displayed. Opening a
+different session clears the observed usage; no lifetime totals are inferred.
+
+An automatic mode is not evidence of the concrete model serving a run, and a
+thinking setting is not a live reasoning stream. This client has no verified
+contract for live token counters, current context occupancy/limit, or the
+runtime's working directory: those are not inferred from token sums, model IDs,
+or the client's launch directory. Unknown values remain explicitly unavailable.
+No routes, telemetry event kinds, or inference requests were added for the footer.
+
 ## Tests and remaining validation
 
 `tests/test_runs.py` checks parsing, replay, polling, terminal records, restart

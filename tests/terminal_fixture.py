@@ -21,7 +21,11 @@ class TerminalFixture(WispTuiApp):
         self.set_timer(0.6, self.exit)
 
     def show_transcript(self) -> None:
-        self.session_id = SID
+        self._session_loaded({"id": SID, "effectiveSelection": {
+            "mode": "model", "model": "scripted-model", "thinking": True}},
+            [], "", announce_empty=False)
+        self._finalize_run("run.completed", {
+            "usage": {"inputTokens": 3, "outputTokens": 4}})
         self._add_message(ChatMessage("user", "Show the server status"))
         self._add_message(ChatMessage("assistant", (
             "# Status\n\n**Scripted response**\n\nNo runtime contacted.\n\n"

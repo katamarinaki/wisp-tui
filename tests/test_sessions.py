@@ -132,7 +132,7 @@ async def test_launch_is_fresh_and_first_message_creates_the_session(
         editor = app.query_one("#input", Input)
         editor.value = "How full is the disk?\nsecond line"
         await pilot.press("enter")
-        await eventually(lambda: "run completed" in app._status_state)
+        await eventually(lambda: app._status_state == "")
         creates = [body for method, path, body in client.calls
                    if (method, path) == ("POST", "/v1/sessions")]
         assert creates == [{"origin": "cli", "title": "How full is the disk?"}]
@@ -164,7 +164,7 @@ async def test_failed_session_creation_keeps_draft_and_releases(
         assert app.session_id is None and not app._session_busy
         assert not any("/runs" in path for _, path, _ in client.calls)
         await pilot.press("enter")  # retry by sending again
-        await eventually(lambda: "run completed" in app._status_state)
+        await eventually(lambda: app._status_state == "")
         assert editor.value == ""
 
 
@@ -186,7 +186,7 @@ async def test_new_command_starts_fresh_without_server_calls(
         assert "past answer" not in chat_text(app)
         editor.value = "check the backups"
         await pilot.press("enter")
-        await eventually(lambda: "run completed" in app._status_state)
+        await eventually(lambda: app._status_state == "")
         creates = [body for method, path, body in client.calls
                    if (method, path) == ("POST", "/v1/sessions")]
         assert creates == [{"origin": "cli", "title": "Backups review"}]
@@ -375,7 +375,7 @@ async def test_approval_decision_is_recorded_with_what_was_approved(
         await pilot.press("enter")
         await eventually(lambda: len(app.screen_stack) > 1)
         await pilot.press("y")
-        await eventually(lambda: "run completed" in app._status_state)
+        await eventually(lambda: app._status_state == "")
         lines = entries(app.sessions, SID)
     approvals = [e for e in lines if e["type"] == "approval"]
     assert len(approvals) == 1
@@ -395,7 +395,7 @@ async def test_record_failure_is_reported_once(
         await eventually(lambda: "new session" in app._status_state)
         app.query_one("#input", Input).value = "hello"
         await pilot.press("enter")
-        await eventually(lambda: "run completed" in app._status_state)
+        await eventually(lambda: app._status_state == "")
         assert chat_text(app).count("Local session record unavailable") == 1
         assert "Disk is fine." in chat_text(app)
 

@@ -61,7 +61,7 @@ async def test_inflight_submission_blocks_duplicates_and_session_changes(
                 ("GET", "/v1/health"), ("POST", RUN_PATH)]
         finally:
             gate.release.set()
-        await eventually(lambda: "run completed" in app._status_state)
+        await eventually(lambda: app._status_state == "")
         assert editor.value == "newer draft"
         assert chat_text(app).count("original task") == 1
         assert not app._submitting
@@ -93,7 +93,7 @@ async def test_retry_keeps_original_request_and_newer_draft(
         app._new_session("blocked while uncertain")
         assert len([c for c in client.calls if c[0] == "POST"]) == 1
         app._handle_command("/retry")
-        await eventually(lambda: "run completed" in app._status_state)
+        await eventually(lambda: app._status_state == "")
         posts = [body for method, path, body in client.calls if path == RUN_PATH]
         assert len(posts) == 2
         assert posts[0] == posts[1]
@@ -111,7 +111,7 @@ async def test_success_clears_only_acknowledged_draft(monkeypatch: pytest.Monkey
         editor = app.query_one("#input", Input)
         editor.value = "  original task  "
         await pilot.press("enter")
-        await eventually(lambda: "run completed" in app._status_state)
+        await eventually(lambda: app._status_state == "")
         assert editor.value == ""
         assert "original task" in chat_text(app)
 

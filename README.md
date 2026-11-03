@@ -97,8 +97,8 @@ owner must merge this feature from `develop` to `main` for main installations.
 - All Wisp sessions (F2 / `/sessions`) across origins (cli/telegram/desktop),
   resume with history.
 - Pi-style chrome: no header/footer bars — just the chat, a text input
-  with tight, thin top/bottom rules, and a transparent contextual line under it
-  (state + `F1 help · F2 sessions · F3 model · Ctrl+C cancel`). Chat and input
+  with tight, thin top/bottom rules, and transparent status/session details
+  under it (state + `F1 help · F2 sessions · F3 model · Ctrl+C cancel`). Chat and input
   share a one-column gutter; answers use your terminal's default text color
   rather than a fixed dark/light theme foreground. Your prompts appear as
   full-width blocks in a muted dark teal (`#005f5f`) with light-grey text,
@@ -107,6 +107,22 @@ owner must merge this feature from `develop` to `main` for main installations.
   (opening a session mounts just that tail); a dim marker at the top counts
   what is hidden. Wisp keeps the full history — older turns are still in the
   session context, just not rendered here.
+- **A completed run is one answered prompt, not the end of the conversation.**
+  The answer simply ends, with no completion announcement; sending a follow-up
+  keeps the same session and runtime history. After quitting, `wi -c` continues the latest
+  saved session; plain `wi` starts fresh.
+- **Persistent session footer:** session ID, reported model or automatic mode,
+  thinking setting, last finished run's reported input/output/total tokens,
+  and the client's launch directory. Status updates do not replace these
+  details. Automatic modes are labeled as runtime-selected, not as a known
+  model; missing fields say “unavailable”. Thinking is the configured setting,
+  not a live reasoning stream. Tokens update at run completion, not per delta;
+  they are neither cumulative session totals nor context occupancy. Context
+  usage remains “unavailable” until a verified runtime contract supplies it.
+  Usage is observed in this process: opening a different session or restarting
+  does not restore previous token counts. The launch directory is **client
+  only**, not a claim about where Wisp's tools execute. Metadata wraps within
+  bounded footer rows on narrow terminals; `/status` prints the full details.
 - New sessions (`/new [title]`), model/mode picker (F3) per session (F3 on a
   fresh session creates it first).
 - Runs submitted with `confirmationMode: "interactive"`, `wait: false`, then

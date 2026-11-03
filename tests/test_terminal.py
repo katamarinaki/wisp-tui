@@ -80,6 +80,10 @@ def test_inline_terminal_keeps_default_background(width: int) -> None:
         "answer did not use the terminal's default foreground"
     assert all(b"49" in codes.split(b";") for codes in response_styles), \
         "answer did not use the terminal's default background"
+    assert b"thinking: on" in capture
+    assert b"context: unavailable" in capture
+    assert b"input: 3" in capture
+    assert b"launch dir (client only):" in capture
     assert b"Wisp asks for approval" in capture
     assert b"\x1b[?1049h" not in capture, "alternate screen was enabled"
     sgr = re.findall(rb"\x1b\[([0-9;:]*)m", capture)

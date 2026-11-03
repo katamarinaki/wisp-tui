@@ -57,6 +57,12 @@ sessions, including Telegram/desktop ones.
 ID. It never sends your newer draft. Drafts and pending submissions are held in
 memory only; quitting does not save them.
 
+A finished run is one answered prompt, not the end of the conversation: just
+send your next message. The footer keeps the session, model/mode, thinking
+setting and last finished run's reported tokens visible. Tokens update when a
+run finishes, not live; context occupancy is unavailable. The launch directory
+belongs to this client, not Wisp's tools. `/status` shows the full details.
+
 While a run is active you will see tool calls as they happen. When Wisp needs
 approval for a tool, a dialog appears: **y** approve, **n** deny, **p** allow
 for this project, **g** allow globally, **Esc** deny. Normal questions consume
@@ -68,6 +74,12 @@ def _safe_text(value: Any, limit: int = 4000) -> str:
     if not isinstance(value, str):
         return ""
     return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+def _metadata_text(value: Any, limit: int = 100) -> str:
+    """Bound metadata and keep control characters from creating fake UI lines."""
+    text = _safe_text(value, limit)
+    return "".join(char if char.isprintable() else "�" for char in text)
 
 
 def _pretty_args(args: Any) -> str:
@@ -352,13 +364,14 @@ class WispTuiApp(App[None]):
         padding: 0;
     }
     #input:focus { background-tint: transparent; }
-    #status {
+    #status, #session-info, #thinking-info, #usage-info, #location {
         height: 1;
         background: transparent;
         color: ansi_default;
         text-style: dim;
         padding: 0;
     }
+    #session-info, #thinking-info, #usage-info { height: auto; max-height: 2; }
     #approval-dialog {
         align: center middle; width: 80%; max-height: 80%;
         border: round $accent; padding: 1 2;
@@ -405,6 +418,12 @@ class WispTuiApp(App[None]):
         self._record_error_shown = False
         self.session_id: str | None = None
         self.session_title: str = ""
+        self._selection: dict[str, Any] = {}
+        self._last_usage = ""
+        try:
+            self._launch_dir = self._display_path(Path.cwd())
+        except OSError:
+            self._launch_dir = "unavailable"
         self.active_run: str | None = None
         # Reserved synchronously on the UI thread, before starting any I/O.
         self._submitting = False
@@ -436,9 +455,14 @@ class WispTuiApp(App[None]):
         with Container(id="bottom"):
             yield Input(placeholder="Message Wisp — /help for commands", id="input")
             yield Static("", id="status", markup=False)
+            yield Static("", id="session-info", markup=False)
+            yield Static("", id="thinking-info", markup=False)
+            yield Static("", id="usage-info", markup=False)
+            yield Static("", id="location", markup=False)
 
     def on_mount(self) -> None:
         self._render_status()
+        self._render_metadata()
         self.query_one("#input", Input).focus()
         self._run_threaded(self._bootstrap_worker)
 
@@ -498,6 +522,29 @@ class WispTuiApp(App[None]):
     def _render_status(self) -> None:
         line = f"{self._status_state} · {HINTS}" if self._status_state else HINTS
         self.query_one("#status", Static).update(_safe_text(line, 250))
+
+    def _metadata_lines(self) -> list[str]:
+        session = self.session_id[:8] if self.session_id else "new"
+        thinking = self._selection.get("thinking")
+        thinking_label = ("on" if thinking else "off") if isinstance(thinking, bool) else "unavailable"
+        return [
+            f"session {session} · {self._model_label({'effectiveSelection': self._selection})}",
+            f"thinking: {thinking_label} · context: unavailable",
+            f"last run tokens: {self._last_usage or 'unavailable'}",
+            f"launch dir (client only): {_metadata_text(self._launch_dir, 1000)}",
+        ]
+
+    def _render_metadata(self) -> None:
+        for widget_id, line in zip(("session-info", "thinking-info", "usage-info", "location"),
+                                   self._metadata_lines()):
+            self.query_one(f"#{widget_id}", Static).update(line)
+
+    def _selection_updated(self, session: dict[str, Any], session_id: str) -> None:
+        if self.session_id != session_id:
+            return
+        selection = session.get("effectiveSelection")
+        self._selection = dict(selection) if isinstance(selection, dict) else {}
+        self._render_metadata()
 
     def _scroll_down(self) -> None:
         self.query_one("#chat", VerticalScroll).scroll_end(animate=False)
@@ -874,6 +921,8 @@ class WispTuiApp(App[None]):
 
     def _finalize_run(self, kind: str, outcome: Any) -> None:
         data = outcome if isinstance(outcome, dict) else {}
+        self._last_usage = self._usage_line(data.get("usage"))
+        self._render_metadata()
         if kind == "run.completed":
             text = ""
             output = data.get("output")
@@ -885,8 +934,8 @@ class WispTuiApp(App[None]):
             if answer:
                 self._record({"type": "message", "role": "assistant", "text": answer,
                               "runId": self.active_run})
-            usage = self._usage_line(data.get("usage"))
-            self._status("run completed" + (f" · {usage}" if usage else ""))
+            # End on Wisp's answer, without a completion announcement.
+            self._status("")
         elif kind == "run.failed":
             failure = data.get("failure")
             if not isinstance(failure, dict):
@@ -924,7 +973,7 @@ class WispTuiApp(App[None]):
         parts = []
         for key in ("inputTokens", "outputTokens", "totalTokens"):
             value = usage.get(key)
-            if isinstance(value, (int, float)):
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                 parts.append(f"{key.replace('Tokens', '')}: {value}")
         return ", ".join(parts)
 
@@ -999,7 +1048,11 @@ class WispTuiApp(App[None]):
 
     def _session_loaded(self, session: dict[str, Any], messages: list[ChatMessage],
                         active_run_id: str, announce_empty: bool = True) -> None:
-        self.session_id = str(session.get("id", ""))
+        session_id = str(session.get("id", ""))
+        if self.session_id != session_id:
+            self._last_usage = ""
+        self.session_id = session_id
+        self._selection_updated(session, session_id)
         self.session_title = _safe_text(session.get("title"), 80) or "(untitled)"
         self.title = f"Wisp — {self.session_title}"
         # Only mount the tail of long histories (see MAX_CHAT_ITEMS).
@@ -1016,15 +1069,15 @@ class WispTuiApp(App[None]):
             self._start_follow()
 
     @staticmethod
-    def _model_label(session: dict[str, Any]) -> Any:
+    def _model_label(session: dict[str, Any]) -> str:
         selection = session.get("effectiveSelection")
         if isinstance(selection, dict):
             if selection.get("mode") == "model":
-                return selection.get("model", "?")
-            mode = selection.get("mode", "?")
-            thinking = "· thinking" if selection.get("thinking") else ""
-            return f"{mode}{thinking}"
-        return "runtime default"
+                return f"model: {_metadata_text(selection.get('model')) or 'unavailable'}"
+            mode = _metadata_text(selection.get("mode"))
+            if mode:
+                return f"mode: {mode} (runtime-selected model)"
+        return "model: unavailable (runtime default)"
 
     def _new_session(self, title: str, on_ready: Callable[[], None] | None = None,
                      announce: bool = True) -> None:
@@ -1074,6 +1127,9 @@ class WispTuiApp(App[None]):
         self._release_session_change()
         self.session_id = None
         self.session_title = ""
+        self._selection = {}
+        self._last_usage = ""
+        self._render_metadata()
         self.title = "wisp-tui"
         self._fresh_title = title
         self._reset_chat()
@@ -1173,6 +1229,7 @@ class WispTuiApp(App[None]):
             session = self.client.request(
                 "PATCH", f"/v1/sessions/{session_id}", {"selection": selection})
             if isinstance(session, dict):
+                self.call_from_thread(self._selection_updated, session, session_id)
                 self.call_from_thread(self._status,
                                       f"session {session_id[:8]} · {self._model_label(session)}")
             else:
@@ -1278,6 +1335,9 @@ class WispTuiApp(App[None]):
             f"active run: {self.active_run or 'none'}",
             f"submission: {'sending' if self._submitting else 'unacknowledged' if self._pending_submission else 'none'}",
             f"max turns: {self.config.max_turns}",
+            *self._metadata_lines(),
+            "Wisp working directory: unavailable (not the client launch directory)",
+            "Token usage is reported at run completion, not live; context occupancy is unavailable.",
         ]
         for line in lines:
             self._sysline(line, "tool")

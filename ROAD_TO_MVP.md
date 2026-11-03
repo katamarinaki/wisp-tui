@@ -132,6 +132,14 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       command after terminal restoration; use the final active session and
       launcher alias, with no hint for an unused fresh session. CLI and PTY
       tests cover the hint without runtime contact or private config access.
+- [x] Finish successful runs silently on the answer, without a completion
+      announcement; keep session/model or automatic mode, thinking setting,
+      last finished run's reported tokens and client launch directory visible independently
+      of run status. Label unavailable context usage and unreported values
+      honestly; do not infer context fullness, live reasoning or the runtime's
+      working directory. Bounded, transparent footer and `/status` details;
+      offline tests cover same-session follow-ups, selection acknowledgements,
+      session resets, malformed usage, literal metadata, resize and PTY output.
 - [ ] Multiline prompt editor with predictable send/newline keys over Mac SSH.
 - [ ] Pasting multiple lines does not accidentally submit partial commands.
 - [ ] Minimal input history/draft recovery; no elaborate editor framework.
@@ -167,7 +175,7 @@ not a release criterion.
 ## Maintenance alongside the MVP
 
 - Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **214 passing tests**, strict mypy passing.
+  Current baseline: **232 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
 - [x] Local Git repository (`main` baseline, work on branches). No remote yet.
 - [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held

@@ -49,7 +49,7 @@ async def test_reopen_reattaches_then_reconciles_current_terminal_state(
             assert not any(method == "POST" for method, _, _ in client.calls)
         finally:
             gate.release.set()
-        await eventually(lambda: "run completed" in app._status_state)
+        await eventually(lambda: app._status_state == "")
         assert not bool(app.active_run)
         assert "finished while disconnected" in chat_text(app)
         assert not client.event_requests
@@ -76,7 +76,7 @@ async def test_disconnection_keeps_run_cursor_and_blocks_new_submission(
         client.replies[("GET", RUN_PATH)] = deque([
             record("completed", output={"text": "final answer"})])
         app._handle_command("/reconnect")
-        await eventually(lambda: "run completed" in app._status_state)
+        await eventually(lambda: app._status_state == "")
         assert "final answer" in chat_text(app)
         assert editor.value == "do not send twice"
         assert not bool(app.active_run)
@@ -95,7 +95,7 @@ async def test_external_approval_closes_open_dialog_without_posting(
         client.answered_prompts.add("prompt-1")
         client.run_status = "running"
         app._start_follow()  # wakes the existing follower, does not create another
-        await eventually(lambda: "run completed" in app._status_state)
+        await eventually(lambda: app._status_state == "")
         await eventually(lambda: len(app.screen_stack) == 1)
         assert not any("/confirmations/" in path for _, path, _ in client.calls)
         assert "done" in chat_text(app)
@@ -129,7 +129,7 @@ async def test_multiple_prompts_do_not_start_competing_followers(
             assert not client.event_requests  # parked polling, not parallel SSE
         finally:
             gate.release.set()
-        await eventually(lambda: "run completed" in app._status_state)
+        await eventually(lambda: app._status_state == "")
         confirms = [body for _, path, body in client.calls if "/confirmations/" in path]
         assert confirms == [{"decision": "approve", "wait": False},
                             {"decision": "deny", "wait": False}]
@@ -152,7 +152,7 @@ async def test_failed_approval_is_reconciled_not_automatically_reposted(
         await eventually(lambda: app._approval_prompt_id == "prompt-1")
         assert len([c for c in client.calls if c[0] == "POST"]) == 1
         await pilot.press("escape")
-        await eventually(lambda: "run completed" in app._status_state)
+        await eventually(lambda: app._status_state == "")
         posts = [body for method, _, body in client.calls if method == "POST"]
         assert posts[-1] == {"decision": "deny", "wait": False}
 
