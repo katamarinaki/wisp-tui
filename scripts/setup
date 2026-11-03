@@ -1,0 +1,32 @@
+#!/bin/sh
+# Create ~/.config/wisp-tui/config.json by copying the credential from the
+# existing ask-wisp configuration (same "pi-ask-wisp" run token).
+# The config stays in your home directory (0600); it must never live in the
+# group-readable project tree.
+set -eu
+SRC="$HOME/.config/ask-wisp/config.json"
+DST_DIR="$HOME/.config/wisp-tui"
+DST="$DST_DIR/config.json"
+
+if [ -f "$DST" ]; then
+  echo "wisp-tui config already exists: $DST"
+  exit 0
+fi
+if [ ! -f "$SRC" ]; then
+  echo "missing $SRC — set up ask-wisp first (wisp-homeserver-report README)" >&2
+  exit 1
+fi
+umask 077
+mkdir -p "$DST_DIR"
+python3 - "$SRC" "$DST" <<'EOF'
+import json, os, stat, sys
+src, dst = sys.argv[1], sys.argv[2]
+with open(src) as source:
+    data = json.load(source)
+out = {"url": data["url"], "token": data["token"], "max_turns": 40}
+fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, "w") as target:
+    json.dump(out, target, indent=2)
+    target.write("\n")
+print(f"wrote {dst} (0600) using the {data.get('token_name', 'ask-wisp')} credential")
+EOF

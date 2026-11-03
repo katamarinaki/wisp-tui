@@ -1,0 +1,14 @@
+# Environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.pi/cache/
+
+# Safety net: private config/state must never live in the project tree
+# (they belong in ~/.config/wisp-tui and ~/.local/state/wisp-tui).
+config.json
+state.json
+*.token
+.env

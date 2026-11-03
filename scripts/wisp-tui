@@ -1,0 +1,5 @@
+#!/bin/sh
+# wisp-tui launcher: runs the app from the project venv.
+set -eu
+ROOT=/mnt/data/projects/wisp-tui
+exec env PYTHONPATH="$ROOT/src" "$ROOT/.venv/bin/python" -m wisp_tui "$@"
