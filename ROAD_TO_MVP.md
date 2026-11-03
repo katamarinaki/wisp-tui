@@ -28,8 +28,9 @@ do not assume they are a stable public API or invent unsupported capabilities.
 - Private config/state and scripted tests without network or inference.
 
 These are implemented features, not a claim that every failure/recovery path
-is finished. Known-run reattachment now covers queued/running/parked v1 runs;
-unacknowledged submissions still need cross-process recovery.
+is finished. Known-run reattachment covers queued/running/parked v1 runs;
+unacknowledged submissions now retain their original identity across process
+exit, pending verification against the installed runtime's actual contract.
 
 ## 1. Reliable interactions — in progress
 
@@ -39,7 +40,7 @@ unacknowledged submissions still need cross-process recovery.
 - [x] Keep input when no session exists, a session is loading, or a run is busy.
 - [x] Clear a submitted draft only after a valid acknowledgement; do not erase
       a newer draft typed while the request was in flight.
-- [x] Hold an unacknowledged submission in memory. Explicit `/retry` reuses its
+- [x] Hold an unacknowledged submission reserved. Explicit `/retry` reuses its
       original session, input, options, and idempotency key; never auto-retry
       a POST with a new key. Block session/model changes until acknowledged.
 - [x] Serialize session loads/creation/model updates; release reservations on
@@ -53,8 +54,9 @@ unacknowledged submissions still need cross-process recovery.
 - [x] Automated PTY check for inline rendering/default background, including a
       scripted transcript and approval dialog (no runtime contact).
 
-**Current limits:** drafts and pending request identity are in memory only.
-Quitting loses them. `/retry` deliberately resends the original task, not the
+**Current limits:** unsent drafts and cancellation intent remain in memory.
+Pending request identity is saved privately before POST and restored without
+automatic replay. `/retry` deliberately resends the original task, not the
 current editor contents. Exactly-once behavior depends on Wisp's idempotency
 contract; client-side request-identity tests alone do not prove server behavior.
 Retries older than 23 hours are refused (the documented default key TTL is 24
@@ -85,13 +87,32 @@ conservative until rejection/reconciliation semantics are established.
       missing terminal events, stale callbacks, cancellation, and reattachment.
 
 ### Remaining reliability work
-- [ ] Recover an unacknowledged submission across process exit, or reconcile it
-      safely before allowing a fresh task. Any persisted state must use the
-      existing private state directory, never the project tree.
+- [x] Recover an unacknowledged submission across process exit before allowing
+      fresh work. A bounded, owner-checked 0600 journal in the private 0700 state
+      directory durably precedes POST; preserve session/input/options/key/age,
+      restore without automatic replay, and guard the slot across processes.
+      Persist acknowledgements and refuse unsafe/expired/conflicting state.
+      Offline restart, lease, sync-failure, TTL/clock and privacy tests; runtime
+      exactly-once semantics still require the owner-approved acceptance test.
+- [x] Address PR #5 recovery findings: load the restored session's history,
+      selection and active-run summary read-only, without inferring an ack or
+      attaching to an unidentified run. Defer only explicitly requested retry
+      until the view read ends; preserve draft, `/clear` and stale-callback
+      guarantees. Release failed preparation's unowned lease while retaining
+      owned/post-replacement ambiguous requests. Offline regression tests.
 - [ ] Verify the recorded contract against the installed runtime during the
       owner-approved live acceptance test; cached docs are not a live proof.
-- [ ] Review history/replay presentation when attaching midway through a long
-      conversation, including output already present in saved checkpoints.
+- [x] Review history/replay presentation when attaching midway through a long
+      conversation. Discover the run before reading history; separate replay
+      from saved checkpoints and reconcile a successful answer against one
+      fresh checkpoint only with visible checkpoint progress. Retain optional
+      message IDs without assuming they are run IDs. Preserve genuine repeated
+      replies, ambiguous overlap, drafts and `/clear`; bound rebuilt history and
+      fence stale/failed refreshes. Offline regression coverage is complete.
+      **Remaining contract limit:** unchanged/compacted/lagging checkpoints can
+      still overlap labelled replay. Live acceptance must establish checkpoint
+      freshness, multi-message output and any reliable run/message association
+      before claiming lossless deduplication.
 
 **Exit criterion:** slow requests, disconnects, cancellation, and cross-client
 approvals cannot silently lose work or make the UI act on the wrong run/session.
@@ -132,6 +153,18 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       command after terminal restoration; use the final active session and
       launcher alias, with no hint for an unused fresh session. CLI and PTY
       tests cover the hint without runtime contact or private config access.
+- [x] Finish successful runs silently on the answer, without a completion
+      announcement; keep session/model or automatic mode, thinking setting,
+      last finished run's reported tokens and client launch directory visible
+      independently of run status. Label unavailable context usage and unreported values
+      honestly; do not infer context fullness, live reasoning or the runtime's
+      working directory. Bounded, transparent footer and `/status` details;
+      offline tests cover same-session follow-ups, selection acknowledgements,
+      session resets, malformed usage, literal metadata, resize and PTY output.
+- [x] Small, transparent “Working” spinner above the input's top-left corner
+      during submission and active work. Hide it on terminal outcomes, without
+      a completion announcement; distinguish approval waits, disconnects and
+      cancellation requests. Offline animation/state/layout and PTY checks.
 - [ ] Multiline prompt editor with predictable send/newline keys over Mac SSH.
 - [ ] Pasting multiple lines does not accidentally submit partial commands.
 - [ ] Minimal input history/draft recovery; no elaborate editor framework.
@@ -167,7 +200,7 @@ not a release criterion.
 ## Maintenance alongside the MVP
 
 - Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **214 passing tests**, strict mypy passing.
+  Current baseline: **334 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
 - [x] Local Git repository (`main` baseline, work on branches). No remote yet.
 - [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held

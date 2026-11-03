@@ -83,7 +83,7 @@ async def test_submit_streams_and_completes(monkeypatch: pytest.MonkeyPatch) -> 
         app.query_one("#input", Input).value = "hi there"
         await pilot.press("enter")
         await eventually(lambda: app.active_run is None)
-        await eventually(lambda: "run completed" in text_of(app.query_one("#status")))
+        await eventually(lambda: app._status_state == "")
         # the run was submitted interactive and non-waiting
         posted = [c for c in client.calls if c[0] == "POST" and "/runs" in c[1]]
         assert posted, client.calls

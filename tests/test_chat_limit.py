@@ -23,7 +23,7 @@ def chat_items(app: WispTuiApp) -> list[str]:
     """Visible chat in order: marker/system lines and message texts."""
     items: list[str] = []
     for child in app.query_one("#chat").children:
-        if child.id == "chat-trimmed":
+        if child.has_class("chat-trimmed"):
             items.append("MARKER: " + str(child.render()))
         elif isinstance(child, Markdown):
             items.append(child.source)

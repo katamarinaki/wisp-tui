@@ -12,27 +12,30 @@ import re
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 from textual.app import App, ComposeResult
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.timer import Timer
 from textual.widget import AwaitMount, Widget
 from textual.widgets import Input, ListItem, ListView, Markdown, Static
 
 from .client import ClientError, WispClient, TERMINAL_RUN_STATUSES, safe_code
 from .config import Config
-from .history import ChatMessage, parse_history
+from .history import ChatMessage, HistoryError, checkpoint_covers_answer, parse_history
 from .runs import RunFollower, find_active_run
 from .sessions import SessionStore
+from .submissions import MAX_DRAFT_BYTES, PendingSubmission, SubmissionError, SubmissionStore
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # A session ID or a prefix of one (as shown in pickers), for --resume / /resume.
 RESUME_QUERY_RE = re.compile(r"[0-9a-f][0-9a-f-]{3,35}")
 
 HINTS = "F1 help · F2 sessions · F3 model · Ctrl+C cancel/exit"
+SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 HELP_TEXT = """**wisp-tui** — chat with the local Wisp runtime.
 
@@ -54,8 +57,15 @@ session. `/new` starts another one. Sessions you use here are saved locally
 sessions, including Telegram/desktop ones.
 
 `/retry` retries an unacknowledged submission with its original input and request
-ID. It never sends your newer draft. Drafts and pending submissions are held in
-memory only; quitting does not save them.
+ID. It never sends your newer draft. Pending requests are saved privately before
+submission and recovered after exit, without automatic resubmission. Unsent
+drafts are still memory-only. A state error blocks new work until resolved.
+
+A finished run is one answered prompt, not the end of the conversation: just
+send your next message. The footer keeps the session, model/mode, thinking
+setting and last finished run's reported tokens visible. Tokens update when a
+run finishes, not live; context occupancy is unavailable. The launch directory
+belongs to this client, not Wisp's tools. `/status` shows the full details.
 
 While a run is active you will see tool calls as they happen. When Wisp needs
 approval for a tool, a dialog appears: **y** approve, **n** deny, **p** allow
@@ -70,30 +80,18 @@ def _safe_text(value: Any, limit: int = 4000) -> str:
     return value if len(value) <= limit else value[: limit - 1] + "…"
 
 
+def _metadata_text(value: Any, limit: int = 100) -> str:
+    """Bound metadata and keep control characters from creating fake UI lines."""
+    text = _safe_text(value, limit)
+    return "".join(char if char.isprintable() else "�" for char in text)
+
+
 def _pretty_args(args: Any) -> str:
     try:
         rendered = json.dumps(args, indent=2, ensure_ascii=False, default=str)
     except (TypeError, ValueError):
         rendered = repr(args)
     return _safe_text(rendered)
-
-
-@dataclass(frozen=True)
-class PendingSubmission:
-    session_id: str
-    draft: str
-    max_turns: int
-    key: str
-    created_at: float = field(default_factory=time.monotonic)
-
-    def body(self) -> dict[str, Any]:
-        return {
-            "input": self.draft.strip(),
-            "confirmationMode": "interactive",
-            "wait": False,
-            "maxTurns": self.max_turns,
-            "idempotencyKey": self.key,
-        }
 
 
 FRESH_STATUS = "ready · new session — your first message starts it (/resume, F2)"
@@ -352,13 +350,15 @@ class WispTuiApp(App[None]):
         padding: 0;
     }
     #input:focus { background-tint: transparent; }
-    #status {
+    #activity { display: none; }
+    #activity, #status, #session-info, #thinking-info, #usage-info, #location {
         height: 1;
         background: transparent;
         color: ansi_default;
         text-style: dim;
         padding: 0;
     }
+    #session-info, #thinking-info, #usage-info { height: auto; max-height: 2; }
     #approval-dialog {
         align: center middle; width: 80%; max-height: 80%;
         border: round $accent; padding: 1 2;
@@ -389,7 +389,8 @@ class WispTuiApp(App[None]):
 
     def __init__(self, client: WispClient, config: Config,
                  startup: Startup | None = None,
-                 sessions: SessionStore | None = None) -> None:
+                 sessions: SessionStore | None = None,
+                 submissions: SubmissionStore | None = None) -> None:
         # ansi_color=True disables the ANSI→truecolor filter, so
         # `background: ansi_default` reaches the terminal as SGR 49
         # ("terminal default background") instead of being rewritten to a
@@ -400,15 +401,26 @@ class WispTuiApp(App[None]):
         self.config = config
         self.startup = startup or Startup()
         self.sessions = sessions or SessionStore()
+        self.submissions = submissions or SubmissionStore(client.url)
+        self._pending_state_error = False
         # Title for the session that the next first message will create.
         self._fresh_title = ""
         self._record_error_shown = False
         self.session_id: str | None = None
         self.session_title: str = ""
+        self._selection: dict[str, Any] = {}
+        self._last_usage = ""
+        try:
+            self._launch_dir = self._display_path(Path.cwd())
+        except OSError:
+            self._launch_dir = "unavailable"
         self.active_run: str | None = None
         # Reserved synchronously on the UI thread, before starting any I/O.
         self._submitting = False
         self._pending_submission: PendingSubmission | None = None
+        self._recovery_view_token: object | None = None
+        self._retry_after_recovery = False
+        self._pending_view_history: list[ChatMessage] | None = None
         self._session_busy = False
         self.last_seq: dict[str, int] = {}
         self.pending_prompts: deque[tuple[str, str, str, Any]] = deque()
@@ -422,10 +434,16 @@ class WispTuiApp(App[None]):
         self._cancel_after_submit = False
         self._delta_text = ""
         self._stream_view: StreamView | None = None
+        self._reattach_history: list[ChatMessage] | None = None
+        self._history_refresh_token: object | None = None
+        self._chat_epoch = 0
         self._chat_items: deque[Widget] = deque()
         self._trimmed_count = 0
         self._trim_marker: Static | None = None
         self._status_state = "connecting…"
+        self._activity_frame = 0
+        self._activity_indicator = Static("", id="activity", markup=False)
+        self._activity_timer: Timer | None = None
         self._cancel_requested = False
         self._last_ctrl_c = -10.0
 
@@ -434,11 +452,19 @@ class WispTuiApp(App[None]):
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="chat")
         with Container(id="bottom"):
+            yield self._activity_indicator
             yield Input(placeholder="Message Wisp — /help for commands", id="input")
             yield Static("", id="status", markup=False)
+            yield Static("", id="session-info", markup=False)
+            yield Static("", id="thinking-info", markup=False)
+            yield Static("", id="usage-info", markup=False)
+            yield Static("", id="location", markup=False)
 
     def on_mount(self) -> None:
+        self._activity_timer = self.set_interval(0.1, self._tick_activity, pause=True)
         self._render_status()
+        self._render_metadata()
+        self._restore_pending()
         self.query_one("#input", Input).focus()
         self._run_threaded(self._bootstrap_worker)
 
@@ -474,7 +500,7 @@ class WispTuiApp(App[None]):
 
     def _bootstrap_complete(self) -> None:
         # A slow health check must not replace a session the user just opened.
-        if self.session_id is not None or self._session_busy:
+        if self.session_id is not None or self._session_busy or self._pending_state_error:
             return
         self._status(FRESH_STATUS)
         mode = self.startup.mode
@@ -498,6 +524,60 @@ class WispTuiApp(App[None]):
     def _render_status(self) -> None:
         line = f"{self._status_state} · {HINTS}" if self._status_state else HINTS
         self.query_one("#status", Static).update(_safe_text(line, 250))
+        self._render_activity()
+
+    def _render_activity(self) -> None:
+        indicator = self._activity_indicator
+        # A queued tick may arrive after the screen's children are unmounted.
+        if not indicator.is_attached:
+            if self._activity_timer is not None:
+                self._activity_timer.pause()
+            return
+        busy = self._submitting or self.active_run is not None
+        indicator.display = busy
+        if not busy:
+            indicator.update("")
+            self._activity_frame = 0
+            if self._activity_timer is not None:
+                self._activity_timer.pause()
+            return
+        label = "Working"
+        if self._disconnected:
+            label = "Reconnecting"
+        elif self._cancel_requested:
+            label = "Cancelling"
+        elif self._approval_modal is not None or self._status_state.startswith("run parked"):
+            label = "Waiting for approval"
+        indicator.update(f"{SPINNER_FRAMES[self._activity_frame]} {label}")
+        if self._activity_timer is not None:
+            self._activity_timer.resume()
+
+    def _tick_activity(self) -> None:
+        self._activity_frame = (self._activity_frame + 1) % len(SPINNER_FRAMES)
+        self._render_activity()
+
+    def _metadata_lines(self) -> list[str]:
+        session = self.session_id[:8] if self.session_id else "new"
+        thinking = self._selection.get("thinking")
+        thinking_label = ("on" if thinking else "off") if isinstance(thinking, bool) else "unavailable"
+        return [
+            f"session {session} · {self._model_label({'effectiveSelection': self._selection})}",
+            f"thinking: {thinking_label} · context: unavailable",
+            f"last run tokens: {self._last_usage or 'unavailable'}",
+            f"launch dir (client only): {_metadata_text(self._launch_dir, 1000)}",
+        ]
+
+    def _render_metadata(self) -> None:
+        for widget_id, line in zip(("session-info", "thinking-info", "usage-info", "location"),
+                                   self._metadata_lines()):
+            self.query_one(f"#{widget_id}", Static).update(line)
+
+    def _selection_updated(self, session: dict[str, Any], session_id: str) -> None:
+        if self.session_id != session_id:
+            return
+        selection = session.get("effectiveSelection")
+        self._selection = dict(selection) if isinstance(selection, dict) else {}
+        self._render_metadata()
 
     def _scroll_down(self) -> None:
         self.query_one("#chat", VerticalScroll).scroll_end(animate=False)
@@ -529,10 +609,14 @@ class WispTuiApp(App[None]):
         count = self._trimmed_count
         text = (f"\u2191 {count} earlier item{'s' if count != 1 else ''} not shown "
                 "\u2014 Wisp keeps the full session history.")
-        if self._trim_marker is not None and self._trim_marker.is_attached:
+        # Reuse a marker whose mount is still pending, too, so rapid replay
+        # updates cannot create several markers before the first is mounted.
+        if self._trim_marker is not None:
             self._trim_marker.update(text)
             return
-        marker = Static(text, id="chat-trimmed", classes="system", markup=False)
+        # remove_children() is asynchronous; a prior marker may still be in
+        # the DOM during a reset. A class avoids colliding fixed widget IDs.
+        marker = Static(text, classes="system chat-trimmed", markup=False)
         self._trim_marker = marker
         chat = self.query_one("#chat", VerticalScroll)
         if self._chat_items:
@@ -542,6 +626,9 @@ class WispTuiApp(App[None]):
 
     def _reset_chat(self, hidden: int = 0) -> None:
         """Remove every chat item; optionally note ``hidden`` older items."""
+        self._chat_epoch += 1
+        self._reattach_history = None
+        self._pending_view_history = None
         self.query_one("#chat", VerticalScroll).remove_children()
         self._chat_items.clear()
         # A still-running answer continues in a fresh widget (full text so far).
@@ -572,6 +659,8 @@ class WispTuiApp(App[None]):
     def _show_stream_text(self, text: str) -> None:
         """Show ``text`` as the current answer (appending when it continues it)."""
         if self._stream_view is None:
+            if self._reattach_history is not None:
+                self._sysline("Current run replay — may overlap the saved checkpoint.", "tool")
             self._stream_view = self._begin_stream()
         self._stream_view.set_text(text)
 
@@ -585,8 +674,8 @@ class WispTuiApp(App[None]):
             event.input.value = ""
             self._handle_command(text)
             return
-        if self._session_busy:
-            self._sysline("Session change in progress — your draft is kept.")
+        if self._session_busy or self._history_refresh_token is not None:
+            self._sysline("Session/history load in progress — your draft is kept.")
             return
         if self.session_id is None:
             # Fresh start: create the Wisp session now, then submit. Nothing is
@@ -598,7 +687,120 @@ class WispTuiApp(App[None]):
             return
         self._start_submission(event.value)
 
+    def _restore_pending(self) -> None:
+        was_error = self._pending_state_error
+        try:
+            pending = self.submissions.load()
+        except SubmissionError as error:
+            self._pending_state_error = True
+            self._status(f"{error} · /retry to recheck")
+            self._sysline("Pending-request state is unavailable or in use. New submissions "
+                          "are blocked; /retry rechecks without starting fresh work.", "error")
+            return
+        self._pending_state_error = False
+        if pending is None:
+            if was_error:
+                self._status(FRESH_STATUS if self.session_id is None else "session ready")
+            return
+        self._pending_submission = pending
+        self.session_id = pending.session_id
+        self.session_title = "Recovered submission"
+        self.title = "Wisp — recovered submission"
+        editor = self.query_one("#input", Input)
+        if not editor.value:
+            editor.value = pending.draft
+        self._render_metadata()
+        self._status("unacknowledged submission restored · /retry")
+        self._sysline("Recovered an unacknowledged request. Nothing was resubmitted. "
+                      "/retry explicitly reuses the original input, options and request ID. "
+                      "Session/model changes stay blocked until it is acknowledged.")
+        self._load_pending_view(pending)
+
+    def _load_pending_view(self, pending: PendingSubmission) -> None:
+        """Inspect the original session without identifying/replaying its request."""
+        token = object()
+        self._recovery_view_token = token
+        self._pending_view_history = None
+        epoch = self._chat_epoch
+
+        def work() -> None:
+            try:
+                session = self.client.request(
+                    "GET", f"/v1/sessions/{pending.session_id}", timeout=5.0)
+                if not isinstance(session, dict) or session.get("id") != pending.session_id:
+                    raise ClientError("invalid_session")
+                payload = self.client.request(
+                    "GET", f"/v1/sessions/{pending.session_id}/history", timeout=5.0)
+                messages = parse_history(payload)
+                runs = self.client.request(
+                    "GET", f"/v1/runs?sessionId={pending.session_id}"
+                    "&status=queued,running,parked&limit=200", timeout=5.0)
+                active_id = find_active_run(runs, pending.session_id)
+            except ClientError as error:
+                code = str(error)
+            except HistoryError:
+                code = "unexpected_history_shape"
+            except Exception:
+                code = "internal_error"
+            else:
+                self.call_from_thread(self._pending_view_loaded, token, pending,
+                                      epoch, session, messages, active_id)
+                return
+            self.call_from_thread(self._pending_view_failed, token, pending, code)
+
+        self._run_threaded(work, group="recovery",
+                           on_done=lambda: self._pending_view_done(token, pending))
+
+    def _pending_view_current(self, token: object, pending: PendingSubmission) -> bool:
+        return (self._recovery_view_token is token and self._pending_submission is pending
+                and self.session_id == pending.session_id and not self._submitting
+                and self.active_run is None)
+
+    def _pending_view_loaded(self, token: object, pending: PendingSubmission, epoch: int,
+                             session: dict[str, Any], messages: list[ChatMessage],
+                             active_id: str) -> None:
+        if not self._pending_view_current(token, pending):
+            return
+        self.session_title = _safe_text(session.get("title"), 80) or "(untitled)"
+        self.title = f"Wisp — {self.session_title}"
+        self._selection_updated(session, pending.session_id)
+        # /clear cancels history restoration, but metadata is still useful.
+        if self._chat_epoch != epoch:
+            return
+        hidden = max(0, len(messages) - self.MAX_CHAT_ITEMS)
+        self._reset_chat(hidden)
+        for message in messages[hidden:]:
+            self._add_message(message)
+        self._pending_view_history = list(messages)
+        self._sysline("Recovered request remains unacknowledged. This view is read-only; "
+                      "only explicit /retry reuses the original request ID.")
+        if active_id:
+            self._sysline(f"Runtime reports active run {active_id[:8]}. "
+                          "It is not proof this request was accepted.", "tool")
+        else:
+            self._sysline("No active v1 run reported. This is not proof the request was rejected.",
+                          "tool")
+
+    def _pending_view_failed(self, token: object, pending: PendingSubmission, code: str) -> None:
+        if self._pending_view_current(token, pending):
+            self._status(f"recovery view unavailable: {safe_code(code, 'history_unavailable')} · /retry")
+
+    def _pending_view_done(self, token: object, pending: PendingSubmission) -> None:
+        if self._recovery_view_token is not token:
+            return
+        retry = self._retry_after_recovery and self._pending_view_current(token, pending)
+        self._recovery_view_token = None
+        self._retry_after_recovery = False
+        if retry:
+            self._submit_pending()
+
     def _start_submission(self, draft: str) -> None:
+        if self._history_refresh_token is not None:
+            self._sysline("History refresh in progress — your draft is kept.")
+            return
+        if self._pending_state_error:
+            self._sysline("Pending-request state must be recovered first (/retry). Your draft is kept.")
+            return
         if self.session_id is None:
             return
         if self._pending_submission is not None:
@@ -607,12 +809,19 @@ class WispTuiApp(App[None]):
         if self.active_run is not None:
             self._sysline("A run is already active — /cancel (Ctrl+C) it first. Your draft is kept.")
             return
+        if len(draft.encode("utf-8")) > MAX_DRAFT_BYTES:
+            self._sysline("Prompt exceeds the safe recovery limit (128 KiB). Split it; your draft is kept.")
+            return
         self._pending_submission = PendingSubmission(
             self.session_id, draft, self.config.max_turns,
             "wisp-tui:" + str(uuid.uuid4()))
         self._submit_pending()
 
     def _submit_pending(self) -> None:
+        if self._pending_state_error:
+            self._restore_pending()
+            if self._pending_state_error:
+                return
         pending = self._pending_submission
         if pending is None:
             self._sysline("No pending submission to retry.")
@@ -620,22 +829,32 @@ class WispTuiApp(App[None]):
         if self._submitting:
             self._sysline("Submission already in progress — please wait.")
             return
-        if time.monotonic() - pending.created_at >= 23 * 3600:
-            self._status("pending_submission_expired")
-            self._sysline("This request is too old to retry safely. Inspect the session "
-                          "in another client before starting more work.", "error")
+        retry_error = pending.retry_error()
+        if retry_error:
+            self._status(retry_error)
+            self._sysline("This request's age cannot be retried safely. Inspect the session "
+                          "in another client; new work remains blocked.", "error")
+            return
+        if self._recovery_view_token is not None:
+            self._retry_after_recovery = True
+            self._sysline("Loading recovered session details; your explicit /retry will continue "
+                          "after this read-only check.")
             return
         self._submitting = True
         self._status("submitting…")
 
         def work() -> None:
             try:
-                result = self.client.request(
-                    "POST", f"/v1/sessions/{pending.session_id}/runs", pending.body())
-                run_id = result.get("runId") if isinstance(result, dict) else None
+                run_id = self.submissions.prepare(pending)
+                if run_id is None:
+                    # Never contact Wisp until the original request is durable.
+                    result = self.client.request(
+                        "POST", f"/v1/sessions/{pending.session_id}/runs", pending.body())
+                    run_id = result.get("runId") if isinstance(result, dict) else None
                 if not isinstance(run_id, str) or not UUID_RE.fullmatch(run_id):
                     raise ClientError("invalid_run_reference")
-            except ClientError as error:
+                self.submissions.acknowledge(pending, run_id)
+            except (ClientError, SubmissionError) as error:
                 self.call_from_thread(self._submission_failed, str(error))
                 return
             except Exception:
@@ -650,12 +869,17 @@ class WispTuiApp(App[None]):
         self._status(f"submission error: {code} · /retry")
         self._sysline("Submission not acknowledged; it may exist server-side. "
                       "Use /retry to resend the original request with the same ID. "
-                      "Quitting loses this pending request.", "error")
+                      "Wi will recover a durably saved request after exit. "
+                      "A pending_state error must be resolved before any new work.", "error")
         editor = self.query_one("#input", Input)
         if not editor.value and self._pending_submission is not None:
             editor.value = self._pending_submission.draft
 
     def _submission_accepted(self, pending: PendingSubmission, run_id: str) -> None:
+        history = self._pending_view_history
+        self._pending_view_history = None
+        self._recovery_view_token = None
+        self._retry_after_recovery = False
         self._submitting = False
         self._pending_submission = None
         editor = self.query_one("#input", Input)
@@ -664,14 +888,15 @@ class WispTuiApp(App[None]):
         self._add_message(ChatMessage(role="user", text=pending.draft.strip()))
         self._record({"type": "message", "role": "user", "text": pending.draft.strip(),
                       "runId": run_id}, pending.session_id)
-        self._turn_started(run_id)
+        self._turn_started(run_id, history=history)
         self._start_follow()
         if self._cancel_after_submit:
             self._cancel_after_submit = False
             self._cancel_run()
 
-    def _turn_started(self, run_id: str) -> None:
+    def _turn_started(self, run_id: str, history: list[ChatMessage] | None = None) -> None:
         self.active_run = run_id
+        self._reattach_history = list(history) if history is not None else None
         self._cancel_requested = False
         self._delta_text = ""
         self._stream_view = None
@@ -873,7 +1098,11 @@ class WispTuiApp(App[None]):
     # -- run completion ------------------------------------------------------------
 
     def _finalize_run(self, kind: str, outcome: Any) -> None:
+        saved_history = self._reattach_history
+        answer = ""
         data = outcome if isinstance(outcome, dict) else {}
+        self._last_usage = self._usage_line(data.get("usage"))
+        self._render_metadata()
         if kind == "run.completed":
             text = ""
             output = data.get("output")
@@ -885,8 +1114,8 @@ class WispTuiApp(App[None]):
             if answer:
                 self._record({"type": "message", "role": "assistant", "text": answer,
                               "runId": self.active_run})
-            usage = self._usage_line(data.get("usage"))
-            self._status("run completed" + (f" · {usage}" if usage else ""))
+            # End on Wisp's answer, without a completion announcement.
+            self._status("")
         elif kind == "run.failed":
             failure = data.get("failure")
             if not isinstance(failure, dict):
@@ -901,6 +1130,61 @@ class WispTuiApp(App[None]):
             self._record({"type": "run", "runId": self.active_run, "status": "cancelled"})
             self._status("run cancelled")
         self._finish_run()
+        if kind == "run.completed" and saved_history is not None and answer:
+            self._refresh_finished_history(saved_history, answer)
+
+    def _refresh_finished_history(self, before: list[ChatMessage], answer: str) -> None:
+        """Reconcile replay with one fresh checkpoint, never text-dedup old turns."""
+        session_id = self.session_id
+        if session_id is None:
+            return
+        token = object()
+        self._history_refresh_token = token
+        epoch = self._chat_epoch
+
+        def work() -> None:
+            try:
+                payload = self.client.request(
+                    "GET", f"/v1/sessions/{session_id}/history", timeout=5.0)
+                messages = parse_history(payload)
+            except ClientError as error:
+                code = str(error)
+            except HistoryError:
+                code = "unexpected_history_shape"
+            except Exception:
+                code = "internal_error"
+            else:
+                self.call_from_thread(self._history_refreshed, token, session_id,
+                                      epoch, before, messages, answer)
+                return
+            self.call_from_thread(self._history_refresh_failed, token, session_id, epoch, code)
+
+        self._run_threaded(work, group="history",
+                           on_done=lambda: self._history_refresh_done(token))
+
+    def _history_refresh_current(self, token: object, session_id: str, epoch: int) -> bool:
+        return (self._history_refresh_token is token and self.session_id == session_id
+                and self._chat_epoch == epoch and self.active_run is None)
+
+    def _history_refreshed(self, token: object, session_id: str, epoch: int,
+                           before: list[ChatMessage], messages: list[ChatMessage],
+                           answer: str) -> None:
+        if (not self._history_refresh_current(token, session_id, epoch)
+                or not checkpoint_covers_answer(before, messages, answer)):
+            return
+        hidden = max(0, len(messages) - self.MAX_CHAT_ITEMS)
+        self._reset_chat(hidden)
+        for message in messages[hidden:]:
+            self._add_message(message)
+
+    def _history_refresh_failed(self, token: object, session_id: str, epoch: int,
+                                code: str) -> None:
+        if self._history_refresh_current(token, session_id, epoch):
+            self._status(f"history refresh failed: {safe_code(code, 'history_unavailable')}")
+
+    def _history_refresh_done(self, token: object) -> None:
+        if self._history_refresh_token is token:
+            self._history_refresh_token = None
 
     def _finish_run(self) -> None:
         if self._follower is not None:
@@ -915,7 +1199,9 @@ class WispTuiApp(App[None]):
         self.active_run = None
         self._delta_text = ""
         self._stream_view = None
+        self._reattach_history = None
         self.pending_prompts.clear()
+        self._render_activity()
 
     @staticmethod
     def _usage_line(usage: Any) -> str:
@@ -924,15 +1210,18 @@ class WispTuiApp(App[None]):
         parts = []
         for key in ("inputTokens", "outputTokens", "totalTokens"):
             value = usage.get(key)
-            if isinstance(value, (int, float)):
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                 parts.append(f"{key.replace('Tokens', '')}: {value}")
         return ", ".join(parts)
 
     # -- sessions ----------------------------------------------------------------
 
     def _reserve_session_change(self) -> bool:
-        if self._session_busy:
-            self._sysline("Session change already in progress — please wait.")
+        if self._pending_state_error:
+            self._sysline("Pending-request state must be recovered first (/retry).")
+            return False
+        if self._session_busy or self._history_refresh_token is not None:
+            self._sysline("Session/history load already in progress — please wait.")
             return False
         if self._pending_submission is not None:
             self._sysline("Resolve the pending submission before changing sessions or models (/retry).")
@@ -964,10 +1253,12 @@ class WispTuiApp(App[None]):
             if not isinstance(session, dict) or session.get("id") != session_id:
                 self.call_from_thread(self._sysline, "session no longer exists", "error")
                 return
-            history = self.client.request("GET", f"/v1/sessions/{session_id}/history")
+            # Discover first: a run that finishes while history loads still has
+            # a known ID to reconcile, rather than disappearing from discovery.
             runs = self.client.request(
                 "GET", f"/v1/runs?sessionId={session_id}&status=queued,running,parked&limit=200")
             active_id = find_active_run(runs, session_id)
+            history = self.client.request("GET", f"/v1/sessions/{session_id}/history")
             self.call_from_thread(self._session_loaded, session,
                                   parse_history(history), active_id)
 
@@ -999,7 +1290,11 @@ class WispTuiApp(App[None]):
 
     def _session_loaded(self, session: dict[str, Any], messages: list[ChatMessage],
                         active_run_id: str, announce_empty: bool = True) -> None:
-        self.session_id = str(session.get("id", ""))
+        session_id = str(session.get("id", ""))
+        if self.session_id != session_id:
+            self._last_usage = ""
+        self.session_id = session_id
+        self._selection_updated(session, session_id)
         self.session_title = _safe_text(session.get("title"), 80) or "(untitled)"
         self.title = f"Wisp — {self.session_title}"
         # Only mount the tail of long histories (see MAX_CHAT_ITEMS).
@@ -1011,20 +1306,20 @@ class WispTuiApp(App[None]):
             self._sysline(f"Session '{self.session_title}' is empty. Say something to start.")
         self._status(f"session {self.session_id[:8]} · {self._model_label(session)}")
         if active_run_id:
-            self._turn_started(active_run_id)
+            self._turn_started(active_run_id, history=messages)
             self._sysline("Reattaching to this session's ongoing run.", "tool")
             self._start_follow()
 
     @staticmethod
-    def _model_label(session: dict[str, Any]) -> Any:
+    def _model_label(session: dict[str, Any]) -> str:
         selection = session.get("effectiveSelection")
         if isinstance(selection, dict):
             if selection.get("mode") == "model":
-                return selection.get("model", "?")
-            mode = selection.get("mode", "?")
-            thinking = "· thinking" if selection.get("thinking") else ""
-            return f"{mode}{thinking}"
-        return "runtime default"
+                return f"model: {_metadata_text(selection.get('model')) or 'unavailable'}"
+            mode = _metadata_text(selection.get("mode"))
+            if mode:
+                return f"mode: {mode} (runtime-selected model)"
+        return "model: unavailable (runtime default)"
 
     def _new_session(self, title: str, on_ready: Callable[[], None] | None = None,
                      announce: bool = True) -> None:
@@ -1074,6 +1369,9 @@ class WispTuiApp(App[None]):
         self._release_session_change()
         self.session_id = None
         self.session_title = ""
+        self._selection = {}
+        self._last_usage = ""
+        self._render_metadata()
         self.title = "wisp-tui"
         self._fresh_title = title
         self._reset_chat()
@@ -1173,6 +1471,7 @@ class WispTuiApp(App[None]):
             session = self.client.request(
                 "PATCH", f"/v1/sessions/{session_id}", {"selection": selection})
             if isinstance(session, dict):
+                self.call_from_thread(self._selection_updated, session, session_id)
                 self.call_from_thread(self._status,
                                       f"session {session_id[:8]} · {self._model_label(session)}")
             else:
@@ -1276,13 +1575,26 @@ class WispTuiApp(App[None]):
             f"session: {self.session_id or 'none'}"
             + (f" ({self.session_title})" if self.session_id else ""),
             f"active run: {self.active_run or 'none'}",
-            f"submission: {'sending' if self._submitting else 'unacknowledged' if self._pending_submission else 'none'}",
+            f"submission: {'state_error' if self._pending_state_error else 'sending' if self._submitting else 'unacknowledged' if self._pending_submission else 'none'}",
+            f"recovery view: {'loading' if self._recovery_view_token is not None else 'none'}",
+            f"history refresh: {'loading' if self._history_refresh_token is not None else 'none'}",
             f"max turns: {self.config.max_turns}",
+            *self._metadata_lines(),
+            "Wisp working directory: unavailable (not the client launch directory)",
+            "Token usage is reported at run completion, not live; context occupancy is unavailable.",
         ]
         for line in lines:
             self._sysline(line, "tool")
 
     def on_unmount(self) -> None:
+        self._recovery_view_token = None
+        self._retry_after_recovery = False
+        self._pending_view_history = None
+        self._history_refresh_token = None
+        self._reattach_history = None
+        if self._activity_timer is not None:
+            self._activity_timer.stop()
+        self.submissions.close()
         # Stop local following only; quitting never cancels server-side work.
         if self._follower is not None:
             self._follower.stop()

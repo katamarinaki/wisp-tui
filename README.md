@@ -25,9 +25,11 @@ wisp-tui --session UUID  # open a specific Wisp session
 wisp-tui --check         # authenticated health check, no TUI, no inference
 ```
 
-Like Pi, every launch starts a **new session**. Nothing is created on the
-runtime until you send the first message; its first line becomes the session
-title (`/new Title` sets one explicitly).
+Like Pi, every ordinary launch starts a **new session**. Nothing is created on
+the runtime until you send the first message; its first line becomes the session
+title (`/new Title` sets one explicitly). Exception: an unacknowledged submission
+from a previous process is restored first, even with `-c`/`-r`/`--session`.
+Nothing is automatically resent; explicit `/retry` reuses the original request.
 
 On normal exit (`/quit` or double Ctrl+C), an opened/created session prints a
 copyable command after the terminal is restored:
@@ -38,7 +40,8 @@ To continue: wi --resume 3bf1ba87-6a56-4cef-89ad-358930302894
 
 The command uses your launcher name (`wi` or `wisp-tui`) and the full ID of the
 final active session. An unused fresh session prints no hint. This resumes the
-conversation; it does not persist an unacknowledged submission or unsent draft.
+conversation. Pending submissions are recovered independently of this hint;
+unsent drafts are not saved.
 
 Shorter command: symlink the launcher under any name, e.g.
 `ln -s "$PWD/scripts/wisp-tui" ~/.local/bin/wi`; help and errors then use
@@ -97,8 +100,8 @@ owner must merge this feature from `develop` to `main` for main installations.
 - All Wisp sessions (F2 / `/sessions`) across origins (cli/telegram/desktop),
   resume with history.
 - Pi-style chrome: no header/footer bars — just the chat, a text input
-  with tight, thin top/bottom rules, and a transparent contextual line under it
-  (state + `F1 help · F2 sessions · F3 model · Ctrl+C cancel`). Chat and input
+  with tight, thin top/bottom rules, and transparent status/session details
+  under it (state + `F1 help · F2 sessions · F3 model · Ctrl+C cancel`). Chat and input
   share a one-column gutter; answers use your terminal's default text color
   rather than a fixed dark/light theme foreground. Your prompts appear as
   full-width blocks in a muted dark teal (`#005f5f`) with light-grey text,
@@ -107,6 +110,27 @@ owner must merge this feature from `develop` to `main` for main installations.
   (opening a session mounts just that tail); a dim marker at the top counts
   what is hidden. Wisp keeps the full history — older turns are still in the
   session context, just not rendered here.
+- **A completed run is one answered prompt, not the end of the conversation.**
+  The answer simply ends, with no completion announcement; sending a follow-up
+  keeps the same session and runtime history. After quitting, `wi -c` continues the latest
+  saved session; plain `wi` starts fresh.
+- A small animated **Working** spinner sits just above the input's top-left
+  corner during submission and active work. It disappears when the run ends,
+  without a completion message. Parked, disconnected and cancelling runs use
+  explicit waiting/reconnecting/cancelling labels; the animation is local and
+  does not poll Wisp or imply that cancellation has succeeded.
+- **Persistent session footer:** session ID, reported model or automatic mode,
+  thinking setting, last finished run's reported input/output/total tokens,
+  and the client's launch directory. Status updates do not replace these
+  details. Automatic modes are labeled as runtime-selected, not as a known
+  model; missing fields say “unavailable”. Thinking is the configured setting,
+  not a live reasoning stream. Tokens update at run completion, not per delta;
+  they are neither cumulative session totals nor context occupancy. Context
+  usage remains “unavailable” until a verified runtime contract supplies it.
+  Usage is observed in this process: opening a different session or restarting
+  does not restore previous token counts. The launch directory is **client
+  only**, not a claim about where Wisp's tools execute. Metadata wraps within
+  bounded footer rows on narrow terminals; `/status` prints the full details.
 - New sessions (`/new [title]`), model/mode picker (F3) per session (F3 on a
   fresh session creates it first).
 - Runs submitted with `confirmationMode: "interactive"`, `wait: false`, then
@@ -119,8 +143,18 @@ owner must merge this feature from `develop` to `main` for main installations.
 - One follower owns each run's stream and parked polling. Current run records
   reconcile approvals answered elsewhere—even with a local dialog open—and
   completion after a lost terminal event or runtime restart.
-- Reopening a session discovers queued/running/parked v1 runs and reattaches.
-  Stream failure retains the run ID/cursor and blocks duplicate task input;
+- Reopening a session discovers queued/running/parked v1 runs before reading
+  checkpoint history, retaining the known run even if it finishes during that
+  history read. Live replay has an explicit boundary from saved messages.
+  After a reattached run succeeds, one bounded history refresh can replace the
+  snapshot/replay view with the canonical checkpoint, when a new assistant
+  message or a changed stable-ID assistant clearly contains the finished answer.
+  Identical text alone never collapses two turns. Stale/unchanged/compacted or
+  otherwise ambiguous checkpoints retain the separate, labelled run output.
+  During refresh, new submissions/session changes wait and drafts are kept;
+  `/clear` and stale callbacks cannot restore a previous view. Refresh errors
+  do not turn a completed run into a failed one or erase its answer.
+- Stream failure retains the run ID/cursor and blocks duplicate task input;
   after bounded automatic retries, `/reconnect` retries following without
   starting another task.
 - Ctrl+C cancels the active run; press it **twice** (within 3s) to leave.
@@ -135,9 +169,29 @@ owner must merge this feature from `develop` to `main` for main installations.
   acknowledged draft is cleared only if you have not edited it in the meantime.
 - If submission is not acknowledged, `/retry` resends the **original task** with
   the same request ID and options, not your newer draft. There is no automatic
-  POST retry. Pending submissions and drafts are in memory only; quitting loses
-  them. Retries older than 23 hours are refused. Server-side deduplication and
-  key expiry depend on the runtime's idempotency contract; see
+  POST retry. Before contacting Wisp, the request is durably saved to
+  `~/.local/state/wisp-tui/submission.json` (0600 file, 0700 directory,
+  owner-checked, no symlinks/hardlinks, 1 MiB file limit, 128 KiB prompt limit).
+  It holds the original session/input/options/key/time, a runtime-URL fingerprint
+  (not credentials), and the run ID once acknowledged. File and directory fsync
+  barriers plus atomic replacement protect the request across process exit.
+  The one acknowledged record remains until the next reservation; it is not
+  an accumulating archive. A private advisory lock prevents competing retries
+  from another Wi process. Failed preparation releases an unowned lease;
+  an owned pending request keeps its lease until acknowledged or the client
+  exits, including a replacement followed by failed directory fsync.
+  Unsafe/corrupt state, a conflicting request,
+  or failed persistence blocks fresh work instead of silently starting over.
+  After restart, Wi loads the original session's history, model/mode and active
+  run summary read-only. Seeing a run or matching history is never treated as
+  acknowledgement, and no stream or approval dialog opens for an unidentified
+  request. Only `/retry` explicitly resends the recovered request, never a new
+  editor draft; if requested during that read, it waits for the check to finish.
+  Read failures keep the request reserved and still permit explicit retry.
+  Unsent drafts and cancellation intent remain memory-only.
+  Retries older than 23 hours or with a reversed wall clock are refused; they
+  stay reserved for manual reconciliation. Server-side deduplication and
+  key expiry still depend on the runtime's idempotency contract; see
   [runtime contract notes](RUNTIME_CONTRACT.md).
 - **Inline mode**: no alternate screen — the app renders under your prompt and
   the transcript stays in the terminal scrollback after you quit, like Pi.
@@ -197,6 +251,7 @@ background (SGR 39/49). It does not load private config or contact Wisp. Live sm
 ```
 src/wisp_tui/config.py   private config loading (modeled on ask-wisp)
 src/wisp_tui/sessions.py local session records (JSONL), continue/resume
+src/wisp_tui/submissions.py private durable request journal and recovery lease
 src/wisp_tui/client.py   loopback HTTP client, route allowlist, SSE parser
 src/wisp_tui/history.py  LangGraph checkpoint history → chat messages
 src/wisp_tui/runs.py     run-record validation, single-owner following/recovery
@@ -215,10 +270,18 @@ tests/                   pytest suite incl. Textual pilot app tests
 - Recovery is tested with scripted responses, not yet a funded end-to-end SSH
   task. Discovery covers v1 runs; internal/desktop-origin runs are not included
   by the runtime's default run listing. Do not assume a disconnect cancelled
-  a task. Reattaching may repeat text already present in saved history.
+  a task. Ambiguous reattachment overlap can still show saved text and the
+  separately labelled current-run replay. The verified contract does not yet
+  map checkpoint messages to run IDs or guarantee checkpoint freshness at
+  completion; hiding equal text would risk losing a legitimate repeated reply.
 - Unacknowledged submissions stay reserved until `/retry` succeeds (including
-  HTTP failures); session/model changes are blocked meanwhile. Cross-restart
-  reconciliation of these requests is still planned.
+  HTTP failures); session/model changes are blocked meanwhile, including after
+  restart. No automatic discard or aged-key replay is offered. Inspect Wisp
+  through another client if a record is expired or cannot be reconciled.
+  A busy journal can be rechecked with `/retry`; conflicting requests detected
+  in an already-open client may require quitting and restarting to restore the
+  original record. Older installations with an unsafe state directory are
+  refused, not silently chmodded; restore owner-only permissions first.
 - While parked, the follower polls current run records rather than holding an
   SSE stream open. Answering here or elsewhere resumes following. Backoff/poll
   waits wake immediately; an outstanding HTTP stream read is bounded to 20s
