@@ -102,7 +102,7 @@ owner must merge this feature from `develop` to `main` for main installations.
   resume with history.
 - Pi-style chrome: no header/footer bars — just the chat, a text input
   with tight, thin top/bottom rules, and transparent status/session details
-  under it (state, send/newline hints, help/session/model keys and cancel). Chat and input
+  under it (a status line appears only while there is a state to report). Chat and input
   share a one-column gutter; answers use your terminal's default text color
   rather than a fixed dark/light theme foreground. Your prompts appear as
   full-width blocks in a muted dark teal (`#005f5f`) with light-grey text,
@@ -165,8 +165,8 @@ owner must merge this feature from `develop` to `main` for main installations.
   The answer simply ends, with no completion announcement; sending a follow-up
   keeps the same session and runtime history. After quitting, `wi -c` continues the latest
   saved session; plain `wi` starts fresh.
-- A small animated **Working** spinner sits just above the input's top-left
-  corner during submission and active work. It disappears when the run ends,
+- A small animated **Working** spinner sits in the input's top rule, Pi-style,
+  during submission and active work. It disappears when the run ends,
   without a completion message. Parked, disconnected and cancelling runs use
   explicit waiting/reconnecting/cancelling labels; the animation is local and
   does not poll Wisp or imply that cancellation has succeeded.
@@ -175,10 +175,12 @@ owner must merge this feature from `develop` to `main` for main installations.
   and the client's launch directory. Status updates do not replace these
   details. Blue input rules and normal-contrast footer text use the terminal's
   palette without painting a background. The launch directory and session
-  occupy one row; tokens sit left of the model/thinking summary, with shortcuts
-  below. Narrow terminals stack the summary and shorten the shortcut hints
-  (F1 still lists every key). The session ID and thinking setting have reserved
-  space; long directories truncate with an ellipsis and model names wrap within
+  occupy one row; tokens sit left of the model/thinking summary. A status row
+  below shows the current state (session ready, submitting, the active run,
+  errors, parked runs, the second-Ctrl+C prompt) and hides once a run finishes;
+  F1 lists every key. Narrow terminals stack the summary. The session ID
+  and thinking setting have reserved space; long directories truncate with an
+  ellipsis and model names wrap within
   two rows. `/status` retains the full details. Automatic modes say “auto”; a
   fresh session says “runtime default” until a selection is reported. Missing thinking/token stats
   are hidden, with explanations in `/status`. Thinking is the configured setting,

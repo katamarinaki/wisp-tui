@@ -174,7 +174,7 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       working directory. Bounded, transparent footer and `/status` details;
       offline tests cover same-session follow-ups, selection acknowledgements,
       session resets, malformed usage, literal metadata, resize and PTY output.
-- [x] Small, transparent “Working” spinner above the input's top-left corner
+- [x] Small, transparent “Working” spinner in the input's top rule (border title)
       during submission and active work. Hide it on terminal outcomes, without
       a completion announcement; distinguish approval waits, disconnects and
       cancellation requests. Offline animation/state/layout and PTY checks.
@@ -185,6 +185,13 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       `/status`. Reserve space for the session ID and thinking setting so long
       paths/model IDs cannot hide them. Offline rendered-line checks at 40/80/100
       columns, theme/resize checks and PTY foreground/background checks.
+- [x] Remove Textual's inline-screen `tall` borders: in ANSI mode they draw
+      `▔`/`▁` rows in the default foreground, a bright line above and below
+      the app. Drop the permanent shortcut hints: send/newline keys live in the
+      empty-input placeholder, F1 lists the rest, and the last row shows only a
+      status message while one applies (hidden otherwise). Show the launch
+      directory without a `client:` label. PTY check: no `▔`/`▁` glyphs in
+      the capture.
 - [x] Multiline composer: Enter sends the whole prompt; Ctrl+J inserts a newline
       over ordinary SSH, with Shift+Enter only where the terminal distinguishes
       it. Soft-wrap, grow to six text rows then scroll, preserve busy/newer

@@ -109,7 +109,7 @@ async def test_reattach_replaces_replay_with_one_canonical_answer(
         assert "Current run replay" not in chat_text(app)
         assert "Reattaching" not in chat_text(app)
         assert app._status_state == ""
-        assert not app.query_one("#activity").display
+        assert not str(app.query_one("#input").border_title)
         assert not any(method == "POST" for method, _, _ in client.calls)
         paths = [path for method, path, _ in client.calls]
         assert paths.index(LIST) < paths.index(HISTORY)
@@ -217,7 +217,7 @@ async def test_refresh_failure_never_changes_run_outcome_or_erases_answer(
         assert app.active_run is None
         assert answers(app) == [PARTIAL.text, FINAL.text]
         assert "private exception details" not in chat_text(app) + app._status_state
-        assert not app.query_one("#activity").display
+        assert not str(app.query_one("#input").border_title)
         assert not any(method == "POST" for method, _, _ in client.calls)
 
 
