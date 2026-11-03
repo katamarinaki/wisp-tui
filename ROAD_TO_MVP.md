@@ -165,8 +165,16 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       during submission and active work. Hide it on terminal outcomes, without
       a completion announcement; distinguish approval waits, disconnects and
       cancellation requests. Offline animation/state/layout and PTY checks.
-- [ ] Multiline prompt editor with predictable send/newline keys over Mac SSH.
-- [ ] Pasting multiple lines does not accidentally submit partial commands.
+- [x] Multiline composer: Enter sends the whole prompt; Ctrl+J inserts a newline
+      over ordinary SSH, with Shift+Enter only where the terminal distinguishes
+      it. Soft-wrap, grow to six text rows then scroll, preserve busy/newer
+      drafts, undo/selection, Ctrl+C cancel and UTF-8 size limits. Offline pilot
+      and actual PTY-key checks; owner-run Mac/SSH acceptance remains below.
+- [x] Bracketed multiline paste is one literal edit, never send keys or a
+      sequence of slash commands. Only single-line input dispatches commands
+      on explicit Enter. Cover CRLF/CR, Unicode, tabs/blank lines, undo, pending
+      retry identity, modals, resize and default-background selections/brackets.
+      **Limit:** unbracketed carriage returns cannot be distinguished from Enter.
 - [ ] Minimal input history/draft recovery; no elaborate editor framework.
 - [ ] Show useful tool arguments/results where the runtime actually supplies
       them. Keep long output collapsible/bounded and approval details legible.
@@ -200,7 +208,7 @@ not a release criterion.
 ## Maintenance alongside the MVP
 
 - Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **334 passing tests**, strict mypy passing.
+  Current baseline: **358 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
 - [x] Local Git repository (`main` baseline, work on branches). No remote yet.
 - [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held

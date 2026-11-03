@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import json
 import os
 from pathlib import Path
 import pty
@@ -19,15 +20,16 @@ import pytest
 from tests.helpers import SID
 
 
-@pytest.mark.parametrize("width", [40, 100])
-def test_inline_terminal_keeps_default_background(width: int) -> None:
+def capture_terminal(module: str, width: int,
+                     input_steps: tuple[tuple[bytes, bytes], ...] = ()) -> bytes:
+    pending = list(input_steps)
     root = Path(__file__).resolve().parents[1]
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, width, 0, 0))
     output = bytearray()
     try:
         with subprocess.Popen(
-                [sys.executable, "-m", "tests.terminal_fixture"],
+                [sys.executable, "-m", module],
                 cwd=root, stdin=slave, stdout=slave, stderr=slave,
                 env={"TERM": "xterm-256color", "LANG": "C.UTF-8",
                      "PYTHONPATH": str(root / "src"),
@@ -37,7 +39,9 @@ def test_inline_terminal_keeps_default_background(width: int) -> None:
             deadline = time.monotonic() + 10.0
             try:
                 while True:
-                    assert time.monotonic() < deadline, "terminal fixture timed out"
+                    assert time.monotonic() < deadline, (
+                        f"terminal fixture timed out waiting for {(pending[0][0] if pending else b'exit')!r}; "
+                        f"last output: {bytes(output[-1000:])!r}")
                     ready, _, _ = select.select([master], [], [], 0.1)
                     if not ready:
                         continue
@@ -50,6 +54,9 @@ def test_inline_terminal_keeps_default_background(width: int) -> None:
                     if not chunk:
                         break
                     output.extend(chunk)
+                    while pending and pending[0][0] in output:
+                        _, keys = pending.pop(0)
+                        os.write(master, keys)
                     assert len(output) <= 2_000_000, "terminal capture exceeded limit"
                 assert process.wait(timeout=2.0) == 0, "terminal fixture failed"
             finally:
@@ -60,7 +67,13 @@ def test_inline_terminal_keeps_default_background(width: int) -> None:
         os.close(master)
         if slave >= 0:
             os.close(slave)
-    capture = bytes(output)
+    assert not pending, "terminal fixture exited before input checks completed"
+    return bytes(output)
+
+
+@pytest.mark.parametrize("width", [40, 100])
+def test_inline_terminal_keeps_default_background(width: int) -> None:
+    capture = capture_terminal("tests.terminal_fixture", width)
     hint = f"To continue: wi --resume {SID}".encode()
     assert capture.rstrip().endswith(hint), "resume hint missing after terminal exit"
     assert capture.count(hint) == 1, "resume hint printed more than once"
@@ -94,3 +107,23 @@ def test_inline_terminal_keeps_default_background(width: int) -> None:
     assert extended, "prompt fill missing"
     assert all(re.search(rb"(?:^|;)48;5;23(?:;|$)", codes) for codes in extended), \
         "an extended background other than the prompt fill was emitted"
+
+
+@pytest.mark.parametrize("width", [40, 100])
+def test_bracketed_paste_and_newline_bytes_require_explicit_send(width: int) -> None:
+    from tests.editor_terminal_fixture import PASTE, PROMPT
+
+    capture = capture_terminal("tests.editor_terminal_fixture", width, (
+        (b"EDITOR_READY", b"\x1b[200~" + PASTE.encode() + b"\x1b[201~"),
+        (b"EDITOR_PASTE_READY", b"\x1b[1;5F\ntail"),  # Ctrl+End, Ctrl+J, text
+        (b"EDITOR_NEWLINE_READY", b"\r"),  # Only this physical Enter sends.
+    ))
+    assert b"\x1b[?2004h" in capture, "bracketed paste was not enabled"
+    result_line = capture.split(b"EDITOR_RESULT=", 1)[1].splitlines()[0]
+    result = json.loads(result_line)
+    assert result == {"paste_checked": True, "newline_checked": True,
+                      "inputs": [PROMPT.strip()]}
+    sgr = re.findall(rb"\x1b\[([0-9;:]*)m", capture)
+    extended = [codes for codes in sgr if re.search(rb"(?:^|[;:])48(?:[;:]|$)", codes)]
+    assert all(re.search(rb"(?:^|;)48;5;23(?:;|$)", codes) for codes in extended), \
+        "editor selection/brackets painted a non-default background"

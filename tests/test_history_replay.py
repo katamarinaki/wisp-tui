@@ -6,7 +6,8 @@ from collections import deque
 from typing import Any
 
 import pytest
-from textual.widgets import Input, Markdown
+from textual.widgets import Markdown
+from wisp_tui.editor import PromptInput as Input
 
 from tests.helpers import RID, SID, RequestGate
 from tests.test_app import chat_text, eventually, make_app

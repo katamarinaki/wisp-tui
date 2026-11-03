@@ -6,7 +6,8 @@ from typing import Any
 
 import pytest
 from textual.widget import Widget
-from textual.widgets import Input, Markdown, Static
+from textual.widgets import Markdown, Static
+from wisp_tui.editor import PromptInput as Input
 from textual.widgets._markdown import MarkdownBlock
 
 from tests.helpers import RID, SID

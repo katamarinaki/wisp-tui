@@ -101,11 +101,23 @@ owner must merge this feature from `develop` to `main` for main installations.
   resume with history.
 - Pi-style chrome: no header/footer bars — just the chat, a text input
   with tight, thin top/bottom rules, and transparent status/session details
-  under it (state + `F1 help · F2 sessions · F3 model · Ctrl+C cancel`). Chat and input
+  under it (state, send/newline hints, help/session/model keys and cancel). Chat and input
   share a one-column gutter; answers use your terminal's default text color
   rather than a fixed dark/light theme foreground. Your prompts appear as
   full-width blocks in a muted dark teal (`#005f5f`) with light-grey text,
   including in history. Chat scrollbars are hidden without disabling scrolling.
+- **Multiline composer:** Enter sends the entire prompt; **Ctrl+J** inserts a
+  newline over ordinary SSH. Shift+Enter also inserts a newline if the terminal
+  distinguishes it; some terminals send plain Enter instead, so prefer Ctrl+J.
+  The editor soft-wraps, grows from one to six text rows, then scrolls internally.
+  Arrow/Home/End keys edit the draft; Ctrl+Home/End jump to its start/end.
+  Bracketed paste (including multiline slash-command text) is inserted as text,
+  never as send keys. CRLF/CR paste becomes document newlines; blank lines and
+  tabs are retained. Only pressing Enter sends or executes a command, and slash
+  commands execute only for single-line input. Ctrl+C remains cancel/exit even
+  with selected text. Busy/error states retain the draft; acknowledgements do
+  not erase newer edits or pasted text. The 128 KiB UTF-8 prompt limit is checked
+  before creating a fresh session as well as before reserving a submission.
 - Long sessions stay fast: only the newest 60 chat items are kept on screen
   (opening a session mounts just that tail); a dim marker at the top counts
   what is hidden. Wisp keeps the full history — older turns are still in the
@@ -234,7 +246,7 @@ Mirrors the ask-wisp proxy hardening:
 
 ```sh
 cd wisp-tui   # the checkout
-.venv/bin/python -m pytest tests/    # 214 tests, no network/sockets
+.venv/bin/python -m pytest tests/    # 358 tests, no network/sockets
 .venv/bin/python -m mypy             # strict, src + tests
 ```
 
@@ -244,7 +256,10 @@ by the test suite. A scripted subprocess/PTY test checks inline rendering at
 40 and 100 columns, including Markdown lists/code/tables and an approval
 dialog: the dark-teal prompt fill (`48;5;23`) must be the only painted
 background, and answers must use the terminal-default foreground and
-background (SGR 39/49). It does not load private config or contact Wisp. Live smoke: `wisp-tui --check` (no inference).
+background (SGR 39/49). A second interactive PTY fixture feeds actual bracketed
+paste, Ctrl+J and Enter bytes: no request is sent until explicit Enter, and
+editor selections/brackets must not add a painted background. Neither fixture
+loads private config or contacts Wisp. Live smoke: `wisp-tui --check` (no inference).
 
 ## Layout
 
@@ -255,6 +270,7 @@ src/wisp_tui/submissions.py private durable request journal and recovery lease
 src/wisp_tui/client.py   loopback HTTP client, route allowlist, SSE parser
 src/wisp_tui/history.py  LangGraph checkpoint history → chat messages
 src/wisp_tui/runs.py     run-record validation, single-owner following/recovery
+src/wisp_tui/editor.py   multiline composer, explicit send/newline and literal paste
 src/wisp_tui/app.py      Textual application, workers, approval modal
 src/wisp_tui/__main__.py CLI entry point (--check, --session)
 scripts/wisp-tui         launcher (project venv)
@@ -266,7 +282,10 @@ tests/                   pytest suite incl. Textual pilot app tests
 
 - Normal questions consume the Wisp account balance, exactly like
   Telegram/Desk sessions.
-- Input is single-line for now; multiline/paste handling is an MVP next step.
+- Safe multiline paste requires terminal **bracketed paste**, enabled by Textual.
+  Unbracketed carriage returns are indistinguishable from physical Enter; there
+  is no timing-based guess that can make those safe. Actual Mac/SSH acceptance
+  remains pending. Unsent drafts and previous-prompt history are not persisted.
 - Recovery is tested with scripted responses, not yet a funded end-to-end SSH
   task. Discovery covers v1 runs; internal/desktop-origin runs are not included
   by the runtime's default run listing. Do not assume a disconnect cancelled

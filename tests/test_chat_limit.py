@@ -4,7 +4,8 @@ from __future__ import annotations
 from collections import deque
 
 import pytest
-from textual.widgets import Input, Markdown, Static
+from textual.widgets import Markdown, Static
+from wisp_tui.editor import PromptInput as Input
 
 from tests.helpers import RID, SID
 from tests.test_app import eventually, make_app

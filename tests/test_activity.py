@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import pytest
-from textual.widgets import Input, Static
+from textual.widgets import Static
+from wisp_tui.editor import PromptInput as Input
 
 from tests.helpers import RID, SID, RequestGate
 from tests.test_app import chat_text, eventually, make_app, text_of

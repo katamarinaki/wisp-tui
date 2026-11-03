@@ -5,7 +5,7 @@ import asyncio
 from typing import Any
 
 import pytest
-from textual.widgets import Input
+from wisp_tui.editor import PromptInput as Input
 
 from wisp_tui.app import WispTuiApp
 from tests.helpers import RID, SID, ScriptedClient
