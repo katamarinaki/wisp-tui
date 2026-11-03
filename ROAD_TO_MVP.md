@@ -216,7 +216,15 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       and respect the final assistant text instead of aggregating model rounds.
       Missing IDs/results and nested coverage remain explicit limits; actual SSH
       behavior still needs live acceptance. No new routes or tool execution.
-- [ ] Stop auto-follow when the user scrolls up; offer an obvious way to resume.
+- [x] Stop auto-follow when the user scrolls up; show a transparent clickable
+      paused-follow hint and F4 to jump to the latest output and resume. Support
+      transcript Up/PageUp/Home, End and return-to-bottom without taking editor/tool-body keys;
+      keep tool inspection and approval dialogs independent. Preserve a surviving
+      reading item across tool insertion and bounded history trimming; retain
+      labelled replay while paused instead of replacing the transcript on run
+      completion. Explicit clear/new/session loads restore following. Offline
+      streaming, queued-update, resize, modal, trimming and actual PTY-key checks
+      at 40/100 columns preserve inline mode and the default background.
 - [ ] Check long streamed output, narrow terminals, resize, and modal key handling.
       Preserve the default-background and inline-mode guarantees.
 
@@ -246,7 +254,7 @@ not a release criterion.
 ## Maintenance alongside the MVP
 
 - Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **466 passing tests**, strict mypy passing.
+  Current baseline: **483 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
 - [x] Local Git repository (`main` baseline, work on branches). No remote yet.
 - [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held

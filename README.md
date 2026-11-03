@@ -107,6 +107,16 @@ owner must merge this feature from `develop` to `main` for main installations.
   rather than a fixed dark/light theme foreground. Your prompts appear as
   full-width blocks in a muted dark teal (`#005f5f`) with light-grey text,
   including in history. Chat scrollbars are hidden without disabling scrolling.
+- **Reading during output:** scrolling up in the transcript pauses automatic
+  following. Click the visible paused-follow hint or press **F4** to jump to the
+  latest output and resume. Tab to the transcript for Up/PageUp/Home; End, or
+  scrolling back to the bottom, also resumes following. Editor and tool-body scrolling remain independent. Focusing
+  a tool title pauses following so you can inspect it while work continues.
+  New output keeps a surviving visible item in place when tools are inserted
+  or older items are trimmed; the existing 60-item display limit still applies.
+  While paused, automatic checkpoint replacement leaves labelled replay in
+  place until you reload the session. `/clear`, `/new`, and session loads start
+  following again. F4 does not act through an approval or picker dialog.
 - **Multiline composer:** Enter sends the entire prompt; **Ctrl+J** inserts a
   newline over ordinary SSH. Shift+Enter also inserts a newline if the terminal
   distinguishes it; some terminals send plain Enter instead, so prefer Ctrl+J.
@@ -306,7 +316,7 @@ Mirrors the ask-wisp proxy hardening:
 
 ```sh
 cd wisp-tui   # the checkout
-.venv/bin/python -m pytest tests/    # 466 tests, no network/sockets
+.venv/bin/python -m pytest tests/    # 483 tests, no network/sockets
 .venv/bin/python -m mypy             # strict, src + tests
 ```
 
@@ -324,6 +334,8 @@ Quiet-work PTY coverage also checks that the spinner still animates without
 retransmitting the transcript or sending more than 6 KB over its one-second
 measurement window at 40/100 columns. Relative-cursor tests cover changed rows,
 Unicode, right/bottom edges, modal restoration, resize and full-frame fallback.
+An interactive PTY fixture checks PageUp pause and F4 resume while output arrives,
+including the transparent paused-follow hint at 40/100 columns.
 
 ## Layout
 

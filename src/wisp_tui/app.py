@@ -21,6 +21,7 @@ from rich.console import RenderableType
 from textual import events
 from textual._compositor import InlineUpdate
 from textual.app import App, ComposeResult
+from textual.await_remove import AwaitRemove
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
@@ -28,6 +29,7 @@ from textual.widget import AwaitMount, Widget
 from textual.widgets import Collapsible, ListItem, ListView, Markdown, Static, TextArea
 
 from .client import ClientError, WispClient, TERMINAL_RUN_STATUSES, safe_code
+from .chat_view import ChatScroll, ResumeFollow
 from .config import Config
 from .composer import ComposerError, ComposerState, ComposerStore, bounded_history
 from .editor import PromptInput
@@ -58,6 +60,7 @@ HELP_TEXT = """**wisp-tui** — chat with the local Wisp runtime.
 | F1 | This help |
 | F2 | Session picker |
 | F3 | Model / mode picker |
+| F4 | Resume following the latest output |
 | Ctrl+C | Cancel the active run — press twice to leave |
 
 Bracketed paste stays literal in the editor until you press Enter. Slash
@@ -98,6 +101,13 @@ collapse its details, or Tab to the title and press Enter. Live inputs may be
 sanitized; outputs load from stored session history when a unique call ID is
 available. Long details scroll inside the expanded entry. Collapse/expand
 retries a missing result. Opening details never executes or approves a tool.
+
+Scroll up in the transcript to pause automatic following while output continues.
+Click the paused-follow hint or press F4 to jump to the latest output and resume.
+Tab to the transcript for Up/PageUp/Home navigation; End, or scrolling back
+to the bottom, also resumes following.
+Editor and expanded tool-body scrolling stay independent. Opening a tool with
+Tab pauses following so new output will not pull you away from its details.
 
 While a run is active you will see tool calls as they happen. When Wisp needs
 approval for a tool, a dialog appears: **y** approve, **n** deny, **p** allow
@@ -432,6 +442,10 @@ class WispTuiApp(App[None]):
     }
     #input:focus { background-tint: transparent; }
     #activity { display: none; }
+    #resume-follow {
+        display: none; height: 1; background: transparent; color: ansi_default;
+        text-style: underline;
+    }
     #activity, #status, #session-info, #thinking-info, #usage-info, #location, #session-id {
         height: 1;
         background: transparent;
@@ -475,6 +489,7 @@ class WispTuiApp(App[None]):
         ("f1", "help", "Help"),
         ("f2", "sessions", "Sessions"),
         ("f3", "model", "Model"),
+        ("f4", "resume_follow", "Resume follow"),
         ("ctrl+c", "cancel", "Cancel/exit"),
     ]
 
@@ -557,8 +572,9 @@ class WispTuiApp(App[None]):
     # -- layout ---------------------------------------------------------------
 
     def compose(self) -> ComposeResult:
-        yield VerticalScroll(id="chat")
+        yield ChatScroll(id="chat")
         with Container(id="bottom"):
+            yield ResumeFollow()
             yield self._activity_indicator
             yield PromptInput()
             with Horizontal(id="location-row"):
@@ -723,22 +739,37 @@ class WispTuiApp(App[None]):
         self._render_metadata()
 
     def _scroll_down(self) -> None:
-        self.query_one("#chat", VerticalScroll).scroll_end(animate=False)
+        self.query_one("#chat", ChatScroll).follow_latest()
+
+    def on_chat_scroll_follow_changed(self, event: ChatScroll.FollowChanged) -> None:
+        self.query_one("#resume-follow", ResumeFollow).display = not self.query_one(
+            "#chat", ChatScroll).following
+
+    def on_resume_follow_requested(self, event: ResumeFollow.Requested) -> None:
+        self.action_resume_follow()
+
+    def action_resume_follow(self) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+        self.query_one("#chat", ChatScroll).resume_follow()
 
     def _mount_chat(self, widget: Widget, before: Widget | None = None) -> AwaitMount:
         """Mount in display order, dropping the oldest beyond MAX_CHAT_ITEMS."""
+        self.query_one("#chat", ChatScroll).preserve_reading_position()
         if before is not None and before in self._chat_items:
             mounted = self.query_one("#chat", VerticalScroll).mount(widget, before=before)
             self._chat_items.insert(self._chat_items.index(before), widget)
         else:
             mounted = self.query_one("#chat", VerticalScroll).mount(widget)
             self._chat_items.append(widget)
-        self._trim_chat()
+        removed = self._trim_chat()
+        self.query_one("#chat", ChatScroll).restore_after_update(mounted, *removed)
         return mounted
 
-    def _trim_chat(self) -> None:
+    def _trim_chat(self) -> list[AwaitRemove]:
         streaming = self._stream_view.widget if self._stream_view is not None else None
         removed = 0
+        removals: list[AwaitRemove] = []
         while len(self._chat_items) > self.MAX_CHAT_ITEMS:
             oldest = self._chat_items.popleft()
             if oldest is streaming:
@@ -746,13 +777,14 @@ class WispTuiApp(App[None]):
                 second = self._chat_items.popleft()
                 self._chat_items.appendleft(oldest)
                 oldest = second
-            oldest.remove()
+            removals.append(oldest.remove())
             self._tool_calls = {key: view for key, view in self._tool_calls.items()
                                 if view is not oldest}
             removed += 1
         if removed:
             self._trimmed_count += removed
             self._update_trim_marker()
+        return removals
 
     def _update_trim_marker(self) -> None:
         count = self._trimmed_count
@@ -778,6 +810,7 @@ class WispTuiApp(App[None]):
         self._chat_epoch += 1
         self._reattach_history = None
         self._pending_view_history = None
+        self.query_one("#chat", ChatScroll).resume_follow()
         self.query_one("#chat", VerticalScroll).remove_children()
         self._chat_items.clear()
         self._tool_calls.clear()
@@ -803,8 +836,10 @@ class WispTuiApp(App[None]):
         if not historical and not terminal:
             self._saw_live_tool_events = True
         view = self._tool_calls.get(key) if key else None
+        self.query_one("#chat", ChatScroll).preserve_reading_position()
         if view is not None:
             view.update_event(event, completed=completed)
+            self.query_one("#chat", ChatScroll).restore_after_update()
         else:
             view = ToolCallView(event, completed=completed, historical=historical)
             view.session_id = self.session_id
@@ -852,6 +887,9 @@ class WispTuiApp(App[None]):
             self._request_tool_history(force_after_current=True)
 
     def _apply_tool_history(self, messages: list[ChatMessage], targets: tuple[ToolCallView, ...]) -> None:
+        chat = self.query_one("#chat", ChatScroll)
+        if targets:
+            chat.preserve_reading_position()
         matched, ambiguous = tool_history_results(messages, {view.call_id for view in targets})
         for view in targets:
             if (view not in self._chat_items or view.session_id != self.session_id
@@ -865,6 +903,8 @@ class WispTuiApp(App[None]):
                                    details.status, details.pruned)
             else:
                 view.set_result_notice("Result not in stored history yet. Collapse and expand to retry.")
+        if targets:
+            chat.restore_after_update()
 
     def _request_tool_history(self, *, force_after_current: bool = False) -> None:
         targets = self._tool_targets()
@@ -1609,6 +1649,10 @@ class WispTuiApp(App[None]):
             return
         self._apply_tool_history(messages, self._tool_targets())
         if not checkpoint_covers_answer(before, messages, answer):
+            return
+        # Replacing the entire transcript would displace a reader inspecting
+        # replay. Keep that labelled view until an explicit reload instead.
+        if not self.query_one("#chat", ChatScroll).following:
             return
         hidden = max(0, len(messages) - self.MAX_CHAT_ITEMS)
         self._reset_chat(hidden)

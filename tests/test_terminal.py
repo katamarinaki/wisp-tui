@@ -166,3 +166,18 @@ def test_tool_details_fold_with_real_keys_without_painting_a_background(width: i
     sgr = re.findall(rb"\x1b\[([0-9;:]*)m", capture)
     assert not any(re.search(rb"(?:^|[;:])48(?:[;:]|$)", codes) for codes in sgr), \
         "expanded/focused tool details painted a background"
+
+
+@pytest.mark.parametrize("width", [40, 100])
+def test_follow_pause_and_resume_with_real_keys_keep_the_default_background(width: int) -> None:
+    capture = capture_terminal("tests.scroll_terminal_fixture", width, (
+        (b"SCROLL_READY", b"\x1b[5~"),  # PageUp with the transcript focused.
+        (b"SCROLL_PAUSED_READY", b"\x1bOS"),  # F4 resumes following.
+    ))
+    result = json.loads(capture.split(b"SCROLL_RESULT=", 1)[1].splitlines()[0])
+    assert result == {"paused": True, "resumed": True}
+    assert b"Follow paused" in capture and b"click to resume" in capture
+    assert b"\x1b[?1049h" not in capture, "alternate screen was enabled"
+    sgr = re.findall(rb"\x1b\[([0-9;:]*)m", capture)
+    assert not any(re.search(rb"(?:^|[;:])48(?:[;:]|$)", codes) for codes in sgr), \
+        "follow controls painted a background"
