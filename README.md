@@ -17,7 +17,7 @@ Terminal (SSH) ← TUI ←→ Wisp runtime (127.0.0.1:3008) ←→ its inference
 
 ```bash
 wisp-tui                 # from anywhere (launcher symlink), or:
-/mnt/data/projects/wisp-tui/scripts/wisp-tui
+scripts/wisp-tui         # from the checkout
 wisp-tui --check         # authenticated health check, no TUI, no inference
 wisp-tui --session UUID  # open a specific session
 ```
@@ -112,7 +112,7 @@ Mirrors the ask-wisp proxy hardening:
 ## Verification
 
 ```sh
-cd /mnt/data/projects/wisp-tui
+cd wisp-tui   # the checkout
 .venv/bin/python -m pytest tests/    # 139 tests, no network/sockets
 .venv/bin/python -m mypy             # strict, src + tests
 ```
