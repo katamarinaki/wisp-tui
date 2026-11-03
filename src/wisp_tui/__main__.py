@@ -72,6 +72,10 @@ def main(argv: list[str] | None = None) -> int:
     # Inline mode: no alternate screen — the chat stays in the terminal's
     # scrollback after quitting, like Pi.
     app.run(inline=True, inline_no_clear=True)
+    # Print only after Textual restores the terminal, using the final active
+    # session (which may differ from the one requested at startup).
+    if app.session_id and UUID_RE.fullmatch(app.session_id):
+        print(f"\nTo continue: {parser.prog} --resume {app.session_id}")
     return 0
 
 

@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
-from tests.helpers import ScriptedClient
+from tests.helpers import SID, ScriptedClient
+from wisp_tui import __main__ as cli
 from wisp_tui.app import ApprovalModal, WispTuiApp
 from wisp_tui.config import Config
 from wisp_tui.history import ChatMessage
@@ -19,6 +21,7 @@ class TerminalFixture(WispTuiApp):
         self.set_timer(0.6, self.exit)
 
     def show_transcript(self) -> None:
+        self.session_id = SID
         self._add_message(ChatMessage("user", "Show the server status"))
         self._add_message(ChatMessage("assistant", (
             "# Status\n\n**Scripted response**\n\nNo runtime contacted.\n\n"
@@ -36,7 +39,10 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as state:
         app = TerminalFixture(client, Config(url=client.url, token=client.token),
                               sessions=SessionStore(Path(state) / "sessions"))
-        app.run(inline=True, inline_no_clear=True)
+        with patch.object(cli, "load_config", return_value=app.config), \
+                patch.object(cli, "WispClient", return_value=client), \
+                patch.object(cli, "WispTuiApp", return_value=app):
+            assert cli.main([]) == 0
 
 
 if __name__ == "__main__":

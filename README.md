@@ -29,6 +29,17 @@ Like Pi, every launch starts a **new session**. Nothing is created on the
 runtime until you send the first message; its first line becomes the session
 title (`/new Title` sets one explicitly).
 
+On normal exit (`/quit` or double Ctrl+C), an opened/created session prints a
+copyable command after the terminal is restored:
+
+```text
+To continue: wi --resume 3bf1ba87-6a56-4cef-89ad-358930302894
+```
+
+The command uses your launcher name (`wi` or `wisp-tui`) and the full ID of the
+final active session. An unused fresh session prints no hint. This resumes the
+conversation; it does not persist an unacknowledged submission or unsent draft.
+
 Shorter command: symlink the launcher under any name, e.g.
 `ln -s "$PWD/scripts/wisp-tui" ~/.local/bin/wi`; help and errors then use
 that name. Avoid `wisp`: that is the Wisp runtime's own CLI.
@@ -169,7 +180,7 @@ Mirrors the ask-wisp proxy hardening:
 
 ```sh
 cd wisp-tui   # the checkout
-.venv/bin/python -m pytest tests/    # 204 tests, no network/sockets
+.venv/bin/python -m pytest tests/    # 214 tests, no network/sockets
 .venv/bin/python -m mypy             # strict, src + tests
 ```
 
