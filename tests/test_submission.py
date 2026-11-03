@@ -9,6 +9,7 @@ from textual.widgets import Input
 
 from tests.helpers import RID, SID, RequestGate
 from tests.test_app import chat_text, eventually, make_app
+from wisp_tui.app import Startup
 from wisp_tui.client import ClientError
 
 RUN_PATH = f"/v1/sessions/{SID}/runs"
@@ -17,14 +18,16 @@ COMPLETED: list[dict[str, Any]] = [
 ]
 
 
-@pytest.mark.parametrize("active", [False, True])
-async def test_rejected_input_is_kept(monkeypatch: pytest.MonkeyPatch, active: bool) -> None:
+@pytest.mark.parametrize("state", ["active_run", "session_change"])
+async def test_rejected_input_is_kept(monkeypatch: pytest.MonkeyPatch, state: str) -> None:
     app, client = make_app([], monkeypatch)
     async with app.run_test() as pilot:
         await eventually(lambda: "ready" in app._status_state)
-        if active:
+        if state == "active_run":
             app.session_id = SID
             app.active_run = RID
+        else:
+            app._session_busy = True
         editor = app.query_one("#input", Input)
         editor.value = "keep this draft"
         await pilot.press("enter")
@@ -172,7 +175,7 @@ async def test_stale_model_callback_does_not_patch_another_session(
 async def test_slow_bootstrap_does_not_replace_user_session(
         monkeypatch: pytest.MonkeyPatch) -> None:
     app, client = make_app([], monkeypatch)
-    monkeypatch.setattr("wisp_tui.app.load_last_session", lambda: RID)
+    app.startup = Startup("session", RID)
     gate = RequestGate("GET", "/v1/health")
     client.request_hook = gate
     async with app.run_test():

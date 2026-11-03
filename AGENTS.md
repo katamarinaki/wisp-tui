@@ -26,7 +26,10 @@ reattachment. Do not expand this into a general-purpose Pi replacement.
 
 - **Never** put credentials, tokens or the config contents in code, tests,
   docs, logs or chat output. Config/state live only under `~/.config/wisp-tui`
-  and `~/.local/state/wisp-tui` (0600/0700).
+  and `~/.local/state/wisp-tui` (0600/0700). Local session records
+  (`state/sessions/*.jsonl`) contain conversation content: keep them there,
+  bounded and owner-checked; tests must use the temp state dir
+  (`tests/conftest.py`), never the real one.
 - The runtime URL is always explicit loopback http; keep the no-redirect /
   no-env-proxy client behavior.
 - The client-side route allowlist in `src/wisp_tui/client.py` is deliberate:

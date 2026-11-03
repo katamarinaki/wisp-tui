@@ -5,23 +5,21 @@ live inside the (group-readable) project tree. Expected layout::
 
     ~/.config/wisp-tui/config.json   {"url": "http://127.0.0.1:3008", "token": "...", ...}
 
-State (last opened session) lives under ~/.local/state/wisp-tui/.
+State (locally saved sessions, see sessions.py) lives under
+~/.local/state/wisp-tui/.
 """
 from __future__ import annotations
 
 import json
 import os
 import stat
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 CONFIG_PATH = Path.home() / ".config/wisp-tui/config.json"
 STATE_DIR = Path.home() / ".local/state/wisp-tui"
-STATE_PATH = STATE_DIR / "state.json"
 MAX_CONFIG = 16384
-MAX_STATE = 4096
 
 
 class ConfigError(Exception):
@@ -56,21 +54,6 @@ def _read_private_json(path: Path, maximum: int) -> dict[str, Any]:
     return data
 
 
-def _write_private_json(path: Path, data: dict[str, Any]) -> None:
-    _private_directory(path.parent)
-    fd, temporary = tempfile.mkstemp(prefix=".wisp-tui-", dir=path.parent)
-    try:
-        with os.fdopen(fd, "wb") as target:
-            os.fchmod(target.fileno(), 0o600)
-            target.write((json.dumps(data, indent=2) + "\n").encode())
-            target.flush()
-            os.fsync(target.fileno())
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-
-
 @dataclass(frozen=True)
 class Config:
     url: str
@@ -93,16 +76,3 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     if not isinstance(event_timeout, (int, float)) or not 10.0 <= float(event_timeout) <= 7200.0:
         raise ConfigError("invalid_event_timeout")
     return Config(url=url, token=token, max_turns=max_turns, event_timeout=float(event_timeout))
-
-
-def load_last_session(path: Path = STATE_PATH) -> str | None:
-    try:
-        data = _read_private_json(path, MAX_STATE)
-    except ConfigError:
-        return None
-    session = data.get("last_session")
-    return session if isinstance(session, str) and session else None
-
-
-def save_last_session(session_id: str, path: Path = STATE_PATH) -> None:
-    _write_private_json(path, {"last_session": session_id})

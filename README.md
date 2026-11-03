@@ -16,11 +16,17 @@ Terminal (SSH) ← TUI ←→ Wisp runtime (127.0.0.1:3008) ←→ its inference
 ## Running
 
 ```bash
-wisp-tui                 # from anywhere (launcher symlink), or:
-scripts/wisp-tui         # from the checkout
+wisp-tui                 # new session (from anywhere, via the launcher symlink)
+scripts/wisp-tui         # same, from the checkout
+wisp-tui -c              # --continue: the most recent locally saved session
+wisp-tui -r              # --resume: pick a locally saved session
+wisp-tui --session UUID  # open a specific Wisp session
 wisp-tui --check         # authenticated health check, no TUI, no inference
-wisp-tui --session UUID  # open a specific session
 ```
+
+Like Pi, every launch starts a **new session**. Nothing is created on the
+runtime until you send the first message; its first line becomes the session
+title (`/new Title` sets one explicitly).
 
 First-time setup: `scripts/setup` copies the credential from the ask-wisp
 config into `~/.config/wisp-tui/config.json` (0600). Both tools currently
@@ -30,7 +36,18 @@ later with the Wisp CLI if desired.
 
 ## Features
 
-- Session list (F2) across origins (cli/telegram/desktop), resume with history.
+- **Saved sessions (Pi-style).** Every session you use here is recorded
+  locally as JSONL: `~/.local/state/wisp-tui/sessions/<time>_<id>.jsonl`
+  (0600 file, 0700 dir, owner-checked, no symlinks, 16 MiB cap per file). It
+  holds your prompts, final answers, tool results, approval decisions (with
+  the tool and arguments you approved) and run outcomes — not every streamed
+  delta. `-c`/`-r`/`/resume` use these records; the conversation itself is
+  still loaded from the Wisp runtime, which remains the source of truth (if a
+  session was deleted there, the TUI says so and shows the local file path).
+  Unlike Pi, sessions are not grouped by directory: Wisp does not run in your
+  working directory.
+- All Wisp sessions (F2 / `/sessions`) across origins (cli/telegram/desktop),
+  resume with history.
 - Pi-style chrome: no header/footer bars — just the chat, a text input
   with tight, thin top/bottom rules, and a transparent contextual line under it
   (state + `F1 help · F2 sessions · F3 model · Ctrl+C cancel`). Chat and input
@@ -42,7 +59,8 @@ later with the Wisp CLI if desired.
   (opening a session mounts just that tail); a dim marker at the top counts
   what is hidden. Wisp keeps the full history — older turns are still in the
   session context, just not rendered here.
-- New sessions (`/new [title]`), model/mode picker (F3) per session.
+- New sessions (`/new [title]`), model/mode picker (F3) per session (F3 on a
+  fresh session creates it first).
 - Runs submitted with `confirmationMode: "interactive"`, `wait: false`, then
   followed over SSE (`GET /v1/runs/{id}/events`): `text.delta` streaming,
   `tool_call` lines, `gap` recovery (server text wins), `Last-Event-ID` resume
@@ -63,7 +81,7 @@ later with the Wisp CLI if desired.
   ID to be acknowledged. The runtime must confirm the terminal status.
   Quitting leaves server-side runs running (re-open the session to reattach).
   Runtime cancellation affects the current run and its queued work.
-- Commands: `/help /new /sessions /model /cancel /retry /reconnect /status /clear /quit`.
+- Commands: `/help /new /resume /sessions /model /cancel /retry /reconnect /status /clear /quit`.
 - Submission is reserved before the request starts: double-send and concurrent
   session/model changes are blocked. Input rejected while busy is kept. The
   acknowledged draft is cleared only if you have not edited it in the meantime.
@@ -114,7 +132,7 @@ Mirrors the ask-wisp proxy hardening:
 
 ```sh
 cd wisp-tui   # the checkout
-.venv/bin/python -m pytest tests/    # 140 tests, no network/sockets
+.venv/bin/python -m pytest tests/    # 165 tests, no network/sockets
 .venv/bin/python -m mypy             # strict, src + tests
 ```
 
@@ -129,7 +147,8 @@ background (SGR 39/49). It does not load private config or contact Wisp. Live sm
 ## Layout
 
 ```
-src/wisp_tui/config.py   private config/state loading (modeled on ask-wisp)
+src/wisp_tui/config.py   private config loading (modeled on ask-wisp)
+src/wisp_tui/sessions.py local session records (JSONL), continue/resume
 src/wisp_tui/client.py   loopback HTTP client, route allowlist, SSE parser
 src/wisp_tui/history.py  LangGraph checkpoint history → chat messages
 src/wisp_tui/runs.py     run-record validation, single-owner following/recovery

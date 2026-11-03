@@ -5,7 +5,7 @@ import argparse
 import sys
 
 from . import __version__
-from .app import WispTuiApp
+from .app import Startup, WispTuiApp, UUID_RE
 from .client import WispClient, ClientError
 from .config import ConfigError, load_config
 
@@ -16,10 +16,17 @@ def main(argv: list[str] | None = None) -> int:
         description="Terminal chat client for the local Wisp runtime (loopback only).")
     parser.add_argument("--check", action="store_true",
                         help="Authenticated health check only; no TUI, no inference.")
-    parser.add_argument("--session", metavar="UUID",
-                        help="Open a specific session instead of the last one.")
+    start = parser.add_mutually_exclusive_group()
+    start.add_argument("-c", "--continue", dest="resume_latest", action="store_true",
+                       help="Continue the most recent locally saved session.")
+    start.add_argument("-r", "--resume", action="store_true",
+                       help="Pick a locally saved session to resume.")
+    start.add_argument("--session", metavar="UUID",
+                       help="Open a specific Wisp session.")
     parser.add_argument("--version", action="version", version="wisp-tui " + __version__)
     args = parser.parse_args(argv)
+    if args.session is not None and not UUID_RE.fullmatch(args.session):
+        parser.error("--session expects a session UUID")
     try:
         config = load_config()
     except ConfigError as error:
@@ -39,10 +46,16 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print("wisp-tui: authenticated, runtime ready. No inference started.")
         return 0
-    app = WispTuiApp(client, config)
+    # Default: a fresh session (created by the first message), like Pi.
     if args.session:
-        from .config import save_last_session
-        save_last_session(args.session)
+        startup = Startup("session", args.session)
+    elif args.resume_latest:
+        startup = Startup("continue")
+    elif args.resume:
+        startup = Startup("resume")
+    else:
+        startup = Startup()
+    app = WispTuiApp(client, config, startup)
     # Inline mode: no alternate screen — the chat stays in the terminal's
     # scrollback after quitting, like Pi.
     app.run(inline=True, inline_no_clear=True)

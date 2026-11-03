@@ -42,9 +42,8 @@ async def eventually(condition: Any, timeout: float = 5.0) -> None:
 def make_app(events: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch) -> tuple[
         WispTuiApp, ScriptedClient]:
     client = ScriptedClient(events)
+    # Local session records go to the per-test state dir (tests/conftest.py).
     app = WispTuiApp(client, Config(url=client.url, token=client.token))
-    monkeypatch.setattr("wisp_tui.app.load_last_session", lambda *a, **k: None)
-    monkeypatch.setattr("wisp_tui.app.save_last_session", lambda *a, **k: None)
     return app, client
 
 
