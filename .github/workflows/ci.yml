@@ -1,0 +1,38 @@
+name: CI
+
+# Public repo: runs on GitHub-hosted runners only. Never point this at the
+# homeserver's self-hosted runner — fork PRs would execute code there.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install pinned dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --require-virtualenv -r requirements-dev.txt
+          .venv/bin/python -m pip check
+      - name: Tests (no network; includes the PTY rendering check)
+        run: .venv/bin/python -m pytest tests/ -q
+      - name: Type check (strict)
+        run: .venv/bin/python -m mypy
