@@ -1,12 +1,14 @@
 """Scripted terminal rendering fixture. Never reads real config or contacts Wisp."""
 from __future__ import annotations
 
-from unittest.mock import patch
+import tempfile
+from pathlib import Path
 
 from tests.helpers import ScriptedClient
 from wisp_tui.app import ApprovalModal, WispTuiApp
 from wisp_tui.config import Config
 from wisp_tui.history import ChatMessage
+from wisp_tui.sessions import SessionStore
 
 
 class TerminalFixture(WispTuiApp):
@@ -30,9 +32,10 @@ class TerminalFixture(WispTuiApp):
 
 def main() -> None:
     client = ScriptedClient([])
-    with patch("wisp_tui.app.load_last_session", return_value=None), \
-            patch("wisp_tui.app.save_last_session"):
-        app = TerminalFixture(client, Config(url=client.url, token=client.token))
+    # Local session records go to a throwaway directory, never the real state.
+    with tempfile.TemporaryDirectory() as state:
+        app = TerminalFixture(client, Config(url=client.url, token=client.token),
+                              sessions=SessionStore(Path(state) / "sessions"))
         app.run(inline=True, inline_no_clear=True)
 
 

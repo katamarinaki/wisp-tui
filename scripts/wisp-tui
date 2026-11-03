@@ -1,6 +1,14 @@
 #!/bin/sh
 # wisp-tui launcher: runs the app from the project venv. Resolves its own
-# location (through the ~/.local/bin symlink), so the checkout can live anywhere.
+# location (through ~/.local/bin symlinks), so the checkout can live anywhere.
+# Symlink it under any name (e.g. `wi`); help and errors use that name.
 set -eu
 ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
-exec env PYTHONPATH="$ROOT/src" "$ROOT/.venv/bin/python" -m wisp_tui "$@"
+# Run updates without importing Textual or loading private runtime config.
+if [ "${1-}" = update ]; then
+    shift
+    exec env PYTHONPATH="$ROOT/src" WISP_TUI_PROG="$(basename "$0")" \
+        "$ROOT/.venv/bin/python" -m wisp_tui.update "$@"
+fi
+exec env PYTHONPATH="$ROOT/src" WISP_TUI_PROG="$(basename "$0")" \
+    "$ROOT/.venv/bin/python" -m wisp_tui "$@"

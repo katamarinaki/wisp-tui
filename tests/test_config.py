@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 from pathlib import Path
 
 import pytest
 
 from wisp_tui import config as config_mod
-from wisp_tui.config import ConfigError, load_config, load_last_session, save_last_session
+from wisp_tui.config import ConfigError, load_config
 
 
 def write_config(path: Path, data: dict[str, object], mode: int = 0o600) -> None:
@@ -49,19 +48,3 @@ class TestLoadConfig:
                             "max_turns": 0})
         with pytest.raises(ConfigError):
             load_config(path)
-
-
-class TestState:
-    def test_roundtrip(self, tmp_path: Path) -> None:
-        path = tmp_path / "state.json"
-        assert load_last_session(path) is None
-        save_last_session("3bf1ba87-760e-4c0c-8a9d-a88a581d6bc5", path)
-        assert load_last_session(path) == "3bf1ba87-760e-4c0c-8a9d-a88a581d6bc5"
-        mode = stat.S_IMODE(path.stat().st_mode)
-        assert mode & 0o077 == 0
-
-    def test_corrupt_state_returns_none(self, tmp_path: Path) -> None:
-        path = tmp_path / "state.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("not json")
-        assert load_last_session(path) is None

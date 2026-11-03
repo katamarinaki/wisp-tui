@@ -13,6 +13,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from textual.app import App, ComposeResult
@@ -22,11 +23,14 @@ from textual.widget import AwaitMount, Widget
 from textual.widgets import Input, ListItem, ListView, Markdown, Static
 
 from .client import ClientError, WispClient, TERMINAL_RUN_STATUSES, safe_code
-from .config import Config, load_last_session, save_last_session
+from .config import Config
 from .history import ChatMessage, parse_history
 from .runs import RunFollower, find_active_run
+from .sessions import SessionStore
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+# A session ID or a prefix of one (as shown in pickers), for --resume / /resume.
+RESUME_QUERY_RE = re.compile(r"[0-9a-f][0-9a-f-]{3,35}")
 
 HINTS = "F1 help · F2 sessions · F3 model · Ctrl+C cancel/exit"
 
@@ -40,7 +44,14 @@ HELP_TEXT = """**wisp-tui** — chat with the local Wisp runtime.
 | F3 | Model / mode picker |
 | Ctrl+C | Cancel the active run — press twice to leave |
 
-**Commands:** `/new [title]`, `/sessions`, `/model`, `/cancel`, `/retry`, `/reconnect`, `/status`, `/clear`, `/help`, `/quit`.
+**Commands:** `/new [title]`, `/resume`, `/sessions`, `/model`, `/cancel`, `/retry`, `/reconnect`, `/status`, `/clear`, `/help`, `/quit`.
+
+**Sessions:** every launch starts fresh; your first message creates the Wisp
+session. `/new` starts another one. Sessions you use here are saved locally
+(`~/.local/state/wisp-tui/sessions/`): `/resume` (or `wisp-tui -r`) picks one,
+`/resume 3bf1ba87` (or `wisp-tui -r 3bf1ba87`) opens it by ID prefix, and
+`wisp-tui -c` continues the most recent. `/sessions` (F2) lists all Wisp
+sessions, including Telegram/desktop ones.
 
 `/retry` retries an unacknowledged submission with its original input and request
 ID. It never sends your newer draft. Drafts and pending submissions are held in
@@ -83,6 +94,23 @@ class PendingSubmission:
             "maxTurns": self.max_turns,
             "idempotencyKey": self.key,
         }
+
+
+FRESH_STATUS = "ready · new session — your first message starts it (/resume, F2)"
+
+
+@dataclass(frozen=True)
+class Startup:
+    """How the app starts: a fresh session (default) or an existing one."""
+    mode: str = "new"  # "new" | "continue" | "resume" | "session"
+    # "session": a full UUID. "resume": optional ID or prefix ("" = picker).
+    session_id: str = ""
+
+
+def _title_from(draft: str, limit: int = 60) -> str:
+    """Session title from the first non-empty line of the first prompt."""
+    line = next((line.strip() for line in draft.splitlines() if line.strip()), "")
+    return line if len(line) <= limit else line[: limit - 1] + "…"
 
 
 class StreamView:
@@ -179,33 +207,36 @@ class ApprovalModal(ModalScreen[str | None]):
         self.dismiss("allow_global")
 
 
+def server_session_label(session: dict[str, Any]) -> str:
+    sid = str(session.get("id", ""))
+    title = _safe_text(session.get("title"), 60) or "(untitled)"
+    origin = session.get("origin", "?")
+    count = session.get("messageCount", "?")
+    updated = _safe_text(session.get("updatedAt"), 20).replace("T", " ")
+    return f"{title}  ·  {origin}  ·  {count} msg  ·  {updated}  ·  {sid[:8]}"
+
+
 class SessionPicker(ModalScreen[str | None]):
-    """Pick an existing session from a list."""
+    """Pick a session from ``(session id, label)`` entries."""
 
     BINDINGS = [("escape", "close", "Close")]
 
-    def __init__(self, sessions: list[dict[str, Any]]) -> None:
+    def __init__(self, entries: list[tuple[str, str]],
+                 title: str = "Sessions (newest first)") -> None:
         super().__init__()
-        self.sessions = sessions
+        self.entries = entries
+        self.heading = title
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker-dialog"):
-            yield Static("Sessions (newest first)", id="picker-title", markup=False)
-            items = []
-            for session in self.sessions:
-                sid = session.get("id", "")
-                title = _safe_text(session.get("title"), 60) or "(untitled)"
-                origin = session.get("origin", "?")
-                count = session.get("messageCount", "?")
-                updated = _safe_text(session.get("updatedAt"), 20).replace("T", " ")
-                label = f"{title}  ·  {origin}  ·  {count} msg  ·  {updated}  ·  {sid[:8]}"
-                items.append(ListItem(Static(label, markup=False)))
+            yield Static(self.heading, id="picker-title", markup=False)
+            items = [ListItem(Static(label, markup=False)) for _, label in self.entries]
             yield ListView(*items, id="session-list")
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         index = event.list_view.index if event.list_view.index is not None else -1
-        if 0 <= index < len(self.sessions):
-            self.dismiss(str(self.sessions[index].get("id", "")))
+        if 0 <= index < len(self.entries):
+            self.dismiss(self.entries[index][0])
         else:
             self.dismiss("")
 
@@ -356,7 +387,9 @@ class WispTuiApp(App[None]):
         ("ctrl+c", "cancel", "Cancel/exit"),
     ]
 
-    def __init__(self, client: WispClient, config: Config) -> None:
+    def __init__(self, client: WispClient, config: Config,
+                 startup: Startup | None = None,
+                 sessions: SessionStore | None = None) -> None:
         # ansi_color=True disables the ANSI→truecolor filter, so
         # `background: ansi_default` reaches the terminal as SGR 49
         # ("terminal default background") instead of being rewritten to a
@@ -365,6 +398,11 @@ class WispTuiApp(App[None]):
         super().__init__(ansi_color=True)
         self.client = client
         self.config = config
+        self.startup = startup or Startup()
+        self.sessions = sessions or SessionStore()
+        # Title for the session that the next first message will create.
+        self._fresh_title = ""
+        self._record_error_shown = False
         self.session_id: str | None = None
         self.session_title: str = ""
         self.active_run: str | None = None
@@ -432,15 +470,24 @@ class WispTuiApp(App[None]):
         if status != "ready":
             self.call_from_thread(self._status, "runtime_not_ready")
             return
-        self.call_from_thread(self._bootstrap_complete, load_last_session())
+        self.call_from_thread(self._bootstrap_complete)
 
-    def _bootstrap_complete(self, last: str | None) -> None:
+    def _bootstrap_complete(self) -> None:
         # A slow health check must not replace a session the user just opened.
         if self.session_id is not None or self._session_busy:
             return
-        self._status("ready · no session (/new, /sessions)")
-        if last and UUID_RE.fullmatch(last):
-            self._open_session(last)
+        self._status(FRESH_STATUS)
+        mode = self.startup.mode
+        if mode == "session" and UUID_RE.fullmatch(self.startup.session_id):
+            self._open_session(self.startup.session_id)
+        elif mode == "continue":
+            latest = self.sessions.latest()
+            if latest:
+                self._open_session(latest)
+            else:
+                self._sysline("No saved sessions yet — starting a new one.")
+        elif mode == "resume":
+            self.action_resume(self.startup.session_id)
 
     # -- chat rendering (main thread only) --------------------------------------
 
@@ -542,7 +589,17 @@ class WispTuiApp(App[None]):
             self._sysline("Session change in progress — your draft is kept.")
             return
         if self.session_id is None:
-            self._sysline("No session yet — use /new or /sessions (F2). Your draft is kept.")
+            # Fresh start: create the Wisp session now, then submit. Nothing is
+            # created on the server until there is something to send.
+            draft = event.value
+            self._new_session(self._fresh_title or _title_from(draft),
+                              on_ready=lambda: self._start_submission(draft),
+                              announce=False)
+            return
+        self._start_submission(event.value)
+
+    def _start_submission(self, draft: str) -> None:
+        if self.session_id is None:
             return
         if self._pending_submission is not None:
             self._sysline("Submission pending — wait, or use /retry after an error. Your draft is kept.")
@@ -551,7 +608,7 @@ class WispTuiApp(App[None]):
             self._sysline("A run is already active — /cancel (Ctrl+C) it first. Your draft is kept.")
             return
         self._pending_submission = PendingSubmission(
-            self.session_id, event.value, self.config.max_turns,
+            self.session_id, draft, self.config.max_turns,
             "wisp-tui:" + str(uuid.uuid4()))
         self._submit_pending()
 
@@ -605,6 +662,8 @@ class WispTuiApp(App[None]):
         if editor.value == pending.draft:
             editor.value = ""
         self._add_message(ChatMessage(role="user", text=pending.draft.strip()))
+        self._record({"type": "message", "role": "user", "text": pending.draft.strip(),
+                      "runId": run_id}, pending.session_id)
         self._turn_started(run_id)
         self._start_follow()
         if self._cancel_after_submit:
@@ -700,6 +759,9 @@ class WispTuiApp(App[None]):
             seconds = f" {duration / 1000:.1f}s" if isinstance(duration, (int, float)) else ""
             mark = "ok" if ok else "FAILED"
             self._sysline(f"tool {event.get('name', '?')} → {mark}{seconds}", "tool")
+            self._record({"type": "tool", "runId": self.active_run,
+                          "name": _safe_text(str(event.get("name", "?")), 200), "ok": ok,
+                          "durationMs": duration if isinstance(duration, (int, float)) else None})
         elif kind == "confirmation.resolved":
             prompt_id = event.get("id")
             if isinstance(prompt_id, str):
@@ -767,6 +829,11 @@ class WispTuiApp(App[None]):
             return
         if prompt_id in self._approval_inflight | self._answered_prompts:
             return
+        tool, args = next(((t, a) for _, pid, t, a in self.pending_prompts if pid == prompt_id),
+                          ("?", None))
+        self._record({"type": "approval", "runId": run_id, "promptId": prompt_id,
+                      "tool": _safe_text(tool, 200), "args": _pretty_args(args),
+                      "decision": decision})
         self.pending_prompts = deque(p for p in self.pending_prompts if p[1] != prompt_id)
         self._approval_inflight.add(prompt_id)
         self._status(f"approval {decision} · sending…")
@@ -790,6 +857,9 @@ class WispTuiApp(App[None]):
         if self.active_run != run_id:
             return
         self._approval_inflight.discard(prompt_id)
+        if code:
+            self._record({"type": "approval_result", "runId": run_id,
+                          "promptId": prompt_id, "error": code})
         if not code:
             self._answered_prompts.add(prompt_id)
         elif code.startswith("runtime_http_404"):
@@ -811,6 +881,10 @@ class WispTuiApp(App[None]):
                 text = output["text"]
             if text:
                 self._show_stream_text(text)
+            answer = text or self._delta_text
+            if answer:
+                self._record({"type": "message", "role": "assistant", "text": answer,
+                              "runId": self.active_run})
             usage = self._usage_line(data.get("usage"))
             self._status("run completed" + (f" · {usage}" if usage else ""))
         elif kind == "run.failed":
@@ -819,9 +893,12 @@ class WispTuiApp(App[None]):
                 failure = {}
             reason = safe_code(failure.get("reason"), "unknown")
             self._sysline(f"run failed: {reason}", "error")
+            self._record({"type": "run", "runId": self.active_run, "status": "failed",
+                          "reason": reason})
             self._status("run failed")
         else:
             self._sysline("run cancelled", "tool")
+            self._record({"type": "run", "runId": self.active_run, "status": "cancelled"})
             self._status("run cancelled")
         self._finish_run()
 
@@ -877,7 +954,13 @@ class WispTuiApp(App[None]):
             return
 
         def work() -> None:
-            session = self.client.request("GET", f"/v1/sessions/{session_id}")
+            try:
+                session = self.client.request("GET", f"/v1/sessions/{session_id}")
+            except ClientError as error:
+                if str(error).startswith("runtime_http_404"):
+                    self.call_from_thread(self._session_missing, session_id)
+                    return
+                raise
             if not isinstance(session, dict) or session.get("id") != session_id:
                 self.call_from_thread(self._sysline, "session no longer exists", "error")
                 return
@@ -890,8 +973,32 @@ class WispTuiApp(App[None]):
 
         self._run_threaded(work, group="load", on_done=self._release_session_change)
 
+    def _session_missing(self, session_id: str) -> None:
+        self._status("session not found on the runtime")
+        path = self.sessions.path_for(session_id)
+        note = f" Your local record: {self._display_path(path)}" if path else ""
+        self._sysline(f"Session {session_id[:8]} no longer exists on the Wisp runtime.{note}",
+                      "error")
+
+    @staticmethod
+    def _display_path(path: Path) -> str:
+        home = str(Path.home())
+        text = str(path)
+        return "~" + text[len(home):] if text.startswith(home + "/") else text
+
+    def _record(self, entry: dict[str, Any], session_id: str | None = None) -> None:
+        """Append to the local session record; report a failure once."""
+        target = session_id or self.session_id
+        if target is None:
+            return
+        title = "" if self.session_title == "(untitled)" else self.session_title
+        code = self.sessions.record(target, entry, title=title)
+        if code and not self._record_error_shown:
+            self._record_error_shown = True
+            self._sysline(f"Local session record unavailable: {code}", "error")
+
     def _session_loaded(self, session: dict[str, Any], messages: list[ChatMessage],
-                        active_run_id: str) -> None:
+                        active_run_id: str, announce_empty: bool = True) -> None:
         self.session_id = str(session.get("id", ""))
         self.session_title = _safe_text(session.get("title"), 80) or "(untitled)"
         self.title = f"Wisp — {self.session_title}"
@@ -900,9 +1007,8 @@ class WispTuiApp(App[None]):
         self._reset_chat(hidden)
         for message in messages[hidden:]:
             self._add_message(message)
-        if not messages:
+        if not messages and announce_empty:
             self._sysline(f"Session '{self.session_title}' is empty. Say something to start.")
-        save_last_session(self.session_id)
         self._status(f"session {self.session_id[:8]} · {self._model_label(session)}")
         if active_run_id:
             self._turn_started(active_run_id)
@@ -920,7 +1026,9 @@ class WispTuiApp(App[None]):
             return f"{mode}{thinking}"
         return "runtime default"
 
-    def _new_session(self, title: str) -> None:
+    def _new_session(self, title: str, on_ready: Callable[[], None] | None = None,
+                     announce: bool = True) -> None:
+        """Create a Wisp session now; then run ``on_ready`` (e.g. submit)."""
         if not self._reserve_session_change():
             return
         body: dict[str, Any] = {"origin": "cli"}
@@ -928,14 +1036,79 @@ class WispTuiApp(App[None]):
             body["title"] = title
 
         def work() -> None:
-            session = self.client.request("POST", "/v1/sessions", body)
+            try:
+                session = self.client.request("POST", "/v1/sessions", body)
+            except ClientError as error:
+                self.call_from_thread(self._session_create_failed, str(error))
+                return
+            except Exception:
+                self.call_from_thread(self._session_create_failed, "internal_error")
+                return
             if (isinstance(session, dict) and isinstance(session.get("id"), str)
                     and UUID_RE.fullmatch(session["id"])):
-                self.call_from_thread(self._session_loaded, session, [], "")
+                self.call_from_thread(self._session_created, session, on_ready, announce)
             else:
-                self.call_from_thread(self._sysline, "runtime returned an invalid session", "error")
+                self.call_from_thread(self._session_create_failed, "invalid_session")
 
-        self._run_threaded(work, group="load", on_done=self._release_session_change)
+        self._run_threaded(work, group="load")
+
+    def _session_created(self, session: dict[str, Any],
+                         on_ready: Callable[[], None] | None, announce: bool) -> None:
+        # Release before continuing, so the continuation (submit, model
+        # picker) is not mistaken for a session change still in progress.
+        self._release_session_change()
+        self._fresh_title = ""
+        self._session_loaded(session, [], "", announce_empty=announce)
+        if on_ready is not None:
+            on_ready()
+
+    def _session_create_failed(self, code: str) -> None:
+        self._release_session_change()
+        self._status(f"error: {code}")
+        self._sysline(f"Could not start a Wisp session ({code}). Your draft is kept.", "error")
+
+    def _start_fresh(self, title: str) -> None:
+        """/new: leave the current session; the next message creates one."""
+        if not self._reserve_session_change():
+            return
+        self._release_session_change()
+        self.session_id = None
+        self.session_title = ""
+        self.title = "wisp-tui"
+        self._fresh_title = title
+        self._reset_chat()
+        self._status(FRESH_STATUS)
+
+    def action_resume(self, query: str = "") -> None:
+        """Saved-session picker; with an ID or prefix, open the match directly."""
+        if self._approval_modal is not None:
+            return
+        query = query.strip().lower()
+        if query and not RESUME_QUERY_RE.fullmatch(query):
+            self._sysline("Usage: /resume [session ID or prefix, 4+ hex characters]")
+            return
+        summaries = self.sessions.list(limit=10_000) if query else self.sessions.list()
+        if query:
+            matches = self.sessions.find(query)
+            if len(matches) == 1:
+                self._open_session(matches[0])
+                return
+            if not matches:
+                if UUID_RE.fullmatch(query):
+                    # Not saved here, but a full ID may still be a Wisp session.
+                    self._open_session(query)
+                    return
+                self._sysline(f"No saved session matches '{query}'. F2 lists all Wisp sessions.")
+                return
+            wanted = set(matches)
+            summaries = [item for item in summaries if item.id in wanted]
+        if not summaries:
+            self._sysline("No saved sessions yet — sessions are saved as you chat.")
+            return
+        heading = (f"Saved sessions matching '{query}'" if query
+                   else "Saved sessions (newest first)")
+        self.push_screen(SessionPicker([(item.id, item.label()) for item in summaries],
+                                       heading), self._picker_answered)
 
     def action_sessions(self) -> None:
         def work() -> None:
@@ -950,10 +1123,13 @@ class WispTuiApp(App[None]):
     def _show_session_picker(self, sessions: list[dict[str, Any]]) -> None:
         if self._approval_modal is not None:
             return
-        if not sessions:
-            self._sysline("No sessions yet — /new starts one.")
+        entries = [(str(item.get("id", "")), server_session_label(item))
+                   for item in sessions if isinstance(item, dict)]
+        if not entries:
+            self._sysline("No Wisp sessions yet — your first message starts one.")
             return
-        self.push_screen(SessionPicker(sessions), self._picker_answered)
+        self.push_screen(SessionPicker(entries, "Wisp sessions, all clients (newest first)"),
+                         self._picker_answered)
 
     def _picker_answered(self, session_id: str | None) -> None:
         if session_id and UUID_RE.fullmatch(session_id):
@@ -961,7 +1137,8 @@ class WispTuiApp(App[None]):
 
     def action_model(self) -> None:
         if self.session_id is None:
-            self._sysline("No session — the model is picked per session (/new first).")
+            # The model is chosen per session: start one now, then pick.
+            self._new_session(self._fresh_title, on_ready=self.action_model, announce=False)
             return
 
         session_id = self.session_id
@@ -1071,7 +1248,9 @@ class WispTuiApp(App[None]):
         if command == "/help":
             self._show_help()
         elif command == "/new":
-            self._new_session(_safe_text(argument, 80))
+            self._start_fresh(_safe_text(argument, 80))
+        elif command == "/resume":
+            self.action_resume(argument)
         elif command == "/sessions":
             self.action_sessions()
         elif command == "/model":

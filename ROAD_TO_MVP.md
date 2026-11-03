@@ -19,7 +19,8 @@ do not assume they are a stable public API or invent unsupported capabilities.
 ## Already available
 
 - Direct runtime chat with streamed Markdown and basic tool progress.
-- Session creation, browsing, history, and last-session restore.
+- Session creation, browsing, and history; Pi-style fresh start per launch
+  with locally saved sessions (`-c` continue, `-r`/`/resume` picker).
 - Session model/mode picker.
 - Explicit interactive approvals and cancellation.
 - Inline terminal rendering with the terminal's own background.
@@ -122,6 +123,11 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       tail; marker counts hidden items; the streaming answer is never dropped;
       `/clear` mid-answer continues in a fresh widget). 500-exchange session:
       load 22s → ~1s, streaming 2k chars 27s → ~2s (headless benchmark).
+- [x] Fresh session per launch (created lazily by the first message, titled
+      from it); `/new` is lazy too. Sessions used here are recorded locally
+      as private JSONL (prompts, answers, tools, approval decisions, outcomes)
+      and drive `-c`/`-r`/`/resume` (`-r ID`/`/resume ID` accept an ID prefix);
+      the runtime stays the source of truth.
 - [ ] Multiline prompt editor with predictable send/newline keys over Mac SSH.
 - [ ] Pasting multiple lines does not accidentally submit partial commands.
 - [ ] Minimal input history/draft recovery; no elaborate editor framework.
@@ -157,12 +163,18 @@ not a release criterion.
 ## Maintenance alongside the MVP
 
 - Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **140 passing tests**, strict mypy passing.
+  Current baseline: **204 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
 - [x] Local Git repository (`main` baseline, work on branches). No remote yet.
 - [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held
       to 8.2.x, drift test, documented upgrade checklist (README).
-- [ ] Remote + CI running pytest/mypy (owner decision: where to host).
+- [x] Public remote `katamarinaki/wisp-tui`; CI runs pytest + strict mypy on
+      GitHub-hosted runners (`main`, `develop`, PRs). Work lands on `develop`.
+- [x] `wi update` / `wisp-tui update`: fetch fresh `origin/main`, safely
+      switch/fast-forward to `main`, refresh pinned project-venv dependencies.
+      Refuse dirty/divergent checkouts and in-progress Git operations; no
+      reset/stash, private config/state access, or runtime calls. Offline
+      regression tests use temporary local Git repositories and stub pip.
 
 ## Explicitly out of scope
 

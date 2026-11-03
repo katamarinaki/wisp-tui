@@ -11,7 +11,7 @@ from textual.widgets._markdown import MarkdownBlock
 
 from tests.helpers import RID, SID
 from tests.test_app import eventually, make_app
-from wisp_tui.app import ApprovalModal, ModelPicker, SessionPicker
+from wisp_tui.app import ApprovalModal, ModelPicker, SessionPicker, server_session_label
 from wisp_tui.history import ChatMessage
 
 # Text that Textual markup would restyle, swallow, or crash on.
@@ -75,8 +75,9 @@ async def test_pickers_show_titles_and_model_ids_literally(
     app, _ = make_app([], monkeypatch)
     title = "fix [/] and [bold]x[/bold]"
     async with app.run_test() as pilot:
-        app.push_screen(SessionPicker([{"id": SID, "title": title, "origin": "cli",
-                                        "messageCount": 1, "updatedAt": "2026"}]))
+        app.push_screen(SessionPicker([(SID, server_session_label(
+            {"id": SID, "title": title, "origin": "cli", "messageCount": 1,
+             "updatedAt": "2026"}))]))
         await pilot.pause()
         assert any(plain(w).startswith(title) for w in app.screen.query("ListItem Static"))
         app.pop_screen()
