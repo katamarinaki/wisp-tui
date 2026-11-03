@@ -167,7 +167,8 @@ async def test_replacement_text_falls_back_to_full_update(
         assert [text for _, text in rendered_blocks(view.widget)] == ["Final answer."]
 
 
-async def test_clear_during_stream_does_not_crash(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_clear_during_stream_continues_answer_in_fresh_widget(
+        monkeypatch: pytest.MonkeyPatch) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test() as pilot:
         await eventually(lambda: "ready" in app._status_state)
@@ -180,4 +181,11 @@ async def test_clear_during_stream_does_not_crash(monkeypatch: pytest.MonkeyPatc
         await pilot.pause()
         await app.workers.wait_for_complete()
         assert app.is_running
-        assert app._delta_text.endswith("more")
+        expected = "partial " * 50 + "more"
+        assert app._delta_text == expected
+        # The answer keeps showing after /clear: one fresh widget, full text.
+        answers = list(app.query("#chat > Markdown"))
+        assert len(answers) == 1
+        assert app._stream_view is not None and answers[0] is app._stream_view.widget
+        await eventually(lambda: app._stream_view is not None
+                         and app._stream_view.rendered == expected)

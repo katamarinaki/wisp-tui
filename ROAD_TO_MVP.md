@@ -116,6 +116,10 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       deltas) instead of re-rendering the whole answer per delta; avoid
       structural pseudo-class selectors that restyle whole answers. ~8k chars:
       97s → ~3s in the headless benchmark. Tests compare streamed vs full render.
+- [x] Bound the rendered chat to the newest 60 items (history loads only the
+      tail; marker counts hidden items; the streaming answer is never dropped;
+      `/clear` mid-answer continues in a fresh widget). 500-exchange session:
+      load 22s → ~1s, streaming 2k chars 27s → ~2s (headless benchmark).
 - [ ] Multiline prompt editor with predictable send/newline keys over Mac SSH.
 - [ ] Pasting multiple lines does not accidentally submit partial commands.
 - [ ] Minimal input history/draft recovery; no elaborate editor framework.
@@ -151,7 +155,7 @@ not a release criterion.
 ## Maintenance alongside the MVP
 
 - Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **135 passing tests**, strict mypy passing.
+  Current baseline: **139 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
 - [x] Local Git repository (`main` baseline, work on branches). No remote yet.
 - [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held

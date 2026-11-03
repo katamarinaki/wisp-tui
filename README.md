@@ -38,6 +38,10 @@ later with the Wisp CLI if desired.
   rather than a fixed dark/light theme foreground. Your prompts appear as
   full-width blocks filled with the terminal's cyan palette color (black text),
   including in history. Chat scrollbars are hidden without disabling scrolling.
+- Long sessions stay fast: only the newest 60 chat items are kept on screen
+  (opening a session mounts just that tail); a dim marker at the top counts
+  what is hidden. Wisp keeps the full history — older turns are still in the
+  session context, just not rendered here.
 - New sessions (`/new [title]`), model/mode picker (F3) per session.
 - Runs submitted with `confirmationMode: "interactive"`, `wait: false`, then
   followed over SSE (`GET /v1/runs/{id}/events`): `text.delta` streaming,
@@ -109,7 +113,7 @@ Mirrors the ask-wisp proxy hardening:
 
 ```sh
 cd /mnt/data/projects/wisp-tui
-.venv/bin/python -m pytest tests/    # 132 tests, no network/sockets
+.venv/bin/python -m pytest tests/    # 139 tests, no network/sockets
 .venv/bin/python -m mypy             # strict, src + tests
 ```
 

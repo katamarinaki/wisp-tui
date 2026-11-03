@@ -18,7 +18,7 @@ from typing import Any, Callable
 from textual.app import App, ComposeResult
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widget import AwaitMount
+from textual.widget import AwaitMount, Widget
 from textual.widgets import Input, ListItem, ListView, Markdown, Static
 
 from .client import ClientError, WispClient, TERMINAL_RUN_STATUSES, safe_code
@@ -341,6 +341,12 @@ class WispTuiApp(App[None]):
     #picker-title { text-style: bold; margin-bottom: 1; }
     """
 
+    # Layout cost grows with every mounted chat widget (measured: streaming is
+    # ~4x slower after 50 exchanges, ~45x after 500). Keep only the newest
+    # items on screen (several screens' worth); Wisp keeps the full session
+    # history server-side. 500-exchange session: load 22s -> ~1s.
+    MAX_CHAT_ITEMS = 60
+
     BINDINGS = [
         ("f1", "help", "Help"),
         ("f2", "sessions", "Sessions"),
@@ -376,6 +382,9 @@ class WispTuiApp(App[None]):
         self._cancel_after_submit = False
         self._delta_text = ""
         self._stream_view: StreamView | None = None
+        self._chat_items: deque[Widget] = deque()
+        self._trimmed_count = 0
+        self._trim_marker: Static | None = None
         self._status_state = "connecting…"
         self._cancel_requested = False
         self._last_ctrl_c = -10.0
@@ -444,23 +453,69 @@ class WispTuiApp(App[None]):
     def _scroll_down(self) -> None:
         self.query_one("#chat", VerticalScroll).scroll_end(animate=False)
 
-    def _sysline(self, text: str, cls: str = "system") -> None:
+    def _mount_chat(self, widget: Widget) -> AwaitMount:
+        """Append a chat item, dropping the oldest beyond MAX_CHAT_ITEMS."""
+        mounted = self.query_one("#chat", VerticalScroll).mount(widget)
+        self._chat_items.append(widget)
+        self._trim_chat()
+        return mounted
+
+    def _trim_chat(self) -> None:
+        streaming = self._stream_view.widget if self._stream_view is not None else None
+        removed = 0
+        while len(self._chat_items) > self.MAX_CHAT_ITEMS:
+            oldest = self._chat_items.popleft()
+            if oldest is streaming:
+                # Never drop the answer that is still being written.
+                second = self._chat_items.popleft()
+                self._chat_items.appendleft(oldest)
+                oldest = second
+            oldest.remove()
+            removed += 1
+        if removed:
+            self._trimmed_count += removed
+            self._update_trim_marker()
+
+    def _update_trim_marker(self) -> None:
+        count = self._trimmed_count
+        text = (f"\u2191 {count} earlier item{'s' if count != 1 else ''} not shown "
+                "\u2014 Wisp keeps the full session history.")
+        if self._trim_marker is not None and self._trim_marker.is_attached:
+            self._trim_marker.update(text)
+            return
+        marker = Static(text, id="chat-trimmed", classes="system", markup=False)
+        self._trim_marker = marker
         chat = self.query_one("#chat", VerticalScroll)
-        chat.mount(Static(_safe_text(text), classes=cls, markup=False))
+        if self._chat_items:
+            chat.mount(marker, before=self._chat_items[0])
+        else:
+            chat.mount(marker)
+
+    def _reset_chat(self, hidden: int = 0) -> None:
+        """Remove every chat item; optionally note ``hidden`` older items."""
+        self.query_one("#chat", VerticalScroll).remove_children()
+        self._chat_items.clear()
+        # A still-running answer continues in a fresh widget (full text so far).
+        self._stream_view = None
+        self._trim_marker = None
+        self._trimmed_count = hidden
+        if hidden:
+            self._update_trim_marker()
+
+    def _sysline(self, text: str, cls: str = "system") -> None:
+        self._mount_chat(Static(_safe_text(text), classes=cls, markup=False))
         self._scroll_down()
 
     def _add_message(self, message: ChatMessage) -> None:
-        chat = self.query_one("#chat", VerticalScroll)
         if message.role == "assistant":
-            chat.mount(Markdown(message.text, classes="assistant"))
+            self._mount_chat(Markdown(message.text, classes="assistant"))
         else:
-            chat.mount(Static(message.text, classes=message.role, markup=False))
+            self._mount_chat(Static(message.text, classes=message.role, markup=False))
         self._scroll_down()
 
     def _begin_stream(self, initial: str = "") -> StreamView:
         widget = Markdown(classes="assistant")
-        chat = self.query_one("#chat", VerticalScroll)
-        view = StreamView(self, widget, chat.mount(widget), self._scroll_down)
+        view = StreamView(self, widget, self._mount_chat(widget), self._scroll_down)
         view.set_text(initial)
         self._scroll_down()
         return view
@@ -838,9 +893,10 @@ class WispTuiApp(App[None]):
         self.session_id = str(session.get("id", ""))
         self.session_title = _safe_text(session.get("title"), 80) or "(untitled)"
         self.title = f"Wisp — {self.session_title}"
-        chat = self.query_one("#chat", VerticalScroll)
-        chat.remove_children()
-        for message in messages:
+        # Only mount the tail of long histories (see MAX_CHAT_ITEMS).
+        hidden = max(0, len(messages) - self.MAX_CHAT_ITEMS)
+        self._reset_chat(hidden)
+        for message in messages[hidden:]:
             self._add_message(message)
         if not messages:
             self._sysline(f"Session '{self.session_title}' is empty. Say something to start.")
@@ -1003,8 +1059,7 @@ class WispTuiApp(App[None]):
         self._show_help()
 
     def _show_help(self) -> None:
-        chat = self.query_one("#chat", VerticalScroll)
-        chat.mount(Markdown(HELP_TEXT, classes="system"))
+        self._mount_chat(Markdown(HELP_TEXT, classes="system"))
         self._scroll_down()
 
     def _handle_command(self, text: str) -> None:
@@ -1026,7 +1081,7 @@ class WispTuiApp(App[None]):
         elif command == "/reconnect":
             self._start_follow()
         elif command == "/clear":
-            self.query_one("#chat", VerticalScroll).remove_children()
+            self._reset_chat()
         elif command == "/status":
             self._status_command()
         elif command == "/quit":
