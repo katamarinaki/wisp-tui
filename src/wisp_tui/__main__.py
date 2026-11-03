@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import re
 import sys
 
 from . import __version__
@@ -10,9 +12,15 @@ from .client import WispClient, ClientError
 from .config import ConfigError, load_config
 
 
+def program_name() -> str:
+    """The name the launcher was invoked as (e.g. a `wi` symlink)."""
+    name = os.environ.get("WISP_TUI_PROG", "")
+    return name if re.fullmatch(r"[A-Za-z0-9._-]{1,32}", name) else "wisp-tui"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="wisp-tui",
+        prog=program_name(),
         description="Terminal chat client for the local Wisp runtime (loopback only).")
     parser.add_argument("--check", action="store_true",
                         help="Authenticated health check only; no TUI, no inference.")
@@ -33,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config()
     except ConfigError as error:
-        print(f"wisp-tui: {error} — create ~/.config/wisp-tui/config.json "
+        print(f"{parser.prog}: {error} — create ~/.config/wisp-tui/config.json "
               "(see README; never store it inside the project tree)", file=sys.stderr)
         return 1
     client = WispClient(config.url, config.token)
@@ -41,13 +49,13 @@ def main(argv: list[str] | None = None) -> int:
         try:
             health = client.request("GET", "/v1/health", timeout=5.0)
         except ClientError as error:
-            print(f"wisp-tui: {error}", file=sys.stderr)
+            print(f"{parser.prog}: {error}", file=sys.stderr)
             return 1
         status = health.get("status") if isinstance(health, dict) else None
         if status != "ready":
-            print("wisp-tui: runtime_not_ready", file=sys.stderr)
+            print(f"{parser.prog}: runtime_not_ready", file=sys.stderr)
             return 1
-        print("wisp-tui: authenticated, runtime ready. No inference started.")
+        print(f"{parser.prog}: authenticated, runtime ready. No inference started.")
         return 0
     # Default: a fresh session (created by the first message), like Pi.
     if args.session:

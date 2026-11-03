@@ -432,3 +432,31 @@ def test_cli_rejects_bad_combinations(argv: list[str]) -> None:
     with pytest.raises(SystemExit) as raised:
         cli.main(argv)
     assert raised.value.code == 2
+
+
+# -- launcher name -------------------------------------------------------------------
+
+@pytest.mark.parametrize("env, expected", [
+    ({}, "wisp-tui"),
+    ({"WISP_TUI_PROG": "wi"}, "wi"),
+    ({"WISP_TUI_PROG": "bad name; rm -rf"}, "wisp-tui"),
+    ({"WISP_TUI_PROG": ""}, "wisp-tui"),
+])
+def test_program_name_follows_launcher(monkeypatch: pytest.MonkeyPatch,
+                                       env: dict[str, str], expected: str) -> None:
+    monkeypatch.delenv("WISP_TUI_PROG", raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    assert cli.program_name() == expected
+
+
+def test_launcher_symlink_uses_its_own_name(tmp_path: Path) -> None:
+    """A `wi` symlink to the real launcher resolves the checkout and its name."""
+    import subprocess
+    root = Path(__file__).resolve().parents[1]
+    link = tmp_path / "wi"
+    link.symlink_to(root / "scripts" / "wisp-tui")
+    result = subprocess.run([str(link), "-h"], capture_output=True, text=True,
+                            timeout=30, cwd=tmp_path, env={"PATH": "/usr/bin:/bin"})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("usage: wi ")

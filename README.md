@@ -29,6 +29,10 @@ Like Pi, every launch starts a **new session**. Nothing is created on the
 runtime until you send the first message; its first line becomes the session
 title (`/new Title` sets one explicitly).
 
+Shorter command: symlink the launcher under any name, e.g.
+`ln -s "$PWD/scripts/wisp-tui" ~/.local/bin/wi`; help and errors then use
+that name. Avoid `wisp`: that is the Wisp runtime's own CLI.
+
 `--resume ID` (and `/resume ID` inside the app) takes a full session ID or a
 prefix of 4+ characters, such as the 8 shown in the pickers. One match opens
 directly; several show a picker of just those; a full ID that is not saved
@@ -138,7 +142,7 @@ Mirrors the ask-wisp proxy hardening:
 
 ```sh
 cd wisp-tui   # the checkout
-.venv/bin/python -m pytest tests/    # 179 tests, no network/sockets
+.venv/bin/python -m pytest tests/    # 184 tests, no network/sockets
 .venv/bin/python -m mypy             # strict, src + tests
 ```
 
