@@ -94,6 +94,12 @@ conservative until rejection/reconciliation semantics are established.
       Persist acknowledgements and refuse unsafe/expired/conflicting state.
       Offline restart, lease, sync-failure, TTL/clock and privacy tests; runtime
       exactly-once semantics still require the owner-approved acceptance test.
+- [x] Address PR #5 recovery findings: load the restored session's history,
+      selection and active-run summary read-only, without inferring an ack or
+      attaching to an unidentified run. Defer only explicitly requested retry
+      until the view read ends; preserve draft, `/clear` and stale-callback
+      guarantees. Release failed preparation's unowned lease while retaining
+      owned/post-replacement ambiguous requests. Offline regression tests.
 - [ ] Verify the recorded contract against the installed runtime during the
       owner-approved live acceptance test; cached docs are not a live proof.
 - [x] Review history/replay presentation when attaching midway through a long
@@ -194,7 +200,7 @@ not a release criterion.
 ## Maintenance alongside the MVP
 
 - Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **314 passing tests**, strict mypy passing.
+  Current baseline: **334 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
 - [x] Local Git repository (`main` baseline, work on branches). No remote yet.
 - [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held

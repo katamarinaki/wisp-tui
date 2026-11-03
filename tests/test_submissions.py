@@ -215,8 +215,13 @@ async def test_restart_restores_original_request_but_never_auto_posts(
         await eventually(lambda: "restored" in resumed._status_state)
         assert resumed.session_id == SID
         assert resumed.query_one("#input", Input).value == "original task\nsecond line"
+        await eventually(lambda: resumed._recovery_view_token is None)
         assert not any(method == "POST" for method, _, _ in resumed_client.calls)
-        assert resumed_client.calls == [("GET", "/v1/health", None)]
+        assert {path for _, path, _ in resumed_client.calls} == {
+            "/v1/health", f"/v1/sessions/{SID}", f"/v1/sessions/{SID}/history",
+            f"/v1/runs?sessionId={SID}&status=queued,running,parked&limit=200"}
+        assert resumed._selection.get("mode") == "balanced"
+        assert "past answer" in chat_text(resumed)
         resumed._handle_command("/new")
         resumed.query_one("#input", Input).value = "do not send this new draft"
         await pilot.press("enter")

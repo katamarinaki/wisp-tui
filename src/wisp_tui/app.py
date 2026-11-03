@@ -418,6 +418,9 @@ class WispTuiApp(App[None]):
         # Reserved synchronously on the UI thread, before starting any I/O.
         self._submitting = False
         self._pending_submission: PendingSubmission | None = None
+        self._recovery_view_token: object | None = None
+        self._retry_after_recovery = False
+        self._pending_view_history: list[ChatMessage] | None = None
         self._session_busy = False
         self.last_seq: dict[str, int] = {}
         self.pending_prompts: deque[tuple[str, str, str, Any]] = deque()
@@ -625,6 +628,7 @@ class WispTuiApp(App[None]):
         """Remove every chat item; optionally note ``hidden`` older items."""
         self._chat_epoch += 1
         self._reattach_history = None
+        self._pending_view_history = None
         self.query_one("#chat", VerticalScroll).remove_children()
         self._chat_items.clear()
         # A still-running answer continues in a fresh widget (full text so far).
@@ -710,6 +714,85 @@ class WispTuiApp(App[None]):
         self._sysline("Recovered an unacknowledged request. Nothing was resubmitted. "
                       "/retry explicitly reuses the original input, options and request ID. "
                       "Session/model changes stay blocked until it is acknowledged.")
+        self._load_pending_view(pending)
+
+    def _load_pending_view(self, pending: PendingSubmission) -> None:
+        """Inspect the original session without identifying/replaying its request."""
+        token = object()
+        self._recovery_view_token = token
+        self._pending_view_history = None
+        epoch = self._chat_epoch
+
+        def work() -> None:
+            try:
+                session = self.client.request(
+                    "GET", f"/v1/sessions/{pending.session_id}", timeout=5.0)
+                if not isinstance(session, dict) or session.get("id") != pending.session_id:
+                    raise ClientError("invalid_session")
+                payload = self.client.request(
+                    "GET", f"/v1/sessions/{pending.session_id}/history", timeout=5.0)
+                messages = parse_history(payload)
+                runs = self.client.request(
+                    "GET", f"/v1/runs?sessionId={pending.session_id}"
+                    "&status=queued,running,parked&limit=200", timeout=5.0)
+                active_id = find_active_run(runs, pending.session_id)
+            except ClientError as error:
+                code = str(error)
+            except HistoryError:
+                code = "unexpected_history_shape"
+            except Exception:
+                code = "internal_error"
+            else:
+                self.call_from_thread(self._pending_view_loaded, token, pending,
+                                      epoch, session, messages, active_id)
+                return
+            self.call_from_thread(self._pending_view_failed, token, pending, code)
+
+        self._run_threaded(work, group="recovery",
+                           on_done=lambda: self._pending_view_done(token, pending))
+
+    def _pending_view_current(self, token: object, pending: PendingSubmission) -> bool:
+        return (self._recovery_view_token is token and self._pending_submission is pending
+                and self.session_id == pending.session_id and not self._submitting
+                and self.active_run is None)
+
+    def _pending_view_loaded(self, token: object, pending: PendingSubmission, epoch: int,
+                             session: dict[str, Any], messages: list[ChatMessage],
+                             active_id: str) -> None:
+        if not self._pending_view_current(token, pending):
+            return
+        self.session_title = _safe_text(session.get("title"), 80) or "(untitled)"
+        self.title = f"Wisp — {self.session_title}"
+        self._selection_updated(session, pending.session_id)
+        # /clear cancels history restoration, but metadata is still useful.
+        if self._chat_epoch != epoch:
+            return
+        hidden = max(0, len(messages) - self.MAX_CHAT_ITEMS)
+        self._reset_chat(hidden)
+        for message in messages[hidden:]:
+            self._add_message(message)
+        self._pending_view_history = list(messages)
+        self._sysline("Recovered request remains unacknowledged. This view is read-only; "
+                      "only explicit /retry reuses the original request ID.")
+        if active_id:
+            self._sysline(f"Runtime reports active run {active_id[:8]}. "
+                          "It is not proof this request was accepted.", "tool")
+        else:
+            self._sysline("No active v1 run reported. This is not proof the request was rejected.",
+                          "tool")
+
+    def _pending_view_failed(self, token: object, pending: PendingSubmission, code: str) -> None:
+        if self._pending_view_current(token, pending):
+            self._status(f"recovery view unavailable: {safe_code(code, 'history_unavailable')} · /retry")
+
+    def _pending_view_done(self, token: object, pending: PendingSubmission) -> None:
+        if self._recovery_view_token is not token:
+            return
+        retry = self._retry_after_recovery and self._pending_view_current(token, pending)
+        self._recovery_view_token = None
+        self._retry_after_recovery = False
+        if retry:
+            self._submit_pending()
 
     def _start_submission(self, draft: str) -> None:
         if self._history_refresh_token is not None:
@@ -752,6 +835,11 @@ class WispTuiApp(App[None]):
             self._sysline("This request's age cannot be retried safely. Inspect the session "
                           "in another client; new work remains blocked.", "error")
             return
+        if self._recovery_view_token is not None:
+            self._retry_after_recovery = True
+            self._sysline("Loading recovered session details; your explicit /retry will continue "
+                          "after this read-only check.")
+            return
         self._submitting = True
         self._status("submitting…")
 
@@ -788,6 +876,10 @@ class WispTuiApp(App[None]):
             editor.value = self._pending_submission.draft
 
     def _submission_accepted(self, pending: PendingSubmission, run_id: str) -> None:
+        history = self._pending_view_history
+        self._pending_view_history = None
+        self._recovery_view_token = None
+        self._retry_after_recovery = False
         self._submitting = False
         self._pending_submission = None
         editor = self.query_one("#input", Input)
@@ -796,7 +888,7 @@ class WispTuiApp(App[None]):
         self._add_message(ChatMessage(role="user", text=pending.draft.strip()))
         self._record({"type": "message", "role": "user", "text": pending.draft.strip(),
                       "runId": run_id}, pending.session_id)
-        self._turn_started(run_id)
+        self._turn_started(run_id, history=history)
         self._start_follow()
         if self._cancel_after_submit:
             self._cancel_after_submit = False
@@ -1484,6 +1576,7 @@ class WispTuiApp(App[None]):
             + (f" ({self.session_title})" if self.session_id else ""),
             f"active run: {self.active_run or 'none'}",
             f"submission: {'state_error' if self._pending_state_error else 'sending' if self._submitting else 'unacknowledged' if self._pending_submission else 'none'}",
+            f"recovery view: {'loading' if self._recovery_view_token is not None else 'none'}",
             f"history refresh: {'loading' if self._history_refresh_token is not None else 'none'}",
             f"max turns: {self.config.max_turns}",
             *self._metadata_lines(),
@@ -1494,6 +1587,9 @@ class WispTuiApp(App[None]):
             self._sysline(line, "tool")
 
     def on_unmount(self) -> None:
+        self._recovery_view_token = None
+        self._retry_after_recovery = False
+        self._pending_view_history = None
         self._history_refresh_token = None
         self._reattach_history = None
         if self._activity_timer is not None:

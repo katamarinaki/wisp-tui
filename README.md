@@ -177,10 +177,18 @@ owner must merge this feature from `develop` to `main` for main installations.
   barriers plus atomic replacement protect the request across process exit.
   The one acknowledged record remains until the next reservation; it is not
   an accumulating archive. A private advisory lock prevents competing retries
-  from another Wi process. Unsafe/corrupt state, a conflicting request,
+  from another Wi process. Failed preparation releases an unowned lease;
+  an owned pending request keeps its lease until acknowledged or the client
+  exits, including a replacement followed by failed directory fsync.
+  Unsafe/corrupt state, a conflicting request,
   or failed persistence blocks fresh work instead of silently starting over.
-  After restart, `/retry` explicitly resends the recovered request, never a new
-  editor draft. Unsent drafts and cancellation intent remain memory-only.
+  After restart, Wi loads the original session's history, model/mode and active
+  run summary read-only. Seeing a run or matching history is never treated as
+  acknowledgement, and no stream or approval dialog opens for an unidentified
+  request. Only `/retry` explicitly resends the recovered request, never a new
+  editor draft; if requested during that read, it waits for the check to finish.
+  Read failures keep the request reserved and still permit explicit retry.
+  Unsent drafts and cancellation intent remain memory-only.
   Retries older than 23 hours or with a reversed wall clock are refused; they
   stay reserved for manual reconciliation. Server-side deduplication and
   key expiry still depend on the runtime's idempotency contract; see

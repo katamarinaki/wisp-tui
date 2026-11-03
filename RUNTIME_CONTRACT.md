@@ -47,6 +47,12 @@ its identity. Only explicit `/retry` can resend it. Reservation checks repeat
 under the lease immediately before POST, so an already-open client cannot
 replace another process's ambiguous request. A different configured endpoint,
 unsafe or corrupt storage, I/O failure, or an occupied slot blocks new work.
+Preparation errors release a lease if this store has not taken ownership of a
+pending request. Ownership is established by loading/matching the pending
+record or replacing the journal with the new request, before directory fsync.
+Thus a pre-replacement failure/conflict does not monopolize an unowned slot,
+while a directory-sync failure after replacement retains the ambiguous request
+and its lease. Owned leases last until acknowledgement or client exit.
 
 A valid run acknowledgement is saved with the original identity before the UI
 releases its reservation. The acknowledged record stays until the next request,
@@ -55,8 +61,19 @@ attaches without another POST. A late acknowledgement cannot replace a newer
 reservation. These are offline client guarantees, not proof of Wisp's actual
 idempotency-key retention or replay behavior. Old/clock-ambiguous requests stay
 blocked for manual reconciliation; unsent drafts and cancel intent are not
-recovered. Older checkpoint history is not automatically loaded for a restored
-unacknowledged request; history/replay presentation remains a separate item.
+recovered.
+
+A restored request now loads its original session, checkpoint history and v1
+active-run summary using bounded GETs only. This view supplies the title and
+model/mode before retry, and retains them afterward. Neither matching history
+nor a listed run is evidence that this particular request was acknowledged:
+no automatic POST, SSE attachment, confirmation or reservation release follows.
+An explicit `/retry` received during the read waits for completion and then
+reuses the same identity/options, even if the read failed. Duplicate retry
+keypresses do not create multiple submissions. Pending identity, session and
+operation token fence callbacks; `/clear` invalidates history restoration but
+allows metadata to update, and exit cancels any deferred retry. A successful
+read also supplies the saved checkpoint baseline for later replay presentation.
 
 ## Discovery and records
 
@@ -191,5 +208,9 @@ UI behavior. `tests/test_history_replay.py` covers checkpoint progress and
 identity, genuine repeated replies, ambiguous overlap, terminal-record/stream
 completion, replay/gaps across reconnect, stale callbacks, failed refreshes,
 draft retention, `/clear`, local recording and bounded long-history rendering.
+`tests/test_pending_view.py` checks read-only recovery, model/history display,
+explicit/deferred retry, stale/error/clear paths and no replayed approvals;
+`tests/test_submission_leases.py` checks unowned failure/conflict cleanup and
+retention of owned or post-replacement ambiguous requests.
 All runtime responses are synthetic. Actual Mac SSH/inference/approval behavior
 is still an owner-approved acceptance step in [Road to MVP](ROAD_TO_MVP.md).

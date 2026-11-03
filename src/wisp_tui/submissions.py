@@ -90,6 +90,7 @@ class SubmissionStore:
         self.path = self.root / "submission.json"
         self.runtime = hashlib.sha256(runtime_url.encode()).hexdigest()
         self._lock_fd: int | None = None
+        self._owns_pending = False
         self._mutex = RLock()
 
     def _lock(self) -> None:
@@ -119,6 +120,7 @@ class SubmissionStore:
             if self._lock_fd is not None:
                 os.close(self._lock_fd)
                 self._lock_fd = None
+            self._owns_pending = False
 
     def _read(self) -> tuple[PendingSubmission, str | None] | None:
         try:
@@ -144,6 +146,7 @@ class SubmissionStore:
             self._lock()
             record = self._read()
             if record is not None and record[1] is None:
+                self._owns_pending = True
                 return record[0]
             self.close()
             return None
@@ -172,6 +175,9 @@ class SubmissionStore:
                 target.flush()
                 os.fsync(target.fileno())
             os.replace(path, self.path)
+            if run_id is None:
+                # Replacement may have happened even if directory fsync fails.
+                self._owns_pending = True
             directory = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
             try:
                 os.fsync(directory)
@@ -188,7 +194,14 @@ class SubmissionStore:
     def prepare(self, pending: PendingSubmission) -> str | None:
         """Durably reserve before POST. A previously saved ack needs no POST."""
         with self._mutex:
-            return self._prepare(pending)
+            try:
+                return self._prepare(pending)
+            except BaseException:
+                # Failed validation, conflicts and pre-replacement I/O errors
+                # must not monopolize a slot this instance never reserved.
+                if not self._owns_pending:
+                    self.close()
+                raise
 
     def _prepare(self, pending: PendingSubmission) -> str | None:
         try:
@@ -199,6 +212,7 @@ class SubmissionStore:
                 if self._same_request(previous, pending):
                     if run_id is not None:
                         return run_id
+                    self._owns_pending = True
                 elif run_id is None or previous.key == pending.key:
                     raise SubmissionError("pending_state_conflict")
             # Re-sync even an existing pending record after a previous I/O error.
