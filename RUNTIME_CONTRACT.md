@@ -98,6 +98,50 @@ Every SSE event has `seq` and `kind`. Send the last accepted sequence as
   5 seconds; SSE socket reads: at most 20 seconds). Socket reads are not instantly
   cancellable. Quitting stops local following, not server-side work.
 
+## Checkpoint history and replay presentation
+
+The history parser retains optional LangGraph message `id` strings, alongside
+role/text. This is message identity between checkpoints, **not** a verified
+mapping to the v1 run ID. The TUI does not invent such a mapping from text,
+message position, model choice, or timestamps.
+
+Discovery now precedes the history read. A run discovered live remains attached
+by ID even if it finishes while history loads. The two reads are not an atomic
+snapshot: a run that both starts and finishes outside that discovery window
+still requires runtime guarantees/live acceptance to reason about fully.
+
+When attaching to a known run, the saved checkpoint and streamed replay are
+explicitly separated. SSE cursor/gap handling remains run-scoped. After a
+successful terminal outcome, one additional history GET (5s timeout) reconciles
+the display only when a progressed checkpoint contains the exact finished
+answer as its trailing assistant message:
+
+- The checkpoint appends messages without rewriting the prior snapshot; or
+- The trailing assistant has the same nonempty message ID, changes its text to
+  the finished answer, and the earlier messages are unchanged.
+
+An unchanged checkpoint, missing/changing IDs on an updated message, compaction,
+rewritten earlier messages, a lagging partial answer, or an answer split across
+multiple checkpoint messages cannot prove coverage. Keep the saved snapshot
+and labelled run output in these cases. In particular, never remove a previous
+“OK” solely because a new run also replies “OK”. Genuine identical replies
+remain separate when the checkpoint includes both turns. This is conservative
+presentation reconciliation, not a claim of lossless cross-client/run-ID merge.
+
+The refresh uses the existing history route, never submits work, and blocks new
+submission/session changes while retaining drafts. Session/run identity, an
+operation token and chat generation fence every callback. `/clear` invalidates
+pending refreshes and cancels reconciliation for an active replay; failed reads
+preserve the terminal result and visible answer. Rebuilding the view retains
+the normal bounded chat tail and does not write the assistant answer twice to
+the local session record. Failed/cancelled runs retain their error/cancel lines
+and any partial replay; they do not trigger this successful-answer refresh.
+
+The live acceptance test must establish message-ID stability, how the final
+run output relates to multi-message checkpoints, checkpoint commit timing, and
+whether the runtime exposes a reliable run/checkpoint association. Until then,
+ambiguous overlap is intentionally visible rather than silently discarded.
+
 ## Approvals and cancellation
 
 `POST /v1/runs/{runId}/confirmations/{promptId}` sends an **explicit** decision
@@ -143,5 +187,9 @@ POSTs, cancellation, stale callbacks, long gaps, and old request replay refusal.
 restart identity/options, no automatic replay, lease contention (including a
 separate process), failed file/directory syncs, stale acknowledgements, clock
 and TTL refusal, endpoint binding, bounded/unsafe/malformed files, and fail-closed
-UI behavior. All runtime responses are synthetic. Actual Mac SSH/inference/approval behavior
+UI behavior. `tests/test_history_replay.py` covers checkpoint progress and
+identity, genuine repeated replies, ambiguous overlap, terminal-record/stream
+completion, replay/gaps across reconnect, stale callbacks, failed refreshes,
+draft retention, `/clear`, local recording and bounded long-history rendering.
+All runtime responses are synthetic. Actual Mac SSH/inference/approval behavior
 is still an owner-approved acceptance step in [Road to MVP](ROAD_TO_MVP.md).

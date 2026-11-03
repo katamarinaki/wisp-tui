@@ -96,8 +96,17 @@ conservative until rejection/reconciliation semantics are established.
       exactly-once semantics still require the owner-approved acceptance test.
 - [ ] Verify the recorded contract against the installed runtime during the
       owner-approved live acceptance test; cached docs are not a live proof.
-- [ ] Review history/replay presentation when attaching midway through a long
-      conversation, including output already present in saved checkpoints.
+- [x] Review history/replay presentation when attaching midway through a long
+      conversation. Discover the run before reading history; separate replay
+      from saved checkpoints and reconcile a successful answer against one
+      fresh checkpoint only with visible checkpoint progress. Retain optional
+      message IDs without assuming they are run IDs. Preserve genuine repeated
+      replies, ambiguous overlap, drafts and `/clear`; bound rebuilt history and
+      fence stale/failed refreshes. Offline regression coverage is complete.
+      **Remaining contract limit:** unchanged/compacted/lagging checkpoints can
+      still overlap labelled replay. Live acceptance must establish checkpoint
+      freshness, multi-message output and any reliable run/message association
+      before claiming lossless deduplication.
 
 **Exit criterion:** slow requests, disconnects, cancellation, and cross-client
 approvals cannot silently lose work or make the UI act on the wrong run/session.
@@ -185,7 +194,7 @@ not a release criterion.
 ## Maintenance alongside the MVP
 
 - Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **281 passing tests**, strict mypy passing.
+  Current baseline: **314 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
 - [x] Local Git repository (`main` baseline, work on branches). No remote yet.
 - [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held

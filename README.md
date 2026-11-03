@@ -143,8 +143,18 @@ owner must merge this feature from `develop` to `main` for main installations.
 - One follower owns each run's stream and parked polling. Current run records
   reconcile approvals answered elsewhere—even with a local dialog open—and
   completion after a lost terminal event or runtime restart.
-- Reopening a session discovers queued/running/parked v1 runs and reattaches.
-  Stream failure retains the run ID/cursor and blocks duplicate task input;
+- Reopening a session discovers queued/running/parked v1 runs before reading
+  checkpoint history, retaining the known run even if it finishes during that
+  history read. Live replay has an explicit boundary from saved messages.
+  After a reattached run succeeds, one bounded history refresh can replace the
+  snapshot/replay view with the canonical checkpoint, when a new assistant
+  message or a changed stable-ID assistant clearly contains the finished answer.
+  Identical text alone never collapses two turns. Stale/unchanged/compacted or
+  otherwise ambiguous checkpoints retain the separate, labelled run output.
+  During refresh, new submissions/session changes wait and drafts are kept;
+  `/clear` and stale callbacks cannot restore a previous view. Refresh errors
+  do not turn a completed run into a failed one or erase its answer.
+- Stream failure retains the run ID/cursor and blocks duplicate task input;
   after bounded automatic retries, `/reconnect` retries following without
   starting another task.
 - Ctrl+C cancels the active run; press it **twice** (within 3s) to leave.
@@ -252,7 +262,10 @@ tests/                   pytest suite incl. Textual pilot app tests
 - Recovery is tested with scripted responses, not yet a funded end-to-end SSH
   task. Discovery covers v1 runs; internal/desktop-origin runs are not included
   by the runtime's default run listing. Do not assume a disconnect cancelled
-  a task. Reattaching may repeat text already present in saved history.
+  a task. Ambiguous reattachment overlap can still show saved text and the
+  separately labelled current-run replay. The verified contract does not yet
+  map checkpoint messages to run IDs or guarantee checkpoint freshness at
+  completion; hiding equal text would risk losing a legitimate repeated reply.
 - Unacknowledged submissions stay reserved until `/retry` succeeds (including
   HTTP failures); session/model changes are blocked meanwhile, including after
   restart. No automatic discard or aged-key replay is offered. Inspect Wisp
