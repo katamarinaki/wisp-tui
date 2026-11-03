@@ -152,6 +152,26 @@ tests/                   pytest suite incl. Textual pilot app tests
   waits wake immediately; an outstanding HTTP stream read is bounded to 20s
   (a quiet 20s window just re-checks the run record; it is not a disconnect),
   not instantly interruptible.
-- The venv is regenerable: `python3 -m venv .venv && .venv/bin/pip install
-  textual pytest pytest-asyncio mypy`. Source and config are within existing
-  restic backup scope (projects on NVMe; config/state in your home directory).
+- The venv is regenerable from the lock files (Python 3.13):
+  `python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt`.
+  Source and config are within existing restic backup scope (projects on
+  NVMe; config/state in your home directory).
+
+## Upgrading dependencies
+
+Versions are pinned exactly in `requirements.txt` (runtime) and
+`requirements-dev.txt` (tests/mypy); `pyproject.toml` only allows Textual
+8.2.x. `tests/test_dependencies.py` fails if the venv drifts from the pins.
+
+Textual is the risky one: this app relies on rendering details that have
+changed behavior before. To upgrade:
+
+1. Bump the pins, reinstall, and run the full suite (`pytest` + `mypy`).
+2. Watch especially:
+   - `test_terminal.py` (PTY): still SGR 49 everywhere except prompt blocks
+     (SGR 46), no `48;...`, answers in default foreground (SGR 39).
+   - `test_rendering.py`: runtime text still shown literally (no markup);
+     streamed answers still match a full render without per-delta updates.
+   - `test_layout.py`: gutters/spacing (e.g. `margin-bottom` alone resets
+     the other margins in 8.2).
+3. Launch `wisp-tui` once over SSH and eyeball a long answer and a prompt.

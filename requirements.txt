@@ -1,0 +1,10 @@
+# Exact runtime pins for the project venv (Python 3.13). Regenerate together
+# with requirements-dev.txt; see README "Upgrading dependencies".
+textual==8.2.8
+rich==15.0.0
+markdown-it-py==4.2.0
+mdit-py-plugins==0.6.1
+mdurl==0.1.2
+platformdirs==4.14.3
+pygments==2.21.0
+typing-extensions==4.16.0

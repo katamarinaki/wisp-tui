@@ -3,7 +3,10 @@ name = "wisp-tui"
 version = "0.1.0"
 description = "Terminal chat client for the local Wisp runtime (loopback only, chat-scoped API)"
 requires-python = ">=3.11"
-dependencies = ["textual>=8.2"]
+# Compatible range only; exact versions live in requirements*.txt. Textual
+# minor upgrades can change rendering internals this app relies on (see
+# README "Upgrading dependencies"), so stay within 8.2.x until verified.
+dependencies = ["textual~=8.2.8"]
 
 [tool.mypy]
 strict = true

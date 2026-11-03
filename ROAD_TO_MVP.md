@@ -151,11 +151,12 @@ not a release criterion.
 ## Maintenance alongside the MVP
 
 - Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **132 passing tests**, strict mypy passing.
+  Current baseline: **135 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
-- Establish source control/CI and reproducible dependency installation before
-  treating the directory as a maintained release. This checkout currently has
-  no Git metadata; no repository or remote has been created as part of this work.
+- [x] Local Git repository (`main` baseline, work on branches). No remote yet.
+- [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held
+      to 8.2.x, drift test, documented upgrade checklist (README).
+- [ ] Remote + CI running pytest/mypy (owner decision: where to host).
 
 ## Explicitly out of scope
 
