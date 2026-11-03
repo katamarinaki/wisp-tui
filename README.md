@@ -134,11 +134,19 @@ owner must merge this feature from `develop` to `main` for main installations.
 - **Persistent session footer:** session ID, reported model or automatic mode,
   thinking setting, last finished run's reported input/output/total tokens,
   and the client's launch directory. Status updates do not replace these
-  details. Automatic modes are labeled as runtime-selected, not as a known
-  model; missing fields say “unavailable”. Thinking is the configured setting,
+  details. Blue input rules and normal-contrast footer text use the terminal's
+  palette without painting a background. The launch directory and session
+  occupy one row; tokens sit left of the model/thinking summary, with shortcuts
+  below. Narrow terminals stack the summary and shorten the shortcut hints
+  (F1 still lists every key). The session ID and thinking setting have reserved
+  space; long directories truncate with an ellipsis and model names wrap within
+  two rows. `/status` retains the full details. Automatic modes say “auto”; a
+  fresh session says “runtime default” until a selection is reported. Missing thinking/token stats
+  are hidden, with explanations in `/status`. Thinking is the configured setting,
   not a live reasoning stream. Tokens update at run completion, not per delta;
   they are neither cumulative session totals nor context occupancy. Context
-  usage remains “unavailable” until a verified runtime contract supplies it.
+  usage is omitted from the footer until a verified runtime contract supplies it.
+  Token counts use exact, comma-separated values: ↑ input, ↓ output, Σ total.
   Usage is observed in this process: opening a different session or restarting
   does not restore previous token counts. The launch directory is **client
   only**, not a claim about where Wisp's tools execute. Metadata wraps within

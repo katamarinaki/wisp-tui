@@ -165,6 +165,13 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       during submission and active work. Hide it on terminal outcomes, without
       a completion announcement; distinguish approval waits, disconnects and
       cancellation requests. Offline animation/state/layout and PTY checks.
+- [x] Improve composer/footer readability: terminal-palette blue input rules,
+      normal-contrast metadata, compact exact token counts, and model/thinking
+      aligned on the right. Stack the summary and shorten hints on narrow
+      terminals. Hide unreported stats in the footer; retain explanations in
+      `/status`. Reserve space for the session ID and thinking setting so long
+      paths/model IDs cannot hide them. Offline rendered-line checks at 40/80/100
+      columns, theme/resize checks and PTY foreground/background checks.
 - [x] Multiline composer: Enter sends the whole prompt; Ctrl+J inserts a newline
       over ordinary SSH, with Shift+Enter only where the terminal distinguishes
       it. Soft-wrap, grow to six text rows then scroll, preserve busy/newer
@@ -208,7 +215,7 @@ not a release criterion.
 ## Maintenance alongside the MVP
 
 - Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **358 passing tests**, strict mypy passing.
+  Current baseline: **364 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
 - [x] Local Git repository (`main` baseline, work on branches). No remote yet.
 - [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held

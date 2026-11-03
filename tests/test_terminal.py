@@ -95,9 +95,15 @@ def test_inline_terminal_keeps_default_background(width: int) -> None:
         "answer did not use the terminal's default background"
     assert b"Working" in capture
     assert b"thinking: on" in capture
-    assert b"context: unavailable" in capture
-    assert b"input: 3" in capture
-    assert b"launch dir (client only):" in capture
+    assert b"context: unavailable" not in capture
+    assert "↑3".encode() in capture
+    assert b"client:" in capture
+    borders = re.findall(rb"\x1b\[([0-9;:]*)m(?:" + "─".encode() + rb"){10,}", capture)
+    assert any(b"94" in codes.split(b";") for codes in borders), \
+        "input rules did not use bright blue"
+    footer_styles = re.findall(rb"\x1b\[([0-9;:]*)m(?:client:|last run )", capture)
+    assert footer_styles and all(b"2" not in codes.split(b";") for codes in footer_styles), \
+        "footer text was dimmed"
     assert b"Wisp asks for approval" in capture
     assert b"\x1b[?1049h" not in capture, "alternate screen was enabled"
     sgr = re.findall(rb"\x1b\[([0-9;:]*)m", capture)

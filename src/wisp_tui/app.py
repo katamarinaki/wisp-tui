@@ -16,8 +16,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from textual import events
 from textual.app import App, ComposeResult
-from textual.containers import Container, Vertical, VerticalScroll
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widget import AwaitMount, Widget
@@ -71,9 +72,10 @@ drafts are still memory-only. A state error blocks new work until resolved.
 
 A finished run is one answered prompt, not the end of the conversation: just
 send your next message. The footer keeps the session, model/mode, thinking
-setting and last finished run's reported tokens visible. Tokens update when a
-run finishes, not live; context occupancy is unavailable. The launch directory
-belongs to this client, not Wisp's tools. `/status` shows the full details.
+setting and last finished run's reported tokens visible (↑ input, ↓ output,
+Σ total). Missing stats are hidden; `/status` explains what is not reported.
+Tokens update when a run finishes, not live; context occupancy is unavailable.
+The launch directory belongs to this client, not Wisp's tools.
 
 While a run is active you will see tool calls as they happen. When Wisp needs
 approval for a tool, a dialog appears: **y** approve, **n** deny, **p** allow
@@ -353,8 +355,8 @@ class WispTuiApp(App[None]):
         min-height: 3;
         max-height: 8;
         scrollbar-size: 0 0;
-        border-top: solid ansi_bright_black;
-        border-bottom: solid ansi_bright_black;
+        border-top: solid ansi_bright_blue;
+        border-bottom: solid ansi_bright_blue;
         border-left: none;
         border-right: none;
         background: transparent;
@@ -363,14 +365,24 @@ class WispTuiApp(App[None]):
     }
     #input:focus { background-tint: transparent; }
     #activity { display: none; }
-    #activity, #status, #session-info, #thinking-info, #usage-info, #location {
+    #activity, #status, #session-info, #thinking-info, #usage-info, #location, #session-id {
         height: 1;
         background: transparent;
         color: ansi_default;
-        text-style: dim;
+        text-style: none;
         padding: 0;
     }
-    #session-info, #thinking-info, #usage-info { height: auto; max-height: 2; }
+    #location-row { height: 1; }
+    #location { width: 1fr; text-wrap: nowrap; text-overflow: ellipsis; }
+    #session-id, #thinking-info { width: auto; }
+    #summary, #selection-summary { height: auto; }
+    #selection-summary { width: 1fr; }
+    #session-info, #usage-info { width: 1fr; height: auto; max-height: 2; }
+    #session-info { text-align: right; }
+    #usage-info { color: ansi_bright_cyan; }
+    #status { height: auto; max-height: 2; }
+    #bottom.narrow #summary { layout: vertical; }
+    #bottom.narrow #session-info { text-align: left; }
     #approval-dialog {
         align: center middle; width: 80%; max-height: 80%;
         border: round $accent; padding: 1 2;
@@ -466,11 +478,15 @@ class WispTuiApp(App[None]):
         with Container(id="bottom"):
             yield self._activity_indicator
             yield PromptInput()
+            with Horizontal(id="location-row"):
+                yield Static("", id="location", markup=False)
+                yield Static("", id="session-id", markup=False)
+            with Horizontal(id="summary"):
+                yield Static("", id="usage-info", markup=False)
+                with Horizontal(id="selection-summary"):
+                    yield Static("", id="session-info", markup=False)
+                    yield Static("", id="thinking-info", markup=False)
             yield Static("", id="status", markup=False)
-            yield Static("", id="session-info", markup=False)
-            yield Static("", id="thinking-info", markup=False)
-            yield Static("", id="usage-info", markup=False)
-            yield Static("", id="location", markup=False)
 
     def on_mount(self) -> None:
         self._activity_timer = self.set_interval(0.1, self._tick_activity, pause=True)
@@ -533,10 +549,16 @@ class WispTuiApp(App[None]):
         self._status_state = _safe_text(text, 200)
         self._render_status()
 
-    def _render_status(self) -> None:
-        line = f"{self._status_state} · {HINTS}" if self._status_state else HINTS
+    def _render_status(self, width: int | None = None) -> None:
+        width = self.size.width if width is None else width
+        hints = HINTS if width >= 80 else "Enter send · Ctrl+J ↵ · F1 help"
+        line = f"{self._status_state} · {hints}" if self._status_state else hints
         self.query_one("#status", Static).update(_safe_text(line, 250))
         self._render_activity()
+
+    def on_resize(self, event: events.Resize) -> None:
+        self.query_one("#bottom").set_class(event.size.width < 80, "narrow")
+        self._render_status(event.size.width)
 
     def _render_activity(self) -> None:
         indicator = self._activity_indicator
@@ -580,9 +602,26 @@ class WispTuiApp(App[None]):
         ]
 
     def _render_metadata(self) -> None:
-        for widget_id, line in zip(("session-info", "thinking-info", "usage-info", "location"),
-                                   self._metadata_lines()):
-            self.query_one(f"#{widget_id}", Static).update(line)
+        session = self.session_id[:8] if self.session_id else "new"
+        self.query_one("#location", Static).update(
+            f"client: {_metadata_text(self._launch_dir, 1000)}")
+        self.query_one("#session-id", Static).update(f" · session {session}")
+        mode = _metadata_text(self._selection.get("mode"))
+        model = _metadata_text(self._selection.get("model"))
+        label = f"model: {model or 'not reported'}" if mode == "model" else (
+            f"mode: {mode} (auto)" if mode and mode != "model" else "model: runtime default")
+        self.query_one("#session-info", Static).update(label)
+        thinking = self._selection.get("thinking")
+        thinking_info = self.query_one("#thinking-info", Static)
+        thinking_info.update(f" · thinking: {'on' if thinking else 'off'}"
+                             if isinstance(thinking, bool) else "")
+        thinking_info.display = isinstance(thinking, bool)
+        usage = self.query_one("#usage-info", Static)
+        # These are exact counts from the last finished run, never context use.
+        compact = self._last_usage.replace("input: ", "↑").replace("output: ", "↓").replace(
+            "total: ", "Σ").replace(", ", " ")
+        usage.update(f"last run {compact}" if compact else "")
+        usage.display = bool(compact)
 
     def _selection_updated(self, session: dict[str, Any], session_id: str) -> None:
         if self.session_id != session_id:
@@ -1230,7 +1269,7 @@ class WispTuiApp(App[None]):
         for key in ("inputTokens", "outputTokens", "totalTokens"):
             value = usage.get(key)
             if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-                parts.append(f"{key.replace('Tokens', '')}: {value}")
+                parts.append(f"{key.replace('Tokens', '')}: {value:,}")
         return ", ".join(parts)
 
     # -- sessions ----------------------------------------------------------------

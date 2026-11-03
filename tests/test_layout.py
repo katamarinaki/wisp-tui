@@ -33,8 +33,8 @@ async def test_chat_and_editor_share_a_compact_gutter(
         assert editor.styles.border_top[0] == editor.styles.border_bottom[0] == "solid"
         assert editor.region.height == 3
         metadata_height = sum(app.query_one(f"#{name}").region.height
-                              for name in ("session-info", "thinking-info", "usage-info", "location"))
-        assert app.query_one("#bottom").region.height == 4 + metadata_height
+                              for name in ("summary", "location-row", "status"))
+        assert app.query_one("#bottom").region.height == 3 + metadata_height
         assert editor.region.y == app.query_one("#bottom").region.y
         # Exactly one blank row around the answer text.
         assert paragraph.region.y == user.region.bottom + 1

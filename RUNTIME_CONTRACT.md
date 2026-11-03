@@ -191,7 +191,8 @@ An automatic mode is not evidence of the concrete model serving a run, and a
 thinking setting is not a live reasoning stream. This client has no verified
 contract for live token counters, current context occupancy/limit, or the
 runtime's working directory: those are not inferred from token sums, model IDs,
-or the client's launch directory. Unknown values remain explicitly unavailable.
+or the client's launch directory. Unknown stats are omitted from the compact
+footer and explained as unavailable in `/status`.
 No routes, telemetry event kinds, or inference requests were added for the footer.
 
 ## Tests and remaining validation
