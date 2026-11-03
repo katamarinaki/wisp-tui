@@ -111,7 +111,9 @@ Tab pauses following so new output will not pull you away from its details.
 
 While a run is active you will see tool calls as they happen. When Wisp needs
 approval for a tool, a dialog appears: **y** approve, **n** deny, **p** allow
-for this project, **g** allow globally, **Esc** deny. Normal questions consume
+for this project, **g** allow globally, **Esc** deny. Use Up/Down or PageUp/PageDown
+to scroll long approval details; decision keys stay visible. Ctrl+C still
+cancels work from approvals and pickers; press twice to leave. Normal questions consume
 the Wisp account balance, exactly like Telegram/Desk sessions.
 """
 
@@ -215,8 +217,7 @@ class StreamView:
 class ApprovalModal(ModalScreen[str | None]):
     """Ask the owner to resolve a parked run's confirmation prompt."""
 
-    # The dialog has no focusable children; take focus ourselves so the
-    # y/n/p/g/escape bindings are handled by this screen.
+    # Decisions belong to this screen even when the details viewport has focus.
     can_focus = True
 
     BINDINGS = [
@@ -225,6 +226,7 @@ class ApprovalModal(ModalScreen[str | None]):
         ("p", "allow_project", "Allow for project"),
         ("g", "allow_global", "Allow globally"),
         ("escape", "deny", "Deny"),
+        ("ctrl+c", "app.cancel", "Cancel/exit"),
     ]
 
     def __init__(self, tool: str, args: Any, note: str = "") -> None:
@@ -238,15 +240,17 @@ class ApprovalModal(ModalScreen[str | None]):
             # Approval details must be shown exactly as the runtime sent them:
             # Textual markup would hide/alter bracketed text (or crash).
             yield Static("Wisp asks for approval", id="approval-title", markup=False)
-            yield Static(f"Tool: {self.tool}", id="approval-tool", markup=False)
-            if self.note:
-                yield Static(self.note, id="approval-note", markup=False)
-            yield Static(_pretty_args(self.args), id="approval-args", markup=False)
-            yield Static("y approve · n/Esc deny · p allow for project · g allow globally",
+            with VerticalScroll(id="approval-details"):
+                yield Static(f"Tool: {self.tool}", id="approval-tool", markup=False)
+                if self.note:
+                    yield Static(self.note, id="approval-note", markup=False)
+                yield Static(_pretty_args(self.args), id="approval-args", markup=False)
+            yield Static("↑↓/PgUp/PgDn scroll · y approve · n/Esc deny · "
+                         "p allow for project · g allow globally",
                          id="approval-hint", markup=False)
 
     def on_mount(self) -> None:
-        self.focus()
+        self.query_one("#approval-details", VerticalScroll).focus()
 
     def action_approve(self) -> None:
         self.dismiss("approve")
@@ -273,7 +277,7 @@ def server_session_label(session: dict[str, Any]) -> str:
 class SessionPicker(ModalScreen[str | None]):
     """Pick a session from ``(session id, label)`` entries."""
 
-    BINDINGS = [("escape", "close", "Close")]
+    BINDINGS = [("escape", "close", "Close"), ("ctrl+c", "app.cancel", "Cancel/exit")]
 
     def __init__(self, entries: list[tuple[str, str]],
                  title: str = "Sessions (newest first)") -> None:
@@ -301,7 +305,7 @@ class SessionPicker(ModalScreen[str | None]):
 class ModelPicker(ModalScreen[dict[str, Any] | None]):
     """Pick the model selection for the current session."""
 
-    BINDINGS = [("escape", "close", "Close")]
+    BINDINGS = [("escape", "close", "Close"), ("ctrl+c", "app.cancel", "Cancel/exit")]
 
     def __init__(self, models: list[dict[str, Any]], current: dict[str, Any] | None) -> None:
         super().__init__()
@@ -466,9 +470,12 @@ class WispTuiApp(App[None]):
     #bottom.narrow #session-info { text-align: left; }
     #approval-dialog {
         align: center middle; width: 80%; max-height: 80%;
-        border: round $accent; padding: 1 2;
+        border: round $accent; padding: 0 1;
     }
     #approval-title { text-style: bold; color: $accent; margin-bottom: 1; }
+    #approval-details {
+        height: 1fr; min-height: 1; background: transparent; scrollbar-size: 0 0;
+    }
     #approval-tool { text-style: bold; }
     #approval-args { margin: 1 0; }
     #approval-hint { color: $text-muted; }
@@ -477,6 +484,18 @@ class WispTuiApp(App[None]):
         border: round $accent; padding: 1 2;
     }
     #picker-title { text-style: bold; margin-bottom: 1; }
+    #picker-dialog ListView, #picker-dialog ListView:focus {
+        height: 1fr; background: transparent; background-tint: transparent;
+        color: ansi_default; scrollbar-size: 0 0;
+    }
+    #picker-dialog ListItem, #picker-dialog ListItem.-hovered,
+    #picker-dialog ListItem.-highlight, #picker-dialog ListView:focus > ListItem.-highlight {
+        background: transparent; background-tint: transparent; color: ansi_default;
+        text-style: none;
+    }
+    #picker-dialog ListItem.-hovered { text-style: underline; }
+    #picker-dialog ListItem.-highlight,
+    #picker-dialog ListView:focus > ListItem.-highlight { text-style: bold underline; }
     """
 
     # Layout cost grows with every mounted chat widget (measured: streaming is

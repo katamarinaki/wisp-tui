@@ -216,6 +216,10 @@ owner must merge this feature from `develop` to `main` for main installations.
 - Approval dialog for `confirmation.required`: **y** approve, **n/Esc** deny,
   **p** allow for project, **g** allow globally. Answers are sent to
   `POST /v1/runs/{id}/confirmations/{promptId}` and the stream resumes.
+  Long details scroll with Up/Down, PageUp/PageDown, Home/End or the mouse;
+  decision keys stay visible when the terminal is narrowed or resized.
+  Session/model pickers use bold underlined selection text on the terminal's
+  default background, including focused and hovered entries.
 - One follower owns each run's stream and parked polling. Current run records
   reconcile approvals answered elsewhere—even with a local dialog open—and
   completion after a lost terminal event or runtime restart.
@@ -233,7 +237,8 @@ owner must merge this feature from `develop` to `main` for main installations.
 - Stream failure retains the run ID/cursor and blocks duplicate task input;
   after bounded automatic retries, `/reconnect` retries following without
   starting another task.
-- Ctrl+C cancels the active run; press it **twice** (within 3s) to leave.
+- Ctrl+C cancels the active run, including from approvals and pickers;
+  press it **twice** (within 3s) to leave. Cancellation never answers an approval.
   `/cancel` cancels without exiting, `/quit` always exits. Cancellation failures
   can be explicitly retried; cancellation during submission waits for the run
   ID to be acknowledged. The runtime must confirm the terminal status.
@@ -316,7 +321,7 @@ Mirrors the ask-wisp proxy hardening:
 
 ```sh
 cd wisp-tui   # the checkout
-.venv/bin/python -m pytest tests/    # 483 tests, no network/sockets
+.venv/bin/python -m pytest tests/    # 503 tests, no network/sockets
 .venv/bin/python -m mypy             # strict, src + tests
 ```
 
@@ -336,6 +341,12 @@ measurement window at 40/100 columns. Relative-cursor tests cover changed rows,
 Unicode, right/bottom edges, modal restoration, resize and full-frame fallback.
 An interactive PTY fixture checks PageUp pause and F4 resume while output arrives,
 including the transparent paused-follow hint at 40/100 columns.
+Combined usability checks cover long Unicode/Markdown streams, resizing,
+approval details down to 32×16, picker navigation, explicit decisions and
+modal cancellation. A real PTY exercises both pickers and approval scrolling
+while streaming, with resize signals between 100×30 and 40×18. Every PTY capture
+also verifies terminal mode restoration; the combined check covers cursor,
+mouse and bracketed-paste cleanup. Live Mac/SSH acceptance remains separate.
 
 ## Layout
 

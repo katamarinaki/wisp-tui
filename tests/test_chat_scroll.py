@@ -228,6 +228,14 @@ async def test_tools_inserted_above_the_answer_preserve_reading_position(
         assert not bool(chat.following) and answer.region.y == y
         tool.collapsed = False
         await pilot.pause()
+        await eventually(lambda: app._tool_history_token is None)
+        await eventually(lambda: chat._reading_position is None and not chat._pending_layout)
+        await pilot.pause()
+        # Expansion scrolls the tool into view. Return to reading the answer
+        # before checking that an offscreen tool's result cannot displace it.
+        chat.scroll_to(y=answer.virtual_region.y + 20, animate=False, immediate=True)
+        await pilot.pause()
+        assert tool.region.bottom <= chat.region.y
         y = answer.region.y
         app._apply_tool_history([ChatMessage("tool", "Result line\n" * 50,
                                             tool_call_id="new-call")], (tool,))

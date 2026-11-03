@@ -118,7 +118,7 @@ conservative until rejection/reconciliation semantics are established.
 **Exit criterion:** slow requests, disconnects, cancellation, and cross-client
 approvals cannot silently lose work or make the UI act on the wrong run/session.
 
-## 2. Essential terminal usability — in progress
+## 2. Essential terminal usability — implemented offline
 
 - [x] Tighten the single-line input frame and align chat/editor gutters. Render
       answers in the terminal's own foreground, left-align headings, and avoid
@@ -225,8 +225,16 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       completion. Explicit clear/new/session loads restore following. Offline
       streaming, queued-update, resize, modal, trimming and actual PTY-key checks
       at 40/100 columns preserve inline mode and the default background.
-- [ ] Check long streamed output, narrow terminals, resize, and modal key handling.
-      Preserve the default-background and inline-mode guarantees.
+- [x] Check long streamed output, narrow terminals, resize, and modal key handling.
+      Mixed Unicode/Markdown streams over 12k characters match a full render
+      after resizing and opening pickers. Long approval details now scroll while
+      decision keys stay visible down to 32×16; picker focus/hover/selection stays
+      transparent. Ctrl+C cancels from all three dialogs without answering an
+      approval. Offline checks cover explicit decisions, paste/key isolation,
+      restored drafts/focus and light/dark themes. Actual PTY keys and resize
+      signals exercise 100×30 → 40×18 → 100×30 during streaming, preserving the
+      default background, inline mode and terminal settings on exit. Live SSH
+      responsiveness and shell behavior still require acceptance below.
 
 **Exit criterion:** composing a real homeserver task and inspecting Wisp's work
 is comfortable over SSH. Keep the existing pickers and commands unless a
@@ -254,7 +262,7 @@ not a release criterion.
 ## Maintenance alongside the MVP
 
 - Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **483 passing tests**, strict mypy passing.
+  Current baseline: **503 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
 - [x] Local Git repository (`main` baseline, work on branches). No remote yet.
 - [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held

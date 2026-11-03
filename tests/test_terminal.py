@@ -9,6 +9,7 @@ from pathlib import Path
 import pty
 import re
 import select
+import signal
 import struct
 import subprocess
 import sys
@@ -21,10 +22,14 @@ from tests.helpers import SID
 
 
 def capture_terminal(module: str, width: int,
-                     input_steps: tuple[tuple[bytes, bytes], ...] = ()) -> bytes:
+                     input_steps: tuple[tuple[bytes, bytes], ...] = (), *,
+                     resize_steps: tuple[tuple[bytes, int, int], ...] = (),
+                     timeout: float = 10.0) -> bytes:
     pending = list(input_steps)
+    resizes = list(resize_steps)
     root = Path(__file__).resolve().parents[1]
     master, slave = pty.openpty()
+    original_termios = termios.tcgetattr(master)
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, width, 0, 0))
     output = bytearray()
     try:
@@ -36,7 +41,7 @@ def capture_terminal(module: str, width: int,
                      "WISP_TUI_PROG": "wi"}) as process:
             os.close(slave)
             slave = -1
-            deadline = time.monotonic() + 10.0
+            deadline = time.monotonic() + timeout
             try:
                 while True:
                     assert time.monotonic() < deadline, (
@@ -54,11 +59,16 @@ def capture_terminal(module: str, width: int,
                     if not chunk:
                         break
                     output.extend(chunk)
+                    while resizes and resizes[0][0] in output:
+                        _, columns, rows = resizes.pop(0)
+                        fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
+                        process.send_signal(signal.SIGWINCH)
                     while pending and pending[0][0] in output:
                         _, keys = pending.pop(0)
                         os.write(master, keys)
                     assert len(output) <= 2_000_000, "terminal capture exceeded limit"
                 assert process.wait(timeout=2.0) == 0, "terminal fixture failed"
+                assert termios.tcgetattr(master) == original_termios, "terminal modes not restored"
             finally:
                 if process.poll() is None:
                     process.kill()
@@ -68,6 +78,7 @@ def capture_terminal(module: str, width: int,
         if slave >= 0:
             os.close(slave)
     assert not pending, "terminal fixture exited before input checks completed"
+    assert not resizes, "terminal fixture exited before resize checks completed"
     return bytes(output)
 
 
@@ -181,3 +192,24 @@ def test_follow_pause_and_resume_with_real_keys_keep_the_default_background(widt
     sgr = re.findall(rb"\x1b\[([0-9;:]*)m", capture)
     assert not any(re.search(rb"(?:^|[;:])48(?:[;:]|$)", codes) for codes in sgr), \
         "follow controls painted a background"
+
+
+def test_long_stream_resize_and_modal_keys_in_a_real_inline_terminal() -> None:
+    capture = capture_terminal("tests.usability_terminal_fixture", 100, (
+        (b"SESSION_READY", b"\x1b[B\r"),
+        (b"MODEL_READY", b"\x1b[B\x1b[B\r"),
+        (b"APPROVAL_READY", b"\x1b[F"),
+        (b"APPROVAL_SCROLLED", b"n"),
+    ), resize_steps=((b"RESIZE_NARROW", 40, 18), (b"RESIZE_WIDE", 100, 30)), timeout=20.0)
+    result = json.loads(capture.split(b"USABILITY_RESULT=", 1)[1].splitlines()[0])
+    assert result["session"] == "session-1"
+    assert result["model"] == {"mode": "model", "model": "scripted-model", "thinking": True}
+    assert result["approval"] == "deny"
+    assert result["characters"] > 12000
+    assert result["draft"] == "keep this draft"
+    assert b"\x1b[?1049h" not in capture, "alternate screen was enabled"
+    sgr = re.findall(rb"\x1b\[([0-9;:]*)m", capture)
+    assert not any(re.search(rb"(?:^|[;:])48(?:[;:]|$)", codes) for codes in sgr), \
+        "stream, picker or approval painted a background"
+    for restore in (b"\x1b[?25h", b"\x1b[?2004l", b"\x1b[?1000l", b"\x1b[?1006l"):
+        assert restore in capture and capture.rfind(restore) < capture.index(b"USABILITY_RESULT=")
