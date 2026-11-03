@@ -52,7 +52,8 @@ class SessionSummary:
 
     def label(self) -> str:
         when = datetime.fromtimestamp(self.updated).strftime("%Y-%m-%d %H:%M")
-        title = self.title.replace("\n", " ").strip() or "(untitled)"
+        title = "".join(char if char.isprintable() else " " for char in self.title)
+        title = title.strip() or "(untitled)"
         if len(title) > 70:
             title = title[:69] + "…"
         return f"{title}  ·  {when}  ·  {self.id[:8]}"

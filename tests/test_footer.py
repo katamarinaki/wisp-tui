@@ -28,11 +28,12 @@ async def test_fresh_footer_and_full_status_explain_unavailable_data(
     app, client = make_app([], monkeypatch)
     async with app.run_test() as pilot:
         await eventually(lambda: "ready" in app._status_state)
-        assert "session new" in footer(app, "session-info")
-        assert "model: unavailable (runtime default)" in footer(app, "session-info")
-        assert footer(app, "thinking-info") == "thinking: unavailable · context: unavailable"
-        assert footer(app, "usage-info") == "last run tokens: unavailable"
-        assert footer(app, "location") == f"launch dir (client only): {launch}"
+        assert "session new" in footer(app, "session-id")
+        assert footer(app, "session-info") == "model: runtime default"
+        assert not app.query_one("#thinking-info").display
+        assert footer(app, "usage-info") == ""
+        assert not app.query_one("#usage-info").display
+        assert footer(app, "location") == f"client: {launch}"
         # A later chdir must not relabel the original launch directory.
         monkeypatch.chdir(tmp_path)
         app._status("submitting…")
@@ -40,6 +41,9 @@ async def test_fresh_footer_and_full_status_explain_unavailable_data(
         app._handle_command("/status")
         await pilot.pause()
         assert str(launch) in chat_text(app)
+        assert "thinking: unavailable" in chat_text(app)
+        assert "context: unavailable" in chat_text(app)
+        assert "last run tokens: unavailable" in chat_text(app)
         assert "Wisp working directory: unavailable" in chat_text(app)
         assert "not live" in chat_text(app)
         assert client.calls == [("GET", "/v1/health", None)]
@@ -49,10 +53,10 @@ async def test_fresh_footer_and_full_status_explain_unavailable_data(
     ({"mode": "model", "model": "model[/]x", "thinking": True},
      "model: model[/]x", "on"),
     ({"mode": "balanced", "thinking": False},
-     "mode: balanced (runtime-selected model)", "off"),
-    ({"mode": "advanced"}, "mode: advanced (runtime-selected model)", "unavailable"),
-    ({"mode": "model", "thinking": "false"}, "model: unavailable", "unavailable"),
-    ({}, "model: unavailable (runtime default)", "unavailable"),
+     "mode: balanced (auto)", "off"),
+    ({"mode": "advanced"}, "mode: advanced (auto)", "unavailable"),
+    ({"mode": "model", "thinking": "false"}, "model: not reported", "unavailable"),
+    ({}, "model: runtime default", "unavailable"),
 ])
 async def test_selection_stays_visible_through_run_status_changes(
         monkeypatch: pytest.MonkeyPatch, selection: dict[str, Any],
@@ -63,13 +67,16 @@ async def test_selection_stays_visible_through_run_status_changes(
         app._session_loaded({"id": SID, "effectiveSelection": selection}, [], "")
         expected = footer(app, "session-info")
         assert model in expected
-        assert footer(app, "thinking-info").startswith(f"thinking: {thinking} ·")
+        if thinking == "unavailable":
+            assert not app.query_one("#thinking-info").display
+        else:
+            assert f"thinking: {thinking}" in footer(app, "thinking-info")
         app._turn_started(RID)
         app._handle_event({"kind": "run.started"})
         assert footer(app, "session-info") == expected
         app._finalize_run("run.completed", {"usage": {"inputTokens": 3, "outputTokens": 4}})
         assert footer(app, "session-info") == expected
-        assert footer(app, "usage-info") == "last run tokens: input: 3, output: 4"
+        assert footer(app, "usage-info") == "last run ↑3 ↓4"
         assert app.session_id == SID and app.active_run is None
         assert app._status_state == ""
         assert footer(app, "status") == (
@@ -94,14 +101,14 @@ async def test_follow_up_uses_same_session_and_updates_last_run_not_context(
         await pilot.press("enter")
         await eventually(lambda: app._status_state == "")
         await eventually(lambda: app._follower is None)
-        assert "input: 10, output: 20, total: 30" in footer(app, "usage-info")
+        assert "↑10 ↓20 Σ30" in footer(app, "usage-info")
         editor.value = "And a follow-up?"
         await pilot.press("enter")
-        await eventually(lambda: "input: 40" in footer(app, "usage-info"))
+        await eventually(lambda: "↑40" in footer(app, "usage-info"))
         assert app._status_state == ""
         assert app.session_id == SID
-        assert footer(app, "usage-info") == "last run tokens: input: 40, output: 5"
-        assert "context: unavailable" in footer(app, "thinking-info")
+        assert footer(app, "usage-info") == "last run ↑40 ↓5"
+        assert "context" not in footer(app, "session-info")
         assert "First answer" in chat_text(app) and "Follow-up answer" in chat_text(app)
         assert app.query("#chat > *").last(Markdown).source == "Follow-up answer"
         assert "Ready for your next message" not in chat_text(app)
@@ -150,14 +157,16 @@ async def test_session_change_and_new_clear_usage_and_model_metadata(
         app._finalize_run("run.completed", {"usage": {"inputTokens": 100}})
         # Reloading the same session retains the observed usage; switching doesn't.
         app._session_loaded(session, [], "")
-        assert "input: 100" in footer(app, "usage-info")
+        assert "↑100" in footer(app, "usage-info")
         app._session_loaded({"id": OTHER_SID}, [], "")
-        assert footer(app, "usage-info") == "last run tokens: unavailable"
+        assert footer(app, "usage-info") == ""
+        assert not app.query_one("#usage-info").display
         assert "balanced" not in footer(app, "session-info")
         app._start_fresh("")
-        assert "session new" in footer(app, "session-info")
-        assert footer(app, "usage-info") == "last run tokens: unavailable"
-        assert "thinking: unavailable" in footer(app, "thinking-info")
+        assert "session new" in footer(app, "session-id")
+        assert footer(app, "usage-info") == ""
+        assert not app.query_one("#usage-info").display
+        assert not app.query_one("#thinking-info").display
 
 
 @pytest.mark.parametrize("kind", ["run.completed", "run.failed", "run.cancelled"])
@@ -170,9 +179,10 @@ async def test_missing_usage_does_not_show_previous_run_tokens(
         app._turn_started(RID)
         app._finalize_run("run.completed", {"usage": {"inputTokens": 100}})
         app._turn_started(RID)
-        assert "input: 100" in footer(app, "usage-info")  # last finished run, not live
+        assert "↑100" in footer(app, "usage-info")  # last finished run, not live
         app._finalize_run(kind, {})
-        assert footer(app, "usage-info") == "last run tokens: unavailable"
+        assert footer(app, "usage-info") == ""
+        assert not app.query_one("#usage-info").display
 
 
 @pytest.mark.parametrize("usage, expected", [
@@ -180,6 +190,7 @@ async def test_missing_usage_does_not_show_previous_run_tokens(
     ({"inputTokens": True, "outputTokens": -1, "totalTokens": "30"}, ""),
     ({"inputTokens": float("nan"), "outputTokens": float("inf")}, ""),
     ({"inputTokens": 0, "outputTokens": 5, "other": "secret"}, "input: 0, output: 5"),
+    ({"inputTokens": 28606, "totalTokens": 28733}, "input: 28,606, total: 28,733"),
 ])
 def test_only_nonnegative_integer_token_counts_are_displayed(usage: Any, expected: str) -> None:
     assert WispTuiApp._usage_line(usage) == expected
@@ -200,15 +211,91 @@ async def test_footer_is_bounded_transparent_and_survives_resize(
             await pilot.resize_terminal(new_width, 24)
             await pilot.pause()
             bottom = app.query_one("#bottom")
-            assert 8 <= bottom.region.height <= 10
+            assert 6 <= bottom.region.height <= 10
             assert bottom.region.bottom == 24
             assert app.query_one("#input").region.y >= 0
             assert app.query_one("#chat").region.height >= 14
-            for name in ("session-info", "thinking-info", "usage-info", "location"):
+            for name in ("session-info", "thinking-info", "session-id", "location"):
                 widget = app.query_one(f"#{name}", Static)
                 assert widget.styles.background.a == 0
-                assert widget.region.x == 1
+                assert widget.region.x >= 1
                 assert widget.region.right <= new_width - 1
                 assert "\x1b" not in footer(app, name) and "\n" not in footer(app, name)
-            assert "context: unavailable" in footer(app, "thinking-info")
+            assert "context" not in footer(app, "session-info")
             assert "model[/]x" in footer(app, "session-info")
+
+
+@pytest.mark.parametrize("theme", ["textual-dark", "textual-light"])
+async def test_footer_contrast_and_summary_reflow(
+        monkeypatch: pytest.MonkeyPatch, theme: str) -> None:
+    app, _ = make_app([], monkeypatch)
+    app.theme = theme
+    async with app.run_test(size=(100, 24)) as pilot:
+        await eventually(lambda: "ready" in app._status_state)
+        app._launch_dir = "~/projects/example"
+        app._session_loaded({"id": SID, "effectiveSelection": {
+            "mode": "balanced", "thinking": False}}, [], "", announce_empty=False)
+        app._turn_started(RID)
+        app._finalize_run("run.completed", {"usage": {
+            "inputTokens": 28606, "outputTokens": 127, "totalTokens": 28733}})
+        for width in (100, 40, 100):
+            await pilot.resize_terminal(width, 24)
+            await pilot.pause()
+            usage = app.query_one("#usage-info", Static)
+            selection = app.query_one("#session-info", Static)
+            status = app.query_one("#status", Static)
+            assert footer(app, "usage-info") == "last run ↑28,606 ↓127 Σ28,733"
+            assert footer(app, "session-info") == "mode: balanced (auto)"
+            assert footer(app, "thinking-info") == " · thinking: off"
+            for widget in (usage, selection, status, app.query_one("#location"),
+                           app.query_one("#thinking-info"), app.query_one("#session-id")):
+                assert widget.styles.background.a == 0
+                assert not widget.rich_style.dim
+            if width == 100:
+                assert usage.region.y == selection.region.y
+                assert usage.region.right <= selection.region.x
+                assert selection.styles.text_align == "right"
+                assert app.query_one("#bottom").region.height == 6
+                assert "F3 model" in footer(app, "status")
+            else:
+                assert usage.region.bottom == selection.region.y
+                assert selection.styles.text_align == "left"
+                assert app.query_one("#bottom").region.height == 7
+                assert footer(app, "status") == "Enter send · Ctrl+J ↵ · F1 help"
+            assert status.region.height == 1
+
+
+@pytest.mark.parametrize("width", [40, 80, 100])
+async def test_session_and_thinking_stay_visible_with_long_metadata(
+        monkeypatch: pytest.MonkeyPatch, width: int) -> None:
+    app, _ = make_app([], monkeypatch)
+    async with app.run_test(size=(width, 24)) as pilot:
+        await eventually(lambda: "ready" in app._status_state)
+        for thinking in (True, False):
+            app._session_loaded({"id": SID, "effectiveSelection": {
+                "mode": "model", "model": "provider/model-with-a-reasonably-long-name",
+                "thinking": thinking}}, [], "", announce_empty=False)
+            app._turn_started(RID)
+            app._finalize_run("run.completed", {"usage": {"inputTokens": 28606}})
+            for path in ("~/projects/example", "/example/" + "界" * 200):
+                app._launch_dir = path
+                app._render_metadata()
+                await pilot.pause()
+                location = app.query_one("#location", Static)
+                session = app.query_one("#session-id", Static)
+                model = app.query_one("#session-info", Static)
+                setting = app.query_one("#thinking-info", Static)
+                assert session.render_line(0).text.strip() == f"· session {SID[:8]}"
+                assert setting.render_line(0).text.strip() == (
+                    f"· thinking: {'on' if thinking else 'off'}")
+                assert location.region.width > 0
+                assert location.region.right == session.region.x
+                assert model.region.width > 0
+                assert model.region.right == setting.region.x
+                assert session.region.right == setting.region.right == width - 1
+                assert session.region.height == setting.region.height == 1
+                assert session.region.bottom <= model.region.y
+                assert setting.region.bottom <= app.query_one("#status").region.y
+                assert app.query_one("#bottom").region.bottom == 24
+                if path.startswith("/example/") or width == 40:
+                    assert "…" in location.render_line(0).text

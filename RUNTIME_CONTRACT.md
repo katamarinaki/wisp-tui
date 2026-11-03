@@ -15,6 +15,12 @@ release before the owner-run live acceptance test.
 - `/tmp/wisp-openapi.json`: run listing, records, event and confirmation schemas.
   SHA-256: `0a922d80df32dc0e9c3fc1d16bd19b4bbdc67e02ee5a8fd19d41ca12997711ee`
 
+- Owner-provided static inspection report for installed runtime **0.1.8**,
+  received 2026-11-03; SHA-256:
+  `4534fcb8412410fa5861af3ef3f1c1aa00263891cc2ced8aa17a84cb80d41e5e`.
+  It inspected the executable's embedded JavaScript without requests, inference
+  or real conversation inspection. No runtime Git commit was recoverable.
+
 These temporary files are not required to run the client or tests. Their hashes
 identify the evidence inspected; they do not prove the currently running release
 matches it. The durable summary and synthetic regression fixtures live here.
@@ -60,8 +66,15 @@ avoiding an unlink/directory-sync window. If a retry sees this known ID, it
 attaches without another POST. A late acknowledgement cannot replace a newer
 reservation. These are offline client guarantees, not proof of Wisp's actual
 idempotency-key retention or replay behavior. Old/clock-ambiguous requests stay
-blocked for manual reconciliation; unsent drafts and cancel intent are not
+blocked for manual reconciliation; cancel intent is not
 recovered.
+
+Unsent editor text is saved separately from this request journal. Composer
+snapshots can tag an unchanged draft with its in-flight request ID; startup
+discards that snapshot only when the validated journal acknowledges the same
+request, session and text. Editing clears the tag. A newer cached draft never
+changes the original request used by `/retry`, and recall/recovery adds no
+runtime requests or inferred acknowledgements.
 
 A restored request now loads its original session, checkpoint history and v1
 active-run summary using bounded GETs only. This view supplies the title and
@@ -159,6 +172,63 @@ run output relates to multi-message checkpoints, checkpoint commit timing, and
 whether the runtime exposes a reliable run/checkpoint association. Until then,
 ambiguous overlap is intentionally visible rather than silently discarded.
 
+## Tool detail contract — installed 0.1.8
+
+The owner-provided static report establishes these surfaces:
+
+- `tool_call.started`: `name`, optional `toolCallId`; no arguments or results.
+- `tool_call`: `name`, sanitized `args`, `ok`, `durationMs`, optional `toolCallId`,
+  and optional `ruledBy`. No result/output fields. `ok` describes the registry
+  success/error hook, not every tool's domain-specific result semantics.
+- Terminal `outcome.toolCalls` and run-record `toolCalls`: the same summaries in
+  completion order, explicitly **without call IDs or results**. Never correlate
+  these records with history by names, arguments or ordering. The UI only uses
+  them as labelled run-summary fallback when no live tool events were observed,
+  preventing a second copy of the live trace.
+- `/v1/sessions/{id}/history` returns flattened LangChain dictionaries under
+  `values.messages`: AI `tool_calls[].id/name/args` and tool-result
+  `tool_call_id/name/content/status`. This is distinct from the camelCase
+  representation in the session-detail endpoint. Join only by the call ID.
+
+Evidence anchors in the supplied report: `src/common/effect/outcome.ts:8–23,54–74`,
+`src/kernel/turn/run-turn.ts:246–265`, `src/server/routes/run-events.ts:66–72`,
+`src/kernel/turn/outcome.ts:61–92`, `src/server/routes/sessions.ts:137–179`, and
+`src/kernel/tools-adapter.ts:55–65`. These are generated module-section line
+numbers in the installed executable, not original TypeScript line numbers.
+This is static package evidence, not a live trace or a universal ID guarantee.
+
+Live arguments may already be truncated, redacted, parsed or changed after
+approval. History arguments are the model request and can differ from actual
+execution inputs. The UI labels these sources separately and keeps live inputs
+when history supplies a result. `additional_kwargs.wisp_tool_output_pruned ===
+true` labels a stored result as a summary; stored content can also be limited or
+transformed by tools/connectors. JSON strings remain strings, and content-block
+arrays are shown literally within the normal display limits. Registry `ok` and
+stored tool-message `status` remain distinct observations.
+
+Expanding an identified entry with no cached result performs one bounded (5s)
+GET through the existing history allowlist. Concurrent requests are coalesced;
+terminal completion refreshes already-expanded missing results, and replay
+reconciliation reuses its history response. This does not reserve the submission
+slot or block typing, cancellation or fresh work. Errors appear as safe codes
+inside the entry; collapse/expand explicitly retries. Session/chat generation,
+request identity and exact target widgets fence replies after clear, switching,
+trimming or exit. No automatic POST, tool execution or approval is added.
+
+Only uniquely matched call IDs fill outputs; conflicting/reused IDs remain
+ambiguous. An unidentified run summary points to reopening stored session
+history instead of guessing which result belongs to it. Missing/late history
+results remain explicit. Checkpoint-only calls are labelled recorded rather
+than shown as live work. Nested/subagent coverage is limited by what the parent
+history exposes and by the runtime's optional IDs.
+
+Final `output.text` normally selects the last assistant message; it is not the
+concatenation of all `text.delta` rounds. A supplied final string, including an
+empty string, replaces the streamed aggregate. The stream ends at its terminal
+event; later tool completions for that same run are not emitted. The earlier
+“logs after the answer” symptom was a UI insertion-order issue, not evidence of
+post-terminal tool execution.
+
 ## Approvals and cancellation
 
 `POST /v1/runs/{runId}/confirmations/{promptId}` sends an **explicit** decision
@@ -191,7 +261,8 @@ An automatic mode is not evidence of the concrete model serving a run, and a
 thinking setting is not a live reasoning stream. This client has no verified
 contract for live token counters, current context occupancy/limit, or the
 runtime's working directory: those are not inferred from token sums, model IDs,
-or the client's launch directory. Unknown values remain explicitly unavailable.
+or the client's launch directory. Unknown stats are omitted from the compact
+footer and explained as unavailable in `/status`.
 No routes, telemetry event kinds, or inference requests were added for the footer.
 
 ## Tests and remaining validation

@@ -7,29 +7,41 @@ the UI thread via ``call_from_thread``.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
+import unicodedata
 import uuid
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from rich.console import RenderableType
+from textual import events
+from textual._compositor import InlineUpdate
 from textual.app import App, ComposeResult
-from textual.containers import Container, Vertical, VerticalScroll
-from textual.screen import ModalScreen
+from textual.await_complete import AwaitComplete
+from textual.await_remove import AwaitRemove
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
 from textual.widget import AwaitMount, Widget
-from textual.widgets import ListItem, ListView, Markdown, Static
+from textual.widgets import Collapsible, ListItem, ListView, Markdown, Static, TextArea
 
 from .client import ClientError, WispClient, TERMINAL_RUN_STATUSES, safe_code
+from .chat_view import ChatScroll, ResumeFollow
 from .config import Config
+from .composer import ComposerError, ComposerState, ComposerStore, bounded_history
 from .editor import PromptInput
-from .history import ChatMessage, HistoryError, checkpoint_covers_answer, parse_history
+from .history import ChatMessage, HistoryError, checkpoint_covers_answer, parse_history, tool_history_results
 from .runs import RunFollower, find_active_run
 from .sessions import SessionStore
 from .submissions import MAX_DRAFT_BYTES, PendingSubmission, SubmissionError, SubmissionStore
+from .terminal import ChangedRowsUpdate, InlineRenderer
+from .tool_data import detail_text
+from .tool_view import ToolCallView
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # A session ID or a prefix of one (as shown in pickers), for --resume / /resume.
@@ -45,9 +57,12 @@ HELP_TEXT = """**wisp-tui** — chat with the local Wisp runtime.
 | Enter | Send the whole prompt |
 | Ctrl+J | Insert a newline (SSH-safe) |
 | Shift+Enter | Insert a newline if your terminal distinguishes it |
+| Ctrl+P / Ctrl+N | Previous / next submitted prompt; return to your draft |
+| Ctrl+Shift+P | Command palette, where the terminal distinguishes it |
 | F1 | This help |
 | F2 | Session picker |
 | F3 | Model / mode picker |
+| F4 | Resume following the latest output |
 | Ctrl+C | Cancel the active run — press twice to leave |
 
 Bracketed paste stays literal in the editor until you press Enter. Slash
@@ -66,26 +81,57 @@ sessions, including Telegram/desktop ones.
 
 `/retry` retries an unacknowledged submission with its original input and request
 ID. It never sends your newer draft. Pending requests are saved privately before
-submission and recovered after exit, without automatic resubmission. Unsent
-drafts are still memory-only. A state error blocks new work until resolved.
+submission and recovered after exit, without automatic resubmission. A pending
+request state error blocks new work until resolved.
+
+Ctrl+P/Ctrl+N browse your last 50 acknowledged prompts, preserving the current
+draft and edits made while browsing. Up/Down still move within multiline text.
+One unsent draft is saved locally after a short pause and on exit, up to 128 KiB.
+A fresh draft restores on a fresh launch; a session draft restores when you
+resume that session. Starting new text replaces the one saved draft. Nothing
+is sent automatically. Input history/recovery errors leave editing available.
 
 A finished run is one answered prompt, not the end of the conversation: just
 send your next message. The footer keeps the session, model/mode, thinking
-setting and last finished run's reported tokens visible. Tokens update when a
-run finishes, not live; context occupancy is unavailable. The launch directory
-belongs to this client, not Wisp's tools. `/status` shows the full details.
+setting and last finished run's reported tokens visible (↑ input, ↓ output,
+Σ total). Missing stats are hidden; `/status` explains what is not reported.
+Tokens update when a run finishes, not live; context occupancy is unavailable.
+The launch directory belongs to this client, not Wisp's tools.
+
+Tool entries stay above the current answer. Click a tool title to expand or
+collapse its details, or Tab to the title and press Enter. Live inputs may be
+sanitized; outputs load from stored session history when a unique call ID is
+available. Long details scroll inside the expanded entry. Collapse/expand
+retries a missing result. Opening details never executes or approves a tool.
+
+Scroll up in the transcript to pause automatic following while output continues.
+Click the paused-follow hint or press F4 to jump to the latest output and resume.
+Tab to the transcript for Up/PageUp/Home navigation; End, or scrolling back
+to the bottom, also resumes following.
+Editor and expanded tool-body scrolling stay independent. Opening a tool with
+Tab pauses following so new output will not pull you away from its details.
 
 While a run is active you will see tool calls as they happen. When Wisp needs
 approval for a tool, a dialog appears: **y** approve, **n** deny, **p** allow
-for this project, **g** allow globally, **Esc** deny. Normal questions consume
+for this project, **g** allow globally, **Esc** deny. Letter keys work once the
+dialog has been shown for half a second, so typing ahead cannot answer it. Use Up/Down or PageUp/PageDown
+to scroll long approval details; decision keys stay visible. Ctrl+C still
+cancels work from approvals and pickers; press twice to leave. Normal questions consume
 the Wisp account balance, exactly like Telegram/Desk sessions.
 """
+
+
+def _terminal_text(text: str) -> str:
+    """Replace C0/DEL/C1 controls (ESC, CSI, OSC…) so runtime text cannot drive the terminal."""
+    # CR is dropped (as Textual did) so CRLF text and chunked appends stay clean.
+    return "".join("�" if unicodedata.category(char) == "Cc" and char not in "\n\t" else char
+                   for char in text.replace("\r", ""))
 
 
 def _safe_text(value: Any, limit: int = 4000) -> str:
     if not isinstance(value, str):
         return ""
-    return value if len(value) <= limit else value[: limit - 1] + "…"
+    return _terminal_text(value if len(value) <= limit else value[: limit - 1] + "…")
 
 
 def _metadata_text(value: Any, limit: int = 100) -> str:
@@ -94,12 +140,31 @@ def _metadata_text(value: Any, limit: int = 100) -> str:
     return "".join(char if char.isprintable() else "�" for char in text)
 
 
-def _pretty_args(args: Any) -> str:
+APPROVAL_ARGS_LIMIT = 200_000
+
+
+def _pretty_args(args: Any, limit: int = 4000) -> str:
     try:
         rendered = json.dumps(args, indent=2, ensure_ascii=False, default=str)
     except (TypeError, ValueError):
         rendered = repr(args)
-    return _safe_text(rendered)
+    # Also hide bidi overrides and zero-width characters: the owner reads these to approve.
+    return "".join(char if char.isprintable() or char in "\n\t" else "�"
+                   for char in _safe_text(rendered, limit))
+
+
+class AnswerMarkdown(Markdown):
+    """Model-authored Markdown: controls neutralized, links never opened."""
+
+    def __init__(self, markdown: str | None = None, *, classes: str | None = None) -> None:
+        super().__init__(None if markdown is None else _terminal_text(markdown),
+                         classes=classes, open_links=False)
+
+    def update(self, markdown: str) -> AwaitComplete:
+        return super().update(_terminal_text(markdown))
+
+    def append(self, markdown: str) -> AwaitComplete:
+        return super().append(_terminal_text(markdown))
 
 
 FRESH_STATUS = "ready · new session — your first message starts it (/resume, F2)"
@@ -124,10 +189,13 @@ class StreamView:
 
     Re-rendering the whole answer per delta is quadratic. Instead, a single
     async renderer appends only the new suffix (coalescing deltas that arrive
-    meanwhile) and falls back to a full update when the text is replaced
-    (``gap``/final output that is not a continuation). It waits for the
-    widget's mount, so no delta can be lost to Markdown's initial update.
+    meanwhile, at most ten batches per second) and falls back to a full update
+    when the text is replaced (``gap``/final output that is not a continuation).
+    It waits for the widget's mount, so no delta can be lost to Markdown's
+    initial update.
     """
+
+    UPDATE_INTERVAL = 0.1
 
     def __init__(self, app: App[Any], widget: Markdown, mounted: AwaitMount,
                  on_rendered: Callable[[], None]) -> None:
@@ -138,6 +206,7 @@ class StreamView:
         self.target = ""
         self.rendered = ""
         self._running = False
+        self._flush_now = asyncio.Event()
 
     def set_text(self, text: str) -> None:
         self.target = text
@@ -145,10 +214,20 @@ class StreamView:
             self._running = True
             self.app.run_worker(self._render(), group="render", exclusive=False)
 
+    def flush(self) -> None:
+        """Finish the latest answer without waiting for the next display batch."""
+        if self._running or self.rendered != self.target:
+            self._flush_now.set()
+
     async def _render(self) -> None:
         try:
             await self._mounted
             while self.rendered != self.target and self.widget.is_attached:
+                try:
+                    await asyncio.wait_for(self._flush_now.wait(), timeout=self.UPDATE_INTERVAL)
+                except TimeoutError:
+                    pass
+                self._flush_now.clear()
                 target = self.target
                 if target.startswith(self.rendered):
                     await self.widget.append(target[len(self.rendered):])
@@ -167,65 +246,84 @@ class StreamView:
 class ApprovalModal(ModalScreen[str | None]):
     """Ask the owner to resolve a parked run's confirmation prompt."""
 
-    # The dialog has no focusable children; take focus ourselves so the
-    # y/n/p/g/escape bindings are handled by this screen.
+    # Decisions belong to this screen even when the details viewport has focus.
     can_focus = True
 
     BINDINGS = [
-        ("y", "approve", "Approve"),
-        ("n", "deny", "Deny"),
-        ("p", "allow_project", "Allow for project"),
-        ("g", "allow_global", "Allow globally"),
-        ("escape", "deny", "Deny"),
+        ("y", "decide('approve')", "Approve"),
+        ("n", "decide('deny')", "Deny"),
+        ("p", "decide('allow_project')", "Allow for project"),
+        ("g", "decide('allow_global')", "Allow globally"),
+        ("escape", "deny_now", "Deny"),
+        ("ctrl+c", "app.cancel", "Cancel/exit"),
     ]
+
+    # Letter keys stay inert until the dialog has been on screen with no decision
+    # key pressed for this long, so type-ahead or key repeat cannot answer it.
+    ARM_DELAY = 0.5
 
     def __init__(self, tool: str, args: Any, note: str = "") -> None:
         super().__init__()
         self.tool = tool
         self.args = args
         self.note = note
+        self.armed = False
+        self._arm_timer: Timer | None = None
+        args_text = _pretty_args(args, APPROVAL_ARGS_LIMIT + 1)
+        # A decision must never cover arguments the owner could not read.
+        self.reviewable = len(args_text) <= APPROVAL_ARGS_LIMIT
+        self.args_text = args_text if self.reviewable else (
+            args_text[:4000] + "\n… arguments too large to review; only deny is available")
 
     def compose(self) -> ComposeResult:
         with Vertical(id="approval-dialog"):
             # Approval details must be shown exactly as the runtime sent them:
             # Textual markup would hide/alter bracketed text (or crash).
             yield Static("Wisp asks for approval", id="approval-title", markup=False)
-            yield Static(f"Tool: {self.tool}", id="approval-tool", markup=False)
-            if self.note:
-                yield Static(self.note, id="approval-note", markup=False)
-            yield Static(_pretty_args(self.args), id="approval-args", markup=False)
-            yield Static("y approve · n/Esc deny · p allow for project · g allow globally",
-                         id="approval-hint", markup=False)
+            with VerticalScroll(id="approval-details"):
+                yield Static(f"Tool: {_metadata_text(self.tool, 200)}", id="approval-tool",
+                             markup=False)
+                if self.note:
+                    yield Static(self.note, id="approval-note", markup=False)
+                yield Static(self.args_text, id="approval-args", markup=False)
+            hint = ("↑↓/PgUp/PgDn scroll · y approve · n/Esc deny · "
+                    "p allow for project · g allow globally") if self.reviewable else (
+                    "↑↓/PgUp/PgDn scroll · n/Esc deny (arguments too large to approve)")
+            yield Static(hint, id="approval-hint", markup=False)
 
     def on_mount(self) -> None:
-        self.focus()
+        self.query_one("#approval-details", VerticalScroll).focus()
+        self._arm_timer = self.set_timer(self.ARM_DELAY, self._arm)
 
-    def action_approve(self) -> None:
-        self.dismiss("approve")
+    def _arm(self) -> None:
+        self.armed = True
 
-    def action_deny(self) -> None:
+    def action_decide(self, decision: str) -> None:
+        if not self.armed:
+            if self._arm_timer is not None:
+                self._arm_timer.reset()
+            return
+        if decision != "deny" and not self.reviewable:
+            return
+        self.dismiss(decision)
+
+    def action_deny_now(self) -> None:
         self.dismiss("deny")
-
-    def action_allow_project(self) -> None:
-        self.dismiss("allow_project")
-
-    def action_allow_global(self) -> None:
-        self.dismiss("allow_global")
 
 
 def server_session_label(session: dict[str, Any]) -> str:
     sid = str(session.get("id", ""))
-    title = _safe_text(session.get("title"), 60) or "(untitled)"
-    origin = session.get("origin", "?")
-    count = session.get("messageCount", "?")
-    updated = _safe_text(session.get("updatedAt"), 20).replace("T", " ")
+    title = _metadata_text(session.get("title"), 60) or "(untitled)"
+    origin = _metadata_text(str(session.get("origin", "?")), 40)
+    count = _metadata_text(str(session.get("messageCount", "?")), 12)
+    updated = _metadata_text(session.get("updatedAt"), 20).replace("T", " ")
     return f"{title}  ·  {origin}  ·  {count} msg  ·  {updated}  ·  {sid[:8]}"
 
 
 class SessionPicker(ModalScreen[str | None]):
     """Pick a session from ``(session id, label)`` entries."""
 
-    BINDINGS = [("escape", "close", "Close")]
+    BINDINGS = [("escape", "close", "Close"), ("ctrl+c", "app.cancel", "Cancel/exit")]
 
     def __init__(self, entries: list[tuple[str, str]],
                  title: str = "Sessions (newest first)") -> None:
@@ -253,7 +351,7 @@ class SessionPicker(ModalScreen[str | None]):
 class ModelPicker(ModalScreen[dict[str, Any] | None]):
     """Pick the model selection for the current session."""
 
-    BINDINGS = [("escape", "close", "Close")]
+    BINDINGS = [("escape", "close", "Close"), ("ctrl+c", "app.cancel", "Cancel/exit")]
 
     def __init__(self, models: list[dict[str, Any]], current: dict[str, Any] | None) -> None:
         super().__init__()
@@ -271,7 +369,7 @@ class ModelPicker(ModalScreen[dict[str, Any] | None]):
 
     def _label(self, option: dict[str, Any]) -> str:
         if option.get("mode") == "model":
-            name = str(option.get("model"))
+            name = _metadata_text(str(option.get("model")), 200)
             suffix = " · reasoning" if option.get("thinking") else ""
             return f"Model: {name}{suffix}"
         return f"Mode: {option.get('mode')}"
@@ -305,6 +403,8 @@ class ModelPicker(ModalScreen[dict[str, Any] | None]):
 
 class WispTuiApp(App[None]):
     TITLE = "wisp-tui"
+    # Free the SSH-safe Ctrl+P byte for prompt recall; keep the palette available.
+    COMMAND_PALETTE_BINDING = "ctrl+shift+p"
     CSS = """
     App { background: ansi_default; }
     Screen { background: transparent; color: ansi_default; }
@@ -347,14 +447,43 @@ class WispTuiApp(App[None]):
     }
     .system, .tool { color: ansi_default; text-style: dim; }
     .error { color: $error; }
+    #chat > ToolCallView {
+        height: auto;
+        margin: 0 1 1 1;
+        padding: 0;
+        border: none;
+        background: transparent;
+        background-tint: transparent;
+        color: ansi_default;
+    }
+    #chat ToolCallView > Contents { padding: 0; background: transparent; }
+    #chat ToolCallView CollapsibleTitle,
+    #chat ToolCallView CollapsibleTitle:hover,
+    #chat ToolCallView CollapsibleTitle:focus {
+        padding: 0;
+        max-width: 100%;
+        background: transparent;
+        background-tint: transparent;
+        color: ansi_default;
+        text-style: none;
+    }
+    #chat ToolCallView CollapsibleTitle:focus { text-style: underline; }
+    #chat .tool-detail-scroll {
+        height: auto;
+        max-height: 16;
+        padding: 0 0 0 2;
+        background: transparent;
+        scrollbar-size: 0 0;
+    }
+    #chat .tool-details { height: auto; background: transparent; color: ansi_default; }
     #bottom { dock: bottom; height: auto; padding: 0 1; }
     #input {
         height: auto;
         min-height: 3;
         max-height: 8;
         scrollbar-size: 0 0;
-        border-top: solid ansi_bright_black;
-        border-bottom: solid ansi_bright_black;
+        border-top: solid ansi_bright_blue;
+        border-bottom: solid ansi_bright_blue;
         border-left: none;
         border-right: none;
         background: transparent;
@@ -363,19 +492,36 @@ class WispTuiApp(App[None]):
     }
     #input:focus { background-tint: transparent; }
     #activity { display: none; }
-    #activity, #status, #session-info, #thinking-info, #usage-info, #location {
+    #resume-follow {
+        display: none; height: 1; background: transparent; color: ansi_default;
+        text-style: underline;
+    }
+    #activity, #status, #session-info, #thinking-info, #usage-info, #location, #session-id {
         height: 1;
         background: transparent;
         color: ansi_default;
-        text-style: dim;
+        text-style: none;
         padding: 0;
     }
-    #session-info, #thinking-info, #usage-info { height: auto; max-height: 2; }
+    #location-row { height: 1; }
+    #location { width: 1fr; text-wrap: nowrap; text-overflow: ellipsis; }
+    #session-id, #thinking-info { width: auto; }
+    #summary, #selection-summary { height: auto; }
+    #selection-summary { width: 1fr; }
+    #session-info, #usage-info { width: 1fr; height: auto; max-height: 2; }
+    #session-info { text-align: right; }
+    #usage-info { color: ansi_bright_cyan; }
+    #status { height: auto; max-height: 2; }
+    #bottom.narrow #summary { layout: vertical; }
+    #bottom.narrow #session-info { text-align: left; }
     #approval-dialog {
         align: center middle; width: 80%; max-height: 80%;
-        border: round $accent; padding: 1 2;
+        border: round $accent; padding: 0 1;
     }
     #approval-title { text-style: bold; color: $accent; margin-bottom: 1; }
+    #approval-details {
+        height: 1fr; min-height: 1; background: transparent; scrollbar-size: 0 0;
+    }
     #approval-tool { text-style: bold; }
     #approval-args { margin: 1 0; }
     #approval-hint { color: $text-muted; }
@@ -384,6 +530,18 @@ class WispTuiApp(App[None]):
         border: round $accent; padding: 1 2;
     }
     #picker-title { text-style: bold; margin-bottom: 1; }
+    #picker-dialog ListView, #picker-dialog ListView:focus {
+        height: 1fr; background: transparent; background-tint: transparent;
+        color: ansi_default; scrollbar-size: 0 0;
+    }
+    #picker-dialog ListItem, #picker-dialog ListItem.-hovered,
+    #picker-dialog ListItem.-highlight, #picker-dialog ListView:focus > ListItem.-highlight {
+        background: transparent; background-tint: transparent; color: ansi_default;
+        text-style: none;
+    }
+    #picker-dialog ListItem.-hovered { text-style: underline; }
+    #picker-dialog ListItem.-highlight,
+    #picker-dialog ListView:focus > ListItem.-highlight { text-style: bold underline; }
     """
 
     # Layout cost grows with every mounted chat widget (measured: streaming is
@@ -396,6 +554,7 @@ class WispTuiApp(App[None]):
         ("f1", "help", "Help"),
         ("f2", "sessions", "Sessions"),
         ("f3", "model", "Model"),
+        ("f4", "resume_follow", "Resume follow"),
         ("ctrl+c", "cancel", "Cancel/exit"),
     ]
 
@@ -409,11 +568,22 @@ class WispTuiApp(App[None]):
         # hardcoded theme color. The app then renders on the terminal's own
         # background, matching the user's terminal exactly.
         super().__init__(ansi_color=True)
+        self._inline_renderer = InlineRenderer()
         self.client = client
         self.config = config
         self.startup = startup or Startup()
         self.sessions = sessions or SessionStore()
         self.submissions = submissions or SubmissionStore(client.url)
+        self.composer = ComposerStore(client.url, self.submissions.root)
+        self._prompt_history: tuple[str, ...] = ()
+        self._composer_editor: PromptInput | None = None
+        self._composer_available = False
+        self._composer_dirty = False
+        self._composer_draft = ""
+        self._composer_submission_key: str | None = None
+        self._composer_timer: Timer | None = None
+        self._composer_errors: set[str] = set()
+        self._recoverable_draft: ComposerState | None = None
         self._pending_state_error = False
         # Title for the session that the next first message will create.
         self._fresh_title = ""
@@ -450,6 +620,11 @@ class WispTuiApp(App[None]):
         self._history_refresh_token: object | None = None
         self._chat_epoch = 0
         self._chat_items: deque[Widget] = deque()
+        self._tool_calls: dict[str, ToolCallView] = {}
+        self._saw_live_tool_events = False
+        self._tool_history_token: object | None = None
+        self._tool_history_targets: tuple[ToolCallView, ...] = ()
+        self._tool_history_again = False
         self._trimmed_count = 0
         self._trim_marker: Static | None = None
         self._status_state = "connecting…"
@@ -462,21 +637,27 @@ class WispTuiApp(App[None]):
     # -- layout ---------------------------------------------------------------
 
     def compose(self) -> ComposeResult:
-        yield VerticalScroll(id="chat")
+        yield ChatScroll(id="chat")
         with Container(id="bottom"):
+            yield ResumeFollow()
             yield self._activity_indicator
             yield PromptInput()
+            with Horizontal(id="location-row"):
+                yield Static("", id="location", markup=False)
+                yield Static("", id="session-id", markup=False)
+            with Horizontal(id="summary"):
+                yield Static("", id="usage-info", markup=False)
+                with Horizontal(id="selection-summary"):
+                    yield Static("", id="session-info", markup=False)
+                    yield Static("", id="thinking-info", markup=False)
             yield Static("", id="status", markup=False)
-            yield Static("", id="session-info", markup=False)
-            yield Static("", id="thinking-info", markup=False)
-            yield Static("", id="usage-info", markup=False)
-            yield Static("", id="location", markup=False)
 
     def on_mount(self) -> None:
         self._activity_timer = self.set_interval(0.1, self._tick_activity, pause=True)
         self._render_status()
         self._render_metadata()
         self._restore_pending()
+        self._restore_composer()
         self.query_one("#input", PromptInput).focus()
         self._run_threaded(self._bootstrap_worker)
 
@@ -533,10 +714,24 @@ class WispTuiApp(App[None]):
         self._status_state = _safe_text(text, 200)
         self._render_status()
 
-    def _render_status(self) -> None:
-        line = f"{self._status_state} · {HINTS}" if self._status_state else HINTS
+    def _render_status(self, width: int | None = None) -> None:
+        width = self.size.width if width is None else width
+        hints = HINTS if width >= 80 else "Enter send · Ctrl+J ↵ · F1 help"
+        line = f"{self._status_state} · {hints}" if self._status_state else hints
         self.query_one("#status", Static).update(_safe_text(line, 250))
         self._render_activity()
+
+    def on_resize(self, event: events.Resize) -> None:
+        # The inline driver clears the terminal on resize, even if its final
+        # dimensions happen to match the previous ones.
+        self._inline_renderer.invalidate()
+        self.query_one("#bottom").set_class(event.size.width < 80, "narrow")
+        self._render_status(event.size.width)
+
+    def _display(self, screen: Screen[Any], renderable: RenderableType | None) -> None:
+        if isinstance(renderable, InlineUpdate):
+            renderable = ChangedRowsUpdate(renderable, self._inline_renderer, self.size.width)
+        super()._display(screen, renderable)
 
     def _render_activity(self) -> None:
         indicator = self._activity_indicator
@@ -580,9 +775,26 @@ class WispTuiApp(App[None]):
         ]
 
     def _render_metadata(self) -> None:
-        for widget_id, line in zip(("session-info", "thinking-info", "usage-info", "location"),
-                                   self._metadata_lines()):
-            self.query_one(f"#{widget_id}", Static).update(line)
+        session = self.session_id[:8] if self.session_id else "new"
+        self.query_one("#location", Static).update(
+            f"client: {_metadata_text(self._launch_dir, 1000)}")
+        self.query_one("#session-id", Static).update(f" · session {session}")
+        mode = _metadata_text(self._selection.get("mode"))
+        model = _metadata_text(self._selection.get("model"))
+        label = f"model: {model or 'not reported'}" if mode == "model" else (
+            f"mode: {mode} (auto)" if mode and mode != "model" else "model: runtime default")
+        self.query_one("#session-info", Static).update(label)
+        thinking = self._selection.get("thinking")
+        thinking_info = self.query_one("#thinking-info", Static)
+        thinking_info.update(f" · thinking: {'on' if thinking else 'off'}"
+                             if isinstance(thinking, bool) else "")
+        thinking_info.display = isinstance(thinking, bool)
+        usage = self.query_one("#usage-info", Static)
+        # These are exact counts from the last finished run, never context use.
+        compact = self._last_usage.replace("input: ", "↑").replace("output: ", "↓").replace(
+            "total: ", "Σ").replace(", ", " ")
+        usage.update(f"last run {compact}" if compact else "")
+        usage.display = bool(compact)
 
     def _selection_updated(self, session: dict[str, Any], session_id: str) -> None:
         if self.session_id != session_id:
@@ -592,18 +804,37 @@ class WispTuiApp(App[None]):
         self._render_metadata()
 
     def _scroll_down(self) -> None:
-        self.query_one("#chat", VerticalScroll).scroll_end(animate=False)
+        self.query_one("#chat", ChatScroll).follow_latest()
 
-    def _mount_chat(self, widget: Widget) -> AwaitMount:
-        """Append a chat item, dropping the oldest beyond MAX_CHAT_ITEMS."""
-        mounted = self.query_one("#chat", VerticalScroll).mount(widget)
-        self._chat_items.append(widget)
-        self._trim_chat()
+    def on_chat_scroll_follow_changed(self, event: ChatScroll.FollowChanged) -> None:
+        self.query_one("#resume-follow", ResumeFollow).display = not self.query_one(
+            "#chat", ChatScroll).following
+
+    def on_resume_follow_requested(self, event: ResumeFollow.Requested) -> None:
+        self.action_resume_follow()
+
+    def action_resume_follow(self) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+        self.query_one("#chat", ChatScroll).resume_follow()
+
+    def _mount_chat(self, widget: Widget, before: Widget | None = None) -> AwaitMount:
+        """Mount in display order, dropping the oldest beyond MAX_CHAT_ITEMS."""
+        self.query_one("#chat", ChatScroll).preserve_reading_position()
+        if before is not None and before in self._chat_items:
+            mounted = self.query_one("#chat", VerticalScroll).mount(widget, before=before)
+            self._chat_items.insert(self._chat_items.index(before), widget)
+        else:
+            mounted = self.query_one("#chat", VerticalScroll).mount(widget)
+            self._chat_items.append(widget)
+        removed = self._trim_chat()
+        self.query_one("#chat", ChatScroll).restore_after_update(mounted, *removed)
         return mounted
 
-    def _trim_chat(self) -> None:
+    def _trim_chat(self) -> list[AwaitRemove]:
         streaming = self._stream_view.widget if self._stream_view is not None else None
         removed = 0
+        removals: list[AwaitRemove] = []
         while len(self._chat_items) > self.MAX_CHAT_ITEMS:
             oldest = self._chat_items.popleft()
             if oldest is streaming:
@@ -611,11 +842,14 @@ class WispTuiApp(App[None]):
                 second = self._chat_items.popleft()
                 self._chat_items.appendleft(oldest)
                 oldest = second
-            oldest.remove()
+            removals.append(oldest.remove())
+            self._tool_calls = {key: view for key, view in self._tool_calls.items()
+                                if view is not oldest}
             removed += 1
         if removed:
             self._trimmed_count += removed
             self._update_trim_marker()
+        return removals
 
     def _update_trim_marker(self) -> None:
         count = self._trimmed_count
@@ -641,8 +875,13 @@ class WispTuiApp(App[None]):
         self._chat_epoch += 1
         self._reattach_history = None
         self._pending_view_history = None
+        self.query_one("#chat", ChatScroll).resume_follow()
         self.query_one("#chat", VerticalScroll).remove_children()
         self._chat_items.clear()
+        self._tool_calls.clear()
+        self._tool_history_token = None
+        self._tool_history_targets = ()
+        self._tool_history_again = False
         # A still-running answer continues in a fresh widget (full text so far).
         self._stream_view = None
         self._trim_marker = None
@@ -654,15 +893,148 @@ class WispTuiApp(App[None]):
         self._mount_chat(Static(_safe_text(text), classes=cls, markup=False))
         self._scroll_down()
 
+    def _tool_event(self, event: dict[str, Any], *, completed: bool,
+                    input_text: str | None = None, historical: bool = False,
+                    terminal: bool = False) -> ToolCallView:
+        call_id = event.get("toolCallId")
+        key = call_id if isinstance(call_id, str) and 0 < len(call_id) <= 200 else ""
+        if not historical and not terminal:
+            self._saw_live_tool_events = True
+        view = self._tool_calls.get(key) if key else None
+        self.query_one("#chat", ChatScroll).preserve_reading_position()
+        if view is not None:
+            view.update_event(event, completed=completed)
+            self.query_one("#chat", ChatScroll).restore_after_update()
+        else:
+            view = ToolCallView(event, completed=completed, historical=historical)
+            view.session_id = self.session_id
+            if terminal:
+                view.terminal_summary = True
+                view.update_event({}, completed=completed)
+            before = self._stream_view.widget if self._stream_view is not None else None
+            self._mount_chat(view, before=before)
+            if key and view in self._chat_items:
+                self._tool_calls[key] = view
+        if input_text is not None:
+            # Checkpoint arguments have already been bounded/formatted.
+            view.apply_history(input_text=input_text)
+        self._scroll_down()
+        if completed and not view.collapsed:
+            self._request_tool_history()
+        return view
+
     def _add_message(self, message: ChatMessage) -> None:
         if message.role == "assistant":
-            self._mount_chat(Markdown(message.text, classes="assistant"))
+            if message.text.strip():
+                self._mount_chat(AnswerMarkdown(message.text, classes="assistant"))
+            for call in message.tool_calls:
+                self._tool_event({"name": call.name, "toolCallId": call.call_id},
+                                 completed=False, input_text=call.input_text, historical=True)
+        elif message.role == "tool":
+            view = self._tool_event({"name": message.tool_name, "toolCallId": message.tool_call_id},
+                                    completed=True, historical=True)
+            view.apply_history(output_text=detail_text(message.text), status=message.tool_status,
+                               pruned=message.tool_output_pruned)
         else:
-            self._mount_chat(Static(message.text, classes=message.role, markup=False))
+            if message.role == "user":
+                self._tool_calls.clear()
+            self._mount_chat(Static(_terminal_text(message.text), classes=message.role,
+                                    markup=False))
         self._scroll_down()
 
+    def _tool_targets(self) -> tuple[ToolCallView, ...]:
+        return tuple(view for view in self._chat_items if isinstance(view, ToolCallView)
+                     and view.session_id == self.session_id and view.call_id
+                     and view.output_text is None)
+
+    def on_collapsible_expanded(self, event: Collapsible.Expanded) -> None:
+        if (isinstance(event.collapsible, ToolCallView) and event.collapsible.call_id
+                and event.collapsible.output_text is None):
+            self._request_tool_history(force_after_current=True)
+
+    def _apply_tool_history(self, messages: list[ChatMessage], targets: tuple[ToolCallView, ...]) -> None:
+        chat = self.query_one("#chat", ChatScroll)
+        if targets:
+            chat.preserve_reading_position()
+        matched, ambiguous = tool_history_results(messages, {view.call_id for view in targets})
+        for view in targets:
+            if (view not in self._chat_items or view.session_id != self.session_id
+                    or view.output_text is not None):
+                continue
+            if view.call_id in ambiguous:
+                view.set_result_notice("Stored call ID is ambiguous; result not matched.")
+            elif view.call_id in matched:
+                details = matched[view.call_id]
+                view.apply_history(details.input_text, details.output_text,
+                                   details.status, details.pruned)
+            else:
+                view.set_result_notice("Result not in stored history yet. Collapse and expand to retry.")
+        if targets:
+            chat.restore_after_update()
+
+    def _request_tool_history(self, *, force_after_current: bool = False) -> None:
+        targets = self._tool_targets()
+        session_id = self.session_id
+        if not targets or session_id is None or self._history_refresh_token is not None:
+            return
+        if self._tool_history_token is not None:
+            self._tool_history_again |= force_after_current or any(
+                view not in self._tool_history_targets for view in targets if not view.collapsed)
+            return
+        token = object()
+        epoch = self._chat_epoch
+        self._tool_history_token = token
+        self._tool_history_targets = targets
+        for view in targets:
+            view.set_result_notice("Loading stored result…")
+
+        def work() -> None:
+            try:
+                payload = self.client.request("GET", f"/v1/sessions/{session_id}/history", timeout=5.0)
+                messages = parse_history(payload)
+            except ClientError as error:
+                code = safe_code(str(error), "history_unavailable")
+            except HistoryError:
+                code = "unexpected_history_shape"
+            except Exception:
+                code = "history_unavailable"
+            else:
+                self.call_from_thread(self._tool_history_loaded, token, session_id, epoch,
+                                      targets, messages)
+                return
+            self.call_from_thread(self._tool_history_failed, token, session_id, epoch, targets, code)
+
+        self._run_threaded(work, group="tool-history",
+                           on_done=lambda: self._tool_history_done(token))
+
+    def _tool_history_current(self, token: object, session_id: str, epoch: int) -> bool:
+        return (self._tool_history_token is token and self.session_id == session_id
+                and self._chat_epoch == epoch)
+
+    def _tool_history_loaded(self, token: object, session_id: str, epoch: int,
+                             targets: tuple[ToolCallView, ...], messages: list[ChatMessage]) -> None:
+        if self._tool_history_current(token, session_id, epoch):
+            self._apply_tool_history(messages, targets)
+
+    def _tool_history_failed(self, token: object, session_id: str, epoch: int,
+                             targets: tuple[ToolCallView, ...], code: str) -> None:
+        if self._tool_history_current(token, session_id, epoch):
+            for view in targets:
+                if view in self._chat_items and view.output_text is None:
+                    view.set_result_notice(f"{code} · collapse and expand to retry.")
+
+    def _tool_history_done(self, token: object) -> None:
+        if self._tool_history_token is not token:
+            return
+        again = self._tool_history_again
+        self._tool_history_token = None
+        self._tool_history_targets = ()
+        self._tool_history_again = False
+        if again:
+            self._request_tool_history()
+
     def _begin_stream(self, initial: str = "") -> StreamView:
-        widget = Markdown(classes="assistant")
+        widget = AnswerMarkdown(classes="assistant")
         view = StreamView(self, widget, self._mount_chat(widget), self._scroll_down)
         view.set_text(initial)
         self._scroll_down()
@@ -678,7 +1050,124 @@ class WispTuiApp(App[None]):
 
     # -- input handling -----------------------------------------------------------
 
+    def _composer_warning(self, code: str) -> None:
+        if code not in self._composer_errors:
+            self._composer_errors.add(code)
+            message = f"Input history/draft recovery: {code}. Current text is kept in memory."
+            if self._composer_editor is not None and self._composer_editor.is_attached:
+                self._sysline(message, "error")
+            else:
+                self.console.print(f"Input history/draft was not saved: {code}")
+
+    def _restore_composer(self) -> None:
+        editor = self.query_one("#input", PromptInput)
+        self._composer_editor = editor
+        try:
+            state = self.composer.load()
+        except ComposerError as error:
+            self._composer_warning(str(error))
+            return
+        self._composer_available = True
+        self._prompt_history = state.history
+        acknowledged = self.submissions.loaded_acknowledgement
+        if acknowledged is not None:
+            self._prompt_history = bounded_history((*self._prompt_history, acknowledged.draft))
+            # An ack may be durable before the UI clears/saves the editor.
+            # Only a draft explicitly tagged with this request can be discarded.
+            if (state.session_id == acknowledged.session_id
+                    and state.draft == acknowledged.draft
+                    and state.submission_key == acknowledged.key):
+                state = ComposerState(self._prompt_history)
+                self._composer_dirty = True
+            elif self._prompt_history != state.history:
+                self._composer_dirty = True
+        editor.set_prompt_history(self._prompt_history)
+        self._recoverable_draft = state if state.draft else None
+        pending = self._pending_submission
+        if pending is not None and state.draft and state.session_id == pending.session_id:
+            editor.value = state.draft
+            self._recoverable_draft = None
+            self._composer_submission_key = state.submission_key
+        else:
+            self._composer_submission_key = pending.key if pending is not None else None
+        self._composer_draft = editor.value
+        if pending is not None:
+            self._composer_dirty = True
+        elif self.startup.mode == "new":
+            self._restore_matching_draft()
+        self._announce_saved_draft()
+
+    def _announce_saved_draft(self) -> None:
+        if self._recoverable_draft is not None:
+            session = self._recoverable_draft.session_id
+            target = f"session {session}" if session else "a fresh session"
+            command = f"/resume {session}" if session else "/new"
+            when = (" after the pending request is acknowledged"
+                    if self._pending_submission is not None else "")
+            self._sysline(f"Saved unsent draft for {target}. Use {command}{when} "
+                          "to recover it; the saved draft was not sent.")
+
+    def _restore_matching_draft(self) -> None:
+        editor = self._composer_editor
+        state = self._recoverable_draft
+        if (editor is not None and state is not None and not editor.value
+                and state.session_id == self.session_id):
+            editor.value = state.draft
+            self._composer_draft = state.draft
+            self._composer_submission_key = state.submission_key
+            self._recoverable_draft = None
+            self._sysline("Recovered unsent draft. Nothing was sent; Enter sends it when ready.")
+
+    def _capture_composer(self) -> None:
+        editor = self._composer_editor
+        if editor is not None and editor.value != self._composer_draft:
+            self._composer_draft = editor.value
+            self._composer_submission_key = None
+            if editor.value and not self._composer_command(editor.value):
+                self._recoverable_draft = None
+            self._composer_dirty = True
+
+    @staticmethod
+    def _composer_command(text: str) -> bool:
+        return text.lstrip().startswith("/") and "\n" not in text and "\r" not in text
+
+    def _queue_composer_save(self) -> None:
+        if self._composer_timer is not None:
+            self._composer_timer.stop()
+        if self._composer_available and self._composer_dirty:
+            self._composer_timer = self.set_timer(0.35, self._flush_composer)
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if event.text_area is self._composer_editor:
+            self._capture_composer()
+            self._queue_composer_save()
+
+    def _flush_composer(self) -> None:
+        self._capture_composer()
+        if not self._composer_available or not self._composer_dirty:
+            return
+        if len(self._composer_draft.encode("utf-8")) > MAX_DRAFT_BYTES:
+            self._composer_warning("draft_too_large_to_save")
+            return
+        try:
+            draft = "" if self._composer_command(self._composer_draft) else self._composer_draft
+            recovery = self._recoverable_draft
+            # Unmatched saved text is independent of a restored pending request.
+            # Only an explicit editor change or matching restore claims its slot.
+            if recovery is not None:
+                state = ComposerState(self._prompt_history, recovery.draft,
+                                      recovery.session_id, recovery.submission_key)
+            else:
+                state = ComposerState(self._prompt_history, draft,
+                                      self.session_id, self._composer_submission_key)
+            self.composer.save(state)
+        except ComposerError as error:
+            self._composer_warning(str(error))
+        else:
+            self._composer_dirty = False
+
     def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
+        self._capture_composer()
         text = event.value.strip()
         if not text:
             return
@@ -723,6 +1212,10 @@ class WispTuiApp(App[None]):
         editor = self.query_one("#input", PromptInput)
         if not editor.value:
             editor.value = pending.draft
+            self._composer_draft = pending.draft
+            self._composer_submission_key = pending.key
+            self._composer_dirty = True
+            self._queue_composer_save()
         self._render_metadata()
         self._status("unacknowledged submission restored · /retry")
         self._sysline("Recovered an unacknowledged request. Nothing was resubmitted. "
@@ -794,6 +1287,7 @@ class WispTuiApp(App[None]):
         else:
             self._sysline("No active v1 run reported. This is not proof the request was rejected.",
                           "tool")
+        self._announce_saved_draft()
 
     def _pending_view_failed(self, token: object, pending: PendingSubmission, code: str) -> None:
         if self._pending_view_current(token, pending):
@@ -831,9 +1325,14 @@ class WispTuiApp(App[None]):
             return
         if not self._draft_fits(draft):
             return
+        self._capture_composer()
         self._pending_submission = PendingSubmission(
             self.session_id, draft, self.config.max_turns,
             "wisp-tui:" + str(uuid.uuid4()))
+        if self._composer_draft == draft:
+            self._composer_submission_key = self._pending_submission.key
+        self._composer_dirty = True
+        self._flush_composer()
         self._submit_pending()
 
     def _submit_pending(self) -> None:
@@ -893,6 +1392,10 @@ class WispTuiApp(App[None]):
         editor = self.query_one("#input", PromptInput)
         if not editor.value and self._pending_submission is not None:
             editor.value = self._pending_submission.draft
+            self._composer_draft = editor.value
+            self._composer_submission_key = self._pending_submission.key
+            self._composer_dirty = True
+            self._queue_composer_save()
 
     def _submission_accepted(self, pending: PendingSubmission, run_id: str) -> None:
         history = self._pending_view_history
@@ -904,6 +1407,10 @@ class WispTuiApp(App[None]):
         editor = self.query_one("#input", PromptInput)
         if editor.value == pending.draft:
             editor.value = ""
+        self._prompt_history = bounded_history((*self._prompt_history, pending.draft))
+        editor.set_prompt_history(self._prompt_history)
+        self._composer_dirty = True
+        self._flush_composer()
         self._add_message(ChatMessage(role="user", text=pending.draft.strip()))
         self._record({"type": "message", "role": "user", "text": pending.draft.strip(),
                       "runId": run_id}, pending.session_id)
@@ -915,6 +1422,8 @@ class WispTuiApp(App[None]):
 
     def _turn_started(self, run_id: str, history: list[ChatMessage] | None = None) -> None:
         self.active_run = run_id
+        self._tool_calls.clear()
+        self._saw_live_tool_events = False
         self._reattach_history = list(history) if history is not None else None
         self._cancel_requested = False
         self._delta_text = ""
@@ -995,14 +1504,14 @@ class WispTuiApp(App[None]):
             text = event.get("text")
             self._delta_text = text if isinstance(text, str) else ""
             self._show_stream_text(self._delta_text)
+            if self._stream_view is not None:
+                self._stream_view.flush()
         elif kind == "tool_call.started":
-            self._sysline(f"tool {event.get('name', '?')} …", "tool")
+            self._tool_event(event, completed=False)
         elif kind == "tool_call":
             ok = event.get("ok") is True
             duration = event.get("durationMs")
-            seconds = f" {duration / 1000:.1f}s" if isinstance(duration, (int, float)) else ""
-            mark = "ok" if ok else "FAILED"
-            self._sysline(f"tool {event.get('name', '?')} → {mark}{seconds}", "tool")
+            self._tool_event(event, completed=True)
             self._record({"type": "tool", "runId": self.active_run,
                           "name": _safe_text(str(event.get("name", "?")), 200), "ok": ok,
                           "durationMs": duration if isinstance(duration, (int, float)) else None})
@@ -1067,16 +1576,17 @@ class WispTuiApp(App[None]):
             return
         if self._approval_prompt_id != prompt_id:
             return
+        modal = self._approval_modal
         self._approval_modal = None
         self._approval_prompt_id = None
         if decision not in ("approve", "deny", "allow_project", "allow_global"):
             return
         if prompt_id in self._approval_inflight | self._answered_prompts:
             return
-        tool, args = next(((t, a) for _, pid, t, a in self.pending_prompts if pid == prompt_id),
-                          ("?", None))
+        # Record exactly what the owner was shown when deciding.
+        tool, args_text = (modal.tool, modal.args_text) if modal is not None else ("?", "")
         self._record({"type": "approval", "runId": run_id, "promptId": prompt_id,
-                      "tool": _safe_text(tool, 200), "args": _pretty_args(args),
+                      "tool": _safe_text(tool, 200), "args": args_text,
                       "decision": decision})
         self.pending_prompts = deque(p for p in self.pending_prompts if p[1] != prompt_id)
         self._approval_inflight.add(prompt_id)
@@ -1120,16 +1630,28 @@ class WispTuiApp(App[None]):
         saved_history = self._reattach_history
         answer = ""
         data = outcome if isinstance(outcome, dict) else {}
+        tool_calls = data.get("toolCalls")
+        if isinstance(tool_calls, list) and not self._saw_live_tool_events:
+            for call in tool_calls[-self.MAX_CHAT_ITEMS:]:
+                if not isinstance(call, dict) or not isinstance(call.get("name"), str):
+                    continue
+                # 0.1.8 strips call IDs and results from these aggregate records.
+                # They are a fallback, never another copy of observed live calls.
+                details = {key: call[key] for key in ("name", "args", "ok", "durationMs")
+                           if key in call}
+                self._tool_event(details, completed=True, terminal=True)
         self._last_usage = self._usage_line(data.get("usage"))
         self._render_metadata()
         if kind == "run.completed":
             text = ""
             output = data.get("output")
-            if isinstance(output, dict) and isinstance(output.get("text"), str):
+            has_final_text = isinstance(output, dict) and isinstance(output.get("text"), str)
+            if has_final_text:
+                assert isinstance(output, dict)
                 text = output["text"]
-            if text:
-                self._show_stream_text(text)
-            answer = text or self._delta_text
+                if text or self._stream_view is not None:
+                    self._show_stream_text(text)
+            answer = text if has_final_text else self._delta_text
             if answer:
                 self._record({"type": "message", "role": "assistant", "text": answer,
                               "runId": self.active_run})
@@ -1151,6 +1673,8 @@ class WispTuiApp(App[None]):
         self._finish_run()
         if kind == "run.completed" and saved_history is not None and answer:
             self._refresh_finished_history(saved_history, answer)
+        elif any(not view.collapsed for view in self._tool_targets()):
+            self._request_tool_history(force_after_current=True)
 
     def _refresh_finished_history(self, before: list[ChatMessage], answer: str) -> None:
         """Reconcile replay with one fresh checkpoint, never text-dedup old turns."""
@@ -1188,8 +1712,14 @@ class WispTuiApp(App[None]):
     def _history_refreshed(self, token: object, session_id: str, epoch: int,
                            before: list[ChatMessage], messages: list[ChatMessage],
                            answer: str) -> None:
-        if (not self._history_refresh_current(token, session_id, epoch)
-                or not checkpoint_covers_answer(before, messages, answer)):
+        if not self._history_refresh_current(token, session_id, epoch):
+            return
+        self._apply_tool_history(messages, self._tool_targets())
+        if not checkpoint_covers_answer(before, messages, answer):
+            return
+        # Replacing the entire transcript would displace a reader inspecting
+        # replay. Keep that labelled view until an explicit reload instead.
+        if not self.query_one("#chat", ChatScroll).following:
             return
         hidden = max(0, len(messages) - self.MAX_CHAT_ITEMS)
         self._reset_chat(hidden)
@@ -1200,12 +1730,19 @@ class WispTuiApp(App[None]):
                                 code: str) -> None:
         if self._history_refresh_current(token, session_id, epoch):
             self._status(f"history refresh failed: {safe_code(code, 'history_unavailable')}")
+            for view in self._tool_targets():
+                view.set_result_notice("history_unavailable · collapse and expand to retry.")
 
     def _history_refresh_done(self, token: object) -> None:
         if self._history_refresh_token is token:
             self._history_refresh_token = None
 
     def _finish_run(self) -> None:
+        if self._stream_view is not None:
+            self._stream_view.flush()
+        for item in self._chat_items:
+            if isinstance(item, ToolCallView) and not item.completed and not item.historical:
+                item.mark_unreported()
         if self._follower is not None:
             self._follower.stop()
         self._dismiss_approval()
@@ -1230,7 +1767,7 @@ class WispTuiApp(App[None]):
         for key in ("inputTokens", "outputTokens", "totalTokens"):
             value = usage.get(key)
             if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-                parts.append(f"{key.replace('Tokens', '')}: {value}")
+                parts.append(f"{key.replace('Tokens', '')}: {value:,}")
         return ", ".join(parts)
 
     # -- sessions ----------------------------------------------------------------
@@ -1314,6 +1851,10 @@ class WispTuiApp(App[None]):
             self._last_usage = ""
         self.session_id = session_id
         self._selection_updated(session, session_id)
+        self._restore_matching_draft()
+        if self._composer_editor is not None and self._composer_editor.value:
+            self._composer_dirty = True
+            self._queue_composer_save()
         self.session_title = _safe_text(session.get("title"), 80) or "(untitled)"
         self.title = f"Wisp — {self.session_title}"
         # Only mount the tail of long histories (see MAX_CHAT_ITEMS).
@@ -1388,6 +1929,10 @@ class WispTuiApp(App[None]):
         self._release_session_change()
         self.session_id = None
         self.session_title = ""
+        self._restore_matching_draft()
+        if self._composer_editor is not None and self._composer_editor.value:
+            self._composer_dirty = True
+            self._queue_composer_save()
         self._selection = {}
         self._last_usage = ""
         self._render_metadata()
@@ -1606,6 +2151,14 @@ class WispTuiApp(App[None]):
             self._sysline(line, "tool")
 
     def on_unmount(self) -> None:
+        self._tool_history_token = None
+        self._tool_history_targets = ()
+        self._tool_history_again = False
+        if self._composer_timer is not None:
+            self._composer_timer.stop()
+        self._flush_composer()
+        self.composer.close()
+        self._composer_available = False
         self._recovery_view_token = None
         self._retry_after_recovery = False
         self._pending_view_history = None

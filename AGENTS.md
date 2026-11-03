@@ -12,8 +12,11 @@ reattachment. Do not expand this into a general-purpose Pi replacement.
 
 ## Git workflow
 
-- Repo: `github.com/katamarinaki/wisp-tui` (**public**). Commit and push to
-  `develop`; no PRs for routine work. The owner merges `develop` → `main`.
+- Repo: `github.com/katamarinaki/wisp-tui` (**public**). Do not commit or push
+  unless the user explicitly requests that action. Requests to implement, fix,
+  or update something do not authorize commits or pushes. A request to commit
+  does not authorize pushing. When explicitly requested, commit and push only
+  to `develop`; no PRs for routine work. The owner merges `develop` → `main`.
   Never push to or merge into `main` yourself.
 - CI (`.github/workflows/ci.yml`) runs pytest + strict mypy on pushes to
   `main`/`develop` and on PRs, on GitHub-hosted runners only. Never use the

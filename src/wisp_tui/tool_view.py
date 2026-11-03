@@ -1,0 +1,109 @@
+"""Literal, bounded, collapsible tool details. Display never executes a tool."""
+from __future__ import annotations
+
+import math
+from typing import Any
+
+from textual.containers import VerticalScroll
+from textual.content import Content
+from textual.widgets import Collapsible, Static
+
+from .tool_data import detail_text
+
+
+class ToolCallView(Collapsible):
+    """One tool entry; missing fields remain distinct from empty/false values."""
+
+    def __init__(self, event: dict[str, Any], *, completed: bool, historical: bool = False) -> None:
+        self.tool_name = "?"
+        call_id = event.get("toolCallId")
+        self.call_id = call_id if isinstance(call_id, str) and 0 < len(call_id) <= 200 else ""
+        self.session_id: str | None = None
+        self.input_text: str | None = None
+        self.output_text: str | None = None
+        self.input_label = "Input (runtime, sanitized)"
+        self.output_label = "Output (stored history)"
+        self.history_status = ""
+        self.result_notice = ""
+        self.completed = completed
+        self.historical = historical
+        self.terminal_summary = False
+        self.unreported = False
+        self._ok: bool | None = None
+        self._duration_ms: float | None = None
+        self._details = Static("", markup=False, classes="tool-details")
+        super().__init__(VerticalScroll(self._details, classes="tool-detail-scroll"),
+                         title="tool", collapsed=True, classes="tool-call")
+        self.update_event(event, completed=completed)
+
+    def _watch_title(self, title: str) -> None:
+        # CollapsibleTitle otherwise parses string labels as Textual markup.
+        self._title.label = Content(title)
+
+    def update_event(self, event: dict[str, Any], *, completed: bool) -> None:
+        name = event.get("name")
+        if isinstance(name, str) and name:
+            label = name if len(name) <= 200 else name[:199] + "…"
+            self.tool_name = "".join(char if char.isprintable() else "�" for char in label)
+        self.completed = self.completed or completed
+        if "args" in event:
+            self.input_text = detail_text(event["args"])
+            self.input_label = "Input (runtime, sanitized)"
+        ok = event.get("ok")
+        if isinstance(ok, bool):
+            self._ok = ok
+        duration = event.get("durationMs")
+        if (isinstance(duration, (int, float)) and not isinstance(duration, bool)
+                and 0 <= duration <= 1e15 and math.isfinite(duration)):
+            self._duration_ms = float(duration)
+        status = "…"
+        if self.completed:
+            status = "→ ok" if self._ok is True else "→ FAILED" if self._ok is False else "→ finished"
+        elif self.historical:
+            status = "→ recorded"
+        elif self.unreported:
+            status = "→ not reported"
+        seconds = f" {self._duration_ms / 1000:.1f}s" if self._duration_ms is not None else ""
+        self.title = f"tool {self.tool_name} {status}{seconds}"
+        if self.terminal_summary:
+            self.title += " (run summary)"
+        self._render_details()
+
+    def apply_history(self, input_text: str | None = None, output_text: str | None = None,
+                      status: str = "", pruned: bool = False) -> None:
+        if self.input_text is None and input_text is not None:
+            self.input_text = input_text
+            self.input_label = "Input (history/model request)"
+        if output_text is not None:
+            self.output_text = output_text
+            self.output_label = "Output (stored summary)" if pruned else "Output (stored history)"
+            self.completed = True
+            self.history_status = status if status in ("success", "error") else ""
+            if self._ok is None and status in ("success", "error"):
+                self._ok = status == "success"
+        self.update_event({}, completed=self.completed)
+
+    def mark_unreported(self) -> None:
+        """The run ended without a completion event for this entry."""
+        self.unreported = True
+        self.update_event({}, completed=False)
+
+    def set_result_notice(self, notice: str) -> None:
+        self.result_notice = notice
+        self._render_details()
+
+    def _render_details(self) -> None:
+        output = self.output_text
+        if output is None:
+            output = self.result_notice or (
+                "No result stored in this checkpoint." if self.historical else
+                "Expand to load the stored result." if self.call_id else
+                "No tool-call ID; cannot match a stored result. Reopen the session to inspect history.")
+        history_status = f"\nHistory status: {self.history_status}" if self.history_status else ""
+        if self.input_text is not None:
+            input_part = f"{self.input_label}\n{self.input_text}"
+        elif self.historical:
+            input_part = "Input\nNot in loaded history."
+        else:
+            input_part = f"{self.input_label}\nNot supplied by runtime."
+        self._details.update(f"{input_part}\n\n{self.output_label}{history_status}\n{output}")

@@ -18,7 +18,7 @@ if [ ! -f "$SRC" ]; then
 fi
 umask 077
 mkdir -p "$DST_DIR"
-python3 - "$SRC" "$DST" <<'EOF'
+python3 -I - "$SRC" "$DST" <<'EOF'
 import json, os, stat, sys
 src, dst = sys.argv[1], sys.argv[2]
 with open(src) as source:

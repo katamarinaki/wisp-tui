@@ -194,7 +194,7 @@ def test_failed_fsync_never_claims_a_durable_reservation(
     store.close()
 
 
-async def test_restart_restores_original_request_but_never_auto_posts(
+async def test_restart_keeps_original_request_and_newer_draft_but_never_auto_posts(
         monkeypatch: pytest.MonkeyPatch, private_state_dir: Path) -> None:
     app, client = make_app([], monkeypatch)
     client.replies[("POST", RUN_PATH)] = deque([ClientError("runtime_timeout")])
@@ -214,7 +214,7 @@ async def test_restart_restores_original_request_but_never_auto_posts(
     async with resumed.run_test() as pilot:
         await eventually(lambda: "restored" in resumed._status_state)
         assert resumed.session_id == SID
-        assert resumed.query_one("#input", Input).value == "original task\nsecond line"
+        assert resumed.query_one("#input", Input).value == "new unsent draft"
         await eventually(lambda: resumed._recovery_view_token is None)
         assert not any(method == "POST" for method, _, _ in resumed_client.calls)
         assert {path for _, path, _ in resumed_client.calls} == {

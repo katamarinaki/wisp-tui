@@ -92,6 +92,8 @@ class SubmissionStore:
         self._lock_fd: int | None = None
         self._owns_pending = False
         self._mutex = RLock()
+        # Startup evidence for suppressing an already-sent composer draft.
+        self.loaded_acknowledgement: PendingSubmission | None = None
 
     def _lock(self) -> None:
         config._private_directory(self.root)
@@ -142,12 +144,15 @@ class SubmissionStore:
             return self._load()
 
     def _load(self) -> PendingSubmission | None:
+        self.loaded_acknowledgement = None
         try:
             self._lock()
             record = self._read()
             if record is not None and record[1] is None:
                 self._owns_pending = True
                 return record[0]
+            if record is not None:
+                self.loaded_acknowledgement = record[0]
             self.close()
             return None
         except (ConfigError, OSError, ValueError, RecursionError, OverflowError):

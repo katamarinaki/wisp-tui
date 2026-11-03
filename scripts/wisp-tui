@@ -4,11 +4,12 @@
 # Symlink it under any name (e.g. `wi`); help and errors use that name.
 set -eu
 ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+# -P: never import modules from the directory the launcher is started in.
 # Run updates without importing Textual or loading private runtime config.
 if [ "${1-}" = update ]; then
     shift
     exec env PYTHONPATH="$ROOT/src" WISP_TUI_PROG="$(basename "$0")" \
-        "$ROOT/.venv/bin/python" -m wisp_tui.update "$@"
+        "$ROOT/.venv/bin/python" -P -m wisp_tui.update "$@"
 fi
 exec env PYTHONPATH="$ROOT/src" WISP_TUI_PROG="$(basename "$0")" \
-    "$ROOT/.venv/bin/python" -m wisp_tui "$@"
+    "$ROOT/.venv/bin/python" -P -m wisp_tui "$@"

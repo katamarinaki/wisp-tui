@@ -54,7 +54,8 @@ exit, pending verification against the installed runtime's actual contract.
 - [x] Automated PTY check for inline rendering/default background, including a
       scripted transcript and approval dialog (no runtime contact).
 
-**Current limits:** unsent drafts and cancellation intent remain in memory.
+**Current limits:** cancellation intent remains in memory. One unsent draft is
+saved separately with a short debounce; abrupt exit can lose the latest edits.
 Pending request identity is saved privately before POST and restored without
 automatic replay. `/retry` deliberately resends the original task, not the
 current editor contents. Exactly-once behavior depends on Wisp's idempotency
@@ -117,7 +118,7 @@ conservative until rejection/reconciliation semantics are established.
 **Exit criterion:** slow requests, disconnects, cancellation, and cross-client
 approvals cannot silently lose work or make the UI act on the wrong run/session.
 
-## 2. Essential terminal usability — in progress
+## 2. Essential terminal usability — implemented offline
 
 - [x] Tighten the single-line input frame and align chat/editor gutters. Render
       answers in the terminal's own foreground, left-align headings, and avoid
@@ -134,6 +135,10 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
 - [x] Show approval details, tool names, titles and model IDs exactly as sent
       (no Textual markup: bracketed text was hidden/altered, `[/]` crashed the
       TUI). Regression tests cover approvals, chat lines, status and pickers.
+- [x] Neutralize terminal control characters in all runtime-text sinks, never
+      open answer links on click, arm approval keys after a 0.5 s quiet period,
+      show full approval arguments (deny-only above 200k characters), and keep
+      the launcher/setup from importing modules from the launch directory.
 - [x] Treat quiet SSE windows during long tool calls as liveness re-checks, not
       disconnects; only real failures exhaust retries.
 - [x] Stream answers incrementally (serialized `Markdown.append`, coalesced
@@ -144,6 +149,14 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       tail; marker counts hidden items; the streaming answer is never dropped;
       `/clear` mid-answer continues in a fresh widget). 500-exchange session:
       load 22s → ~1s, streaming 2k chars 27s → ~2s (headless benchmark).
+- [x] Reduce terminal traffic during work: compare inline rows and emit only
+      changes, preserving Textual's cursor/sync handling and full repaint on
+      resize/height changes. Coalesce rapid deltas into at most ten Markdown
+      updates per second; gap snapshots and terminal outcomes flush immediately.
+      Scripted quiet work at 180×50: ~209 KB → ~4.4 KB over 1.5 s (98% reduction), with the
+      same spinner cadence. Offline PTY traffic/background checks, Unicode,
+      right/bottom edges, modal restoration, batching and final-flush coverage.
+      Owner-run Mac/SSH/iTerm2 responsiveness remains part of live acceptance.
 - [x] Fresh session per launch (created lazily by the first message, titled
       from it); `/new` is lazy too. Sessions used here are recorded locally
       as private JSONL (prompts, answers, tools, approval decisions, outcomes)
@@ -165,6 +178,13 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       during submission and active work. Hide it on terminal outcomes, without
       a completion announcement; distinguish approval waits, disconnects and
       cancellation requests. Offline animation/state/layout and PTY checks.
+- [x] Improve composer/footer readability: terminal-palette blue input rules,
+      normal-contrast metadata, compact exact token counts, and model/thinking
+      aligned on the right. Stack the summary and shorten hints on narrow
+      terminals. Hide unreported stats in the footer; retain explanations in
+      `/status`. Reserve space for the session ID and thinking setting so long
+      paths/model IDs cannot hide them. Offline rendered-line checks at 40/80/100
+      columns, theme/resize checks and PTY foreground/background checks.
 - [x] Multiline composer: Enter sends the whole prompt; Ctrl+J inserts a newline
       over ordinary SSH, with Shift+Enter only where the terminal distinguishes
       it. Soft-wrap, grow to six text rows then scroll, preserve busy/newer
@@ -175,12 +195,52 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       on explicit Enter. Cover CRLF/CR, Unicode, tabs/blank lines, undo, pending
       retry identity, modals, resize and default-background selections/brackets.
       **Limit:** unbracketed carriage returns cannot be distinguished from Enter.
-- [ ] Minimal input history/draft recovery; no elaborate editor framework.
-- [ ] Show useful tool arguments/results where the runtime actually supplies
-      them. Keep long output collapsible/bounded and approval details legible.
-- [ ] Stop auto-follow when the user scrolls up; offer an obvious way to resume.
-- [ ] Check long streamed output, narrow terminals, resize, and modal key handling.
-      Preserve the default-background and inline-mode guarantees.
+- [x] Minimal input history/draft recovery: Ctrl+P/Ctrl+N recall acknowledged
+      prompts without changing Up/Down editing, retain the current draft and
+      browsing edits, and keep recall undoable. Save 50 prompts/256 KiB and one
+      128 KiB unsent draft in private, bounded, runtime-isolated state with a
+      writer lease. Restore only into the matching fresh/resumed session;
+      retain newer drafts across pending-request recovery and suppress a draft
+      tagged with an acknowledged request. No automatic send. Offline storage,
+      restart, draft/ack, modal and actual PTY-key checks. Preserve an unrelated
+      saved draft across another client's pending request, inspection, retry
+      and shutdown; only explicit new text replaces it. Two-client regression
+      coverage includes fresh and other-session drafts. Latest edits before
+      the 350 ms debounce may be lost on abrupt exit; normal exit flushes them.
+- [x] Show tool entries above the active answer, with click/Enter expansion
+      of reported input/output and a bounded, scrollable body. Handle optional
+      live/terminal tool details and checkpoint tool calls/results; use explicit
+      call IDs, never names, to update entries. Keep missing data explicit,
+      literal text and approvals separate. Offline ordering, parallel calls,
+      replay/clear, truncation, keyboard/mouse, resize/theme and PTY background
+      checks. Align with the supplied static runtime 0.1.8 report: live inputs are
+      sanitized and results come only from history. Add bounded/coalesced lazy
+      reads with unique-ID matching, safe retry, summary/source labels and stale
+      callback guards, without blocking input. Avoid duplicate terminal summaries
+      and respect the final assistant text instead of aggregating model rounds.
+      Missing IDs/results and nested coverage remain explicit limits; actual SSH
+      behavior still needs live acceptance. No new routes or tool execution.
+- [x] Stop auto-follow when the user scrolls up; show a transparent clickable
+      paused-follow hint and F4 to jump to the latest output and resume. Support
+      transcript Up/PageUp/Home, End and return-to-bottom without taking editor/tool-body keys;
+      keep tool inspection and approval dialogs independent. Preserve a surviving
+      reading item across tool insertion and bounded history trimming; retain
+      labelled replay while paused instead of replacing the transcript on run
+      completion. Explicit clear/new/session loads restore following. Offline
+      streaming, queued-update, resize, modal, trimming and actual PTY-key checks
+      at 40/100 columns preserve inline mode and the default background.
+      The wheel/streaming regression waits for batched Markdown and the
+      follow-scroll callback before testing navigation, avoiding a CI timing race.
+- [x] Check long streamed output, narrow terminals, resize, and modal key handling.
+      Mixed Unicode/Markdown streams over 12k characters match a full render
+      after resizing and opening pickers. Long approval details now scroll while
+      decision keys stay visible down to 32×16; picker focus/hover/selection stays
+      transparent. Ctrl+C cancels from all three dialogs without answering an
+      approval. Offline checks cover explicit decisions, paste/key isolation,
+      restored drafts/focus and light/dark themes. Actual PTY keys and resize
+      signals exercise 100×30 → 40×18 → 100×30 during streaming, preserving the
+      default background, inline mode and terminal settings on exit. Live SSH
+      responsiveness and shell behavior still require acceptance below.
 
 **Exit criterion:** composing a real homeserver task and inspecting Wisp's work
 is comfortable over SSH. Keep the existing pickers and commands unless a
@@ -208,7 +268,7 @@ not a release criterion.
 ## Maintenance alongside the MVP
 
 - Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **358 passing tests**, strict mypy passing.
+  Current baseline: **503 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
 - [x] Local Git repository (`main` baseline, work on branches). No remote yet.
 - [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held
