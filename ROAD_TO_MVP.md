@@ -225,6 +225,8 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       completion. Explicit clear/new/session loads restore following. Offline
       streaming, queued-update, resize, modal, trimming and actual PTY-key checks
       at 40/100 columns preserve inline mode and the default background.
+      The wheel/streaming regression waits for batched Markdown and the
+      follow-scroll callback before testing navigation, avoiding a CI timing race.
 - [x] Check long streamed output, narrow terminals, resize, and modal key handling.
       Mixed Unicode/Markdown streams over 12k characters match a full render
       after resizing and opening pickers. Long approval details now scroll while

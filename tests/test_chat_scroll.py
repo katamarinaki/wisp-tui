@@ -37,7 +37,12 @@ async def test_wheel_pauses_streaming_and_f4_resumes_without_changing_draft(
         app.session_id = SID
         app._turn_started(RID)
         app._handle_event({"seq": 1, "kind": "text.delta", "text": "Start\n\n"})
+        # Streaming is batched, and following runs after the Markdown layout.
+        # A single idle pause can land between layout and its scroll callback.
+        await eventually(lambda: app._stream_view is not None
+                         and app._stream_view.rendered == "Start\n\n")
         await pilot.pause()
+        await eventually(lambda: chat.scroll_y == chat.max_scroll_y > 0)
         assert chat.scroll_y == chat.max_scroll_y > 0
         editor = app.query_one(PromptInput)
         editor.value = "draft\nkeep this"
