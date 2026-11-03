@@ -102,11 +102,13 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       adding message margins inside Markdown. Offline checks cover 40/100-column
       layouts, resize, light/dark themes, streamed/saved answers, and PTY output
       with lists/code/tables and approvals (default foreground/background).
-- [x] Distinguish user prompts as full-width blocks filled with palette cyan
-      (SGR 46, owner-approved exception to the unpainted background), keeping
-      literal prompt text. Hide chat scrollbars without disabling scrolling or
+- [x] Distinguish user prompts as full-width blocks filled with muted dark
+      teal `#005f5f` + light-grey text (owner-approved exception to the
+      unpainted background; palette cyan was too bright), keeping literal
+      prompt text. Hide chat scrollbars without disabling scrolling or
       reserving their width. Test long/multiline wrapping, narrow-terminal
-      resize, overflowing conversations, and the SGR 46 fill in PTY output.
+      resize, overflowing conversations, and that the `48;5;23` fill is the
+      only painted background in PTY output.
 - [x] Show approval details, tool names, titles and model IDs exactly as sent
       (no Textual markup: bracketed text was hidden/altered, `[/]` crashed the
       TUI). Regression tests cover approvals, chat lines, status and pickers.

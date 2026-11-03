@@ -60,15 +60,24 @@ def test_inline_terminal_keeps_default_background(width: int) -> None:
     capture = bytes(output)
     prompt_styles = re.findall(rb"\x1b\[([0-9;:]*)mShow the server status", capture)
     assert prompt_styles, "prompt was not rendered"
-    assert all(b"46" in codes.split(b";") for codes in prompt_styles), \
-        "prompt block was not filled with the terminal's cyan palette color"
+    # Prompt blocks: muted dark teal (xterm-256 #23) with light-grey text
+    # (Rich quantizes #dadada to a 250-255 grey in 256-color mode).
+    assert all(re.search(rb"(?:^|;)48;5;23(?:;|$)", codes) for codes in prompt_styles), \
+        "prompt block was not filled with the dark teal"
+    assert all(re.search(rb"(?:^|;)38;5;25[0-5](?:;|$)", codes) for codes in prompt_styles), \
+        "prompt text is not the fixed light foreground"
     response_styles = re.findall(rb"\x1b\[([0-9;:]*)mScripted response", capture)
     assert response_styles, "scripted answer was not rendered"
     assert all(b"39" in codes.split(b";") for codes in response_styles), \
         "answer did not use the terminal's default foreground"
+    assert all(b"49" in codes.split(b";") for codes in response_styles), \
+        "answer did not use the terminal's default background"
     assert b"Wisp asks for approval" in capture
     assert b"\x1b[?1049h" not in capture, "alternate screen was enabled"
     sgr = re.findall(rb"\x1b\[([0-9;:]*)m", capture)
     assert any(b"49" in codes.split(b";") for codes in sgr)
-    assert not any(re.search(rb"(?:^|[;:])48(?:[;:]|$)", codes) for codes in sgr), \
-        "terminal emitted an explicit extended background color"
+    # The prompt fill is the only painted background (owner-approved).
+    extended = [codes for codes in sgr if re.search(rb"(?:^|[;:])48(?:[;:]|$)", codes)]
+    assert extended, "prompt fill missing"
+    assert all(re.search(rb"(?:^|;)48;5;23(?:;|$)", codes) for codes in extended), \
+        "an extended background other than the prompt fill was emitted"

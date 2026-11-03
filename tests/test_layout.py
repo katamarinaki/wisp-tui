@@ -49,11 +49,11 @@ async def test_prompt_box_wraps_literal_text_and_resizes(
 
         user = app.query_one("#chat > .user")
         assert str(user.render()) == prompt
-        # Filled with the terminal's cyan palette entry, not a fixed RGB color.
-        assert user.styles.background.ansi == 6
-        assert user.styles.color.ansi == 0
+        # Muted dark teal fill with fixed light text (exact xterm-256 colors).
+        assert user.styles.background.rgb == (0, 95, 95)
+        assert user.styles.color.rgb == (218, 218, 218)
         assert user.rich_style.bgcolor is not None
-        assert user.rich_style.bgcolor.number == 6
+        assert user.rich_style.bgcolor.get_truecolor().hex == "#005f5f"
         assert all(border[0] in ("", "none") for border in user.styles.border)
         assert user.styles.padding == (1, 2, 1, 2)
         assert user.content_region.width == width - 4

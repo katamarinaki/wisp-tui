@@ -36,7 +36,7 @@ later with the Wisp CLI if desired.
   (state + `F1 help · F2 sessions · F3 model · Ctrl+C cancel`). Chat and input
   share a one-column gutter; answers use your terminal's default text color
   rather than a fixed dark/light theme foreground. Your prompts appear as
-  full-width blocks filled with the terminal's cyan palette color (black text),
+  full-width blocks in a muted dark teal (`#005f5f`) with light-grey text,
   including in history. Chat scrollbars are hidden without disabling scrolling.
 - Long sessions stay fast: only the newest 60 chat items are kept on screen
   (opening a session mounts just that tail); a dim marker at the top counts
@@ -83,9 +83,10 @@ later with the Wisp CLI if desired.
   ANSI→truecolor filter doesn't rewrite "default" into a hardcoded theme
   color. The result is SGR 49 (terminal default background) on every cell —
   the user's terminal background, background images included.
-  **Sole exception (owner-requested):** user prompt blocks are filled with
-  `ansi_cyan`, emitted as basic ANSI SGR 46 so the terminal's own palette
-  decides the shade. Never a hardcoded `48;5;…`/`48;2;…` color.
+  **Sole exception (owner-requested):** user prompt blocks are filled with a
+  muted dark teal, `#005f5f` (exactly xterm-256 #23: `48;5;23`, or
+  `48;2;0;95;95` on truecolor terminals), with fixed light-grey text so it
+  reads on light and dark themes. Palette cyan (SGR 46) was too bright.
 
 ## Security model
 
@@ -119,11 +120,11 @@ cd wisp-tui   # the checkout
 
 Runtime dependency: `textual` (project venv `.venv/`, nothing installed
 system-wide). Tests use a scripted client; no real inference is ever started
-by the test suite. A scripted subprocess/PTY test checks inline rendering and
-absence of `48;...` background SGR at 40 and 100 columns, including Markdown
-lists/code/tables and an approval dialog. It also checks that answers emit the
-terminal-default foreground (SGR 39) and prompt blocks use palette cyan (SGR 46). It does not
-load private config or contact Wisp. Live smoke: `wisp-tui --check` (no inference).
+by the test suite. A scripted subprocess/PTY test checks inline rendering at
+40 and 100 columns, including Markdown lists/code/tables and an approval
+dialog: the dark-teal prompt fill (`48;5;23`) must be the only painted
+background, and answers must use the terminal-default foreground and
+background (SGR 39/49). It does not load private config or contact Wisp. Live smoke: `wisp-tui --check` (no inference).
 
 ## Layout
 
@@ -173,7 +174,7 @@ changed behavior before. To upgrade:
 1. Bump the pins, reinstall, and run the full suite (`pytest` + `mypy`).
 2. Watch especially:
    - `test_terminal.py` (PTY): still SGR 49 everywhere except prompt blocks
-     (SGR 46), no `48;...`, answers in default foreground (SGR 39).
+     (`48;5;23` only), answers in default foreground (SGR 39).
    - `test_rendering.py`: runtime text still shown literally (no markup);
      streamed answers still match a full render without per-delta updates.
    - `test_layout.py`: gutters/spacing (e.g. `margin-bottom` alone resets
