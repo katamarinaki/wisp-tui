@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections import deque
 from typing import Any
 
@@ -208,6 +209,11 @@ async def test_stale_tool_history_cannot_fill_a_new_widget_with_the_same_call_id
             current = app._show_tool_call({"toolCallId": "one", "name": "new"}, completed=True)
         finally:
             gate.release.set()
+        # The new widget's own lookup can hit the same route; block the event loop until
+        # the stale request has taken the only queued reply, or the fresh one may win it.
+        deadline = time.monotonic() + 30.0
+        while client.replies[("GET", route)] and time.monotonic() < deadline:
+            time.sleep(0.001)
         await app.workers.wait_for_complete()
         assert current.output_text is None and original.output_text is None
         assert current is not original
