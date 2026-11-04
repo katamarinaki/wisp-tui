@@ -48,7 +48,7 @@ def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Checkout:
     origin.mkdir()
     git(origin, "init", "--initial-branch=main")
     (origin / ".gitignore").write_text(".venv/\n")
-    (origin / "requirements-dev.txt").write_text("# test placeholder\n")
+    (origin / "requirements.txt").write_text("# test placeholder\n")
     git(origin, "add", ".")
     commit(origin, "initial")
     root = tmp_path / "checkout"
@@ -62,11 +62,13 @@ def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Checkout:
     def command(root: Path, args: list[str], code: str,
                 allowed: tuple[int, ...] = (0,)) -> subprocess.CompletedProcess[str]:
         if args[0] == str(python):
-            repo.pip_calls.append(args)
+            if "install" in args:
+                repo.pip_calls.append(args)
             return subprocess.CompletedProcess(args, 0, "", "")
         return original(root, args, code, allowed)
 
     monkeypatch.setattr(update, "_command", command)
+    monkeypatch.setattr(update, "_confirm", lambda: True)
     return repo
 
 
@@ -87,7 +89,7 @@ def test_update_fetches_fresh_main_and_installs_in_project_venv(
     assert git(root, "rev-parse", "HEAD") == target
     assert (root / "tracked").read_text() == "new main"
     assert checkout.pip_calls == [[str(root / ".venv/bin/python"), "-m", "pip",
-                                   "install", "-r", "requirements-dev.txt"]]
+                                   "install", "-r", "requirements.txt"]]
     assert "updated to main" in capsys.readouterr().out
     # Running again refreshes dependencies too (e.g. after an interrupted pip).
     assert update.update(root, "wi") == 0
@@ -163,7 +165,7 @@ def test_update_failure_is_safe_and_dependency_failure_is_retryable(
 
     def fail_pip(root: Path, args: list[str], code: str,
                  allowed: tuple[int, ...] = (0,)) -> subprocess.CompletedProcess[str]:
-        if args[0] != "git":
+        if "install" in args:
             raise update.UpdateError(code)
         return original(root, args, code, allowed)
 
@@ -173,6 +175,63 @@ def test_update_failure_is_safe_and_dependency_failure_is_retryable(
     assert git(checkout.root, "rev-parse", "HEAD") == target
     monkeypatch.setattr(update, "_command", original)
     assert update.update(checkout.root, "wi") == 0
+
+
+@pytest.mark.parametrize("answer", [False, True])
+def test_update_asks_before_switching_and_decline_changes_nothing(
+        checkout: Checkout, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str], answer: bool) -> None:
+    root = checkout.root
+    git(root, "switch", "-c", "develop")
+    before = git(root, "rev-parse", "HEAD")
+    target = commit(checkout.origin, "new main")
+    asked: list[bool] = []
+
+    def confirm() -> bool:
+        asked.append(True)
+        return answer
+
+    monkeypatch.setattr(update, "_confirm", confirm)
+    assert update.update(root, "wi") == (0 if answer else 1)
+    output = capsys.readouterr()
+    assert asked == [True]
+    assert f"{before[:12]} → {target[:12]} (1 new commits)" in output.out
+    if answer:
+        assert git(root, "rev-parse", "HEAD") == target
+    else:
+        assert "wi: update declined. Nothing changed." in output.err
+        assert "No reset or stash" not in output.err
+        assert git(root, "branch", "--show-current") == "develop"
+        assert git(root, "rev-parse", "HEAD") == before
+        assert checkout.pip_calls == []
+
+
+def test_update_does_not_ask_when_already_current(
+        checkout: Checkout, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(update, "_confirm", pytest.fail)
+    assert update.update(checkout.root, "wi") == 0
+    assert len(checkout.pip_calls) == 1
+
+
+def test_update_refuses_venv_without_pip_before_touching_the_checkout(
+        checkout: Checkout, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    root = checkout.root
+    before = git(root, "rev-parse", "origin/main")
+    commit(checkout.origin, "new main")
+    original = update._command
+
+    def no_pip(root: Path, args: list[str], code: str,
+               allowed: tuple[int, ...] = (0,)) -> subprocess.CompletedProcess[str]:
+        if "--version" in args:
+            raise update.UpdateError(code)
+        return original(root, args, code, allowed)
+
+    monkeypatch.setattr(update, "_command", no_pip)
+    assert update.update(root, "wi") == 1
+    assert "update_venv_missing_pip, repair it with scripts/install" in capsys.readouterr().err
+    assert git(root, "rev-parse", "origin/main") == before
+    assert checkout.pip_calls == []
 
 
 def test_failed_fetch_never_switches_branches(

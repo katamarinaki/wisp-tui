@@ -5,6 +5,7 @@ import argparse
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 
@@ -23,6 +24,13 @@ def _command(root: Path, command: list[str], code: str,
     if result.returncode not in allowed:
         raise UpdateError(code)
     return result
+
+
+def _confirm() -> bool:
+    try:
+        return input("Switch to it? [y/N] ").strip().lower() == "y"
+    except EOFError:
+        return False
 
 
 def update(root: Path, prog: str) -> int:
@@ -45,6 +53,9 @@ def update(root: Path, prog: str) -> int:
         python = root / ".venv/bin/python"
         if not python.is_file():
             raise UpdateError("update_missing_venv")
+        # uv-made or half-built venvs lack pip; check before the checkout moves.
+        _command(root, [str(python), "-I", "-m", "pip", "--version"],
+                 "update_venv_missing_pip, repair it with scripts/install")
         print(f"{prog}: fetching origin/main…", flush=True)
         git("fetch", "--no-tags", "origin",
             "+refs/heads/main:refs/remotes/origin/main", code="update_fetch_failed")
@@ -58,6 +69,16 @@ def update(root: Path, prog: str) -> int:
         if has_main:
             git("merge-base", "--is-ancestor", "refs/heads/main", target,
                 code="update_main_has_local_commits")
+        head = git("rev-parse", "HEAD").stdout.strip()
+        if head != target:
+            count = git("rev-list", "--count", f"{head}..{target}").stdout.strip()
+            print(f"{prog}: {head[:12]} → {target[:12]} ({count} new commits). "
+                  f"Review them with: git -C {shlex.quote(str(root))} log HEAD..origin/main",
+                  flush=True)
+            if not _confirm():
+                print(f"{prog}: update declined. Nothing changed.", file=sys.stderr)
+                return 1
+        if has_main:
             git("switch", "--no-guess", "main", code="update_switch_failed")
             git("merge", "--ff-only", target, code="update_fast_forward_failed")
         else:
@@ -65,7 +86,7 @@ def update(root: Path, prog: str) -> int:
                 code="update_switch_failed")
         print(f"{prog}: refreshing project dependencies…", flush=True)
         _command(root, [str(python), "-m", "pip", "install", "-r",
-                        "requirements-dev.txt"], "update_dependencies_failed")
+                        "requirements.txt"], "update_dependencies_failed")
     except UpdateError as error:
         print(f"{prog}: {error}. No reset or stash was performed. "
               "If the checkout already advanced, fix the problem and rerun update.",

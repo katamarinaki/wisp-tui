@@ -5,7 +5,7 @@ description = "Terminal chat client for the local Wisp runtime (loopback only, c
 requires-python = ">=3.11"
 # Compatible range only; exact versions live in requirements*.txt. Textual
 # minor upgrades can change rendering internals this app relies on (see
-# README "Upgrading dependencies"), so stay within 8.2.x until verified.
+# MAINTAINING.md "Upgrading dependencies"), so stay within 8.2.x until verified.
 dependencies = ["textual~=8.2.8"]
 
 [tool.mypy]

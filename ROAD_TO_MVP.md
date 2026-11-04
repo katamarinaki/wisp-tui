@@ -288,7 +288,7 @@ smoke task with the owner; tests must never invoke inference or real services.
 - [ ] Resolve a parked approval through another client and verify TUI recovery.
 - [ ] Verify terminal scrollback, background, and shell restoration on exit.
 - [ ] Record runtime/Textual versions and results, not transcripts or private
-      config. Document remaining limitations in `README.md`.
+      config. Document remaining limitations in `MAINTAINING.md`.
 
 **MVP done:** this exact SSH workflow works reliably. Feature parity with Pi is
 not a release criterion.
@@ -296,16 +296,22 @@ not a release criterion.
 ## Maintenance alongside the MVP
 
 - Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **512 passing tests**, strict mypy passing.
+  Current baseline: **524 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
 - [x] Local Git repository (`main` baseline, work on branches). No remote yet.
-- [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held
-      to 8.2.x, drift test, documented upgrade checklist (README).
+- [x] Reproducible installs: exact pins in `requirements*.txt` with wheel
+      hashes and no source builds, Textual held to 8.2.x, drift/hash test,
+      documented upgrade checklist (`MAINTAINING.md`).
+- [x] `scripts/install` (venv, hash-checked wheels, launcher link; repairs a
+      pip-less venv) and `wi setup` (hidden token prompt, verifies against the
+      runtime before writing an owner-only config; never overwrites).
 - [x] Public remote `katamarinaki/wisp-tui`; CI runs pytest + strict mypy on
       GitHub-hosted runners (`main`, `develop`, PRs). Work lands on `develop`.
 - [x] `wi update` / `wisp-tui update`: fetch fresh `origin/main`, safely
-      switch/fast-forward to `main`, refresh pinned project-venv dependencies.
-      Refuse dirty/divergent checkouts and in-progress Git operations; no
+      switch/fast-forward to `main` after showing the commit range and asking,
+      refresh the runtime pins (`requirements.txt`) in the project venv.
+      Refuse dirty/divergent checkouts, pip-less venvs and in-progress Git
+      operations; no
       reset/stash, private config/state access, or runtime calls. Offline
       regression tests use temporary local Git repositories and stub pip.
 

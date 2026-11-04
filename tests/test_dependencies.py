@@ -17,10 +17,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def pins(name: str) -> dict[str, str]:
     result: dict[str, str] = {}
-    for line in (ROOT / name).read_text().splitlines():
+    for line in (ROOT / name).read_text().replace("\\\n", " ").splitlines():
         line = line.split("#", 1)[0].strip()
-        if not line or line.startswith("-r "):
+        if not line or line.startswith("-"):
             continue
+        line, *hashes = line.split()
+        assert hashes and all(h.startswith("--hash=sha256:") for h in hashes), \
+            f"{name}: missing wheel hashes: {line!r}"
         match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([A-Za-z0-9_.+-]+)", line)
         assert match, f"{name}: not an exact pin: {line!r}"
         result[match.group(1).lower()] = match.group(2)

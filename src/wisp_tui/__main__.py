@@ -38,8 +38,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog=program_name(),
         description="Terminal chat client for the local Wisp runtime (loopback only).",
-        epilog=f"Update the checkout from main: {program_name()} update "
-               "(launcher only; see update --help).")
+        epilog=f"First-time config: {program_name()} setup. Update the checkout "
+               f"from main: {program_name()} update (launcher only; see --help of each).")
     parser.add_argument("--check", action="store_true",
                         help="Authenticated health check only; no TUI, no inference.")
     start = parser.add_mutually_exclusive_group()
@@ -59,8 +59,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config()
     except ConfigError as error:
-        print(f"{parser.prog}: {error} — create ~/.config/wisp-tui/config.json "
-              "(see README; never store it inside the project tree)", file=sys.stderr)
+        print(f"{parser.prog}: {error} — run `{parser.prog} setup` to create "
+              "~/.config/wisp-tui/config.json", file=sys.stderr)
         return 1
     client = WispClient(config.url, config.token)
     if args.check:
