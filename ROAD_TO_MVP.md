@@ -238,6 +238,8 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       at 40/100 columns preserve inline mode and the default background.
       The wheel/streaming regression waits for batched Markdown and the
       follow-scroll callback before testing navigation, avoiding a CI timing race.
+      Keyboard navigation tests wait for scroll animations to finish before
+      checking position preservation; CPU idleness alone can occur mid-animation.
 - [x] Check long streamed output, narrow terminals, resize, and modal key handling.
       Mixed Unicode/Markdown streams over 12k characters match a full render
       after resizing and opening pickers. Long approval details now scroll while
@@ -275,7 +277,7 @@ not a release criterion.
 ## Maintenance alongside the MVP
 
 - Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **503 passing tests**, strict mypy passing.
+  Current baseline: **508 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
 - [x] Local Git repository (`main` baseline, work on branches). No remote yet.
 - [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held
