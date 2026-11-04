@@ -60,7 +60,8 @@ async def test_history_read_preserves_live_inputs_and_joins_parallel_calls_by_id
         await eventually(lambda: first.output_text == "A result" and second.output_text == "B result")
         assert '"executed"' in (first.input_text or "") and '"planned"' not in (first.input_text or "")
         assert first.tool_name == second.tool_name == "underlying_tool"
-        assert first.title.endswith("FAILED") and second.title.endswith("ok")
+        assert first.status_text == "underlying_tool · failed"
+        assert second.status_text == "underlying_tool · ok"
         assert sum(path.endswith("/history") for _, path, _ in client.calls) == 1
         assert all(method == "GET" for method, _, _ in client.calls)
 
@@ -104,7 +105,7 @@ async def test_history_status_is_distinct_from_the_registry_success_flag(
         await pilot.pause()
         tool.collapsed = False
         await eventually(lambda: tool.output_text == "domain-specific error")
-        assert tool.title.endswith("→ ok")
+        assert tool.status_text == "example · ok"
         assert "History status: error" in str(tool.query_one(".tool-details", Static).render())
 
 
@@ -310,17 +311,16 @@ async def test_interleaved_tool_logs_stay_in_order_and_update_by_call_id(
         tool = app.query_one(ToolCallView)
         before, answer = app.query("#chat > Markdown").results(Markdown)
         assert len(app.query(ToolCallView)) == 1
-        assert tool.title == "tool read_file → ok 0.2s"
+        assert tool.title == 'read_file {"path": "/example/file"}'
+        assert tool.status_text == "read_file · ok · 0.2s"
         assert tool.input_text == '{\n  "path": "/example/file"\n}'
-        assert tool.output_text is None
-        tool.collapsed = False
         await eventually(lambda: tool.output_text == "file contents")
         assert (before.source, answer.source) == ("I checked. ", "The answer.")
         assert items.index(before) < items.index(tool) < items.index(answer) == len(items) - 2
         assert str(items[-1].render()) == "approval resolved"
         assert list(app._chat_items) == items
         assert app.transcript() == [
-            ("assistant", "I checked. "), ("tool", "tool read_file → ok 0.2s"),
+            ("assistant", "I checked. "), ("tool", 'read_file {"path": "/example/file"}\nread_file · ok · 0.2s'),
             ("assistant", "The answer."), ("tool", "approval resolved")]
 
 
@@ -342,7 +342,8 @@ async def test_click_and_keyboard_expand_literal_details_without_sending(
         header = tool.query_one("CollapsibleTitle", Static)
         details = tool.query_one(".tool-details", Static)
         assert bool(tool.collapsed)
-        assert name in str(header.render())
+        assert "$ [a-z]" in str(header.render())
+        assert name in str(tool.query_one(".tool-stats", Static).render())
         await pilot.click(header)
         await pilot.pause()
         assert not bool(tool.collapsed)
@@ -386,7 +387,7 @@ async def test_missing_fields_do_not_show_unrelated_event_or_error_contents(
         tool = app.query_one(ToolCallView)
         await pilot.pause()
         shown = str(tool.query_one(".tool-details", Static).render())
-        assert tool.title == "tool example → FAILED"
+        assert tool.status_text == "example · failed"
         assert shown.count("Not supplied by runtime.") == 1
         assert "No tool-call ID" in shown
         assert "private" not in shown and "headers" not in shown
@@ -416,7 +417,7 @@ async def test_expanded_tool_output_is_scrollable_bounded_and_unpainted(
         await eventually(lambda: port.scroll_y == port.max_scroll_y)
         assert port.scroll_y == port.max_scroll_y
         assert (tool.output_text or "").endswith("… tool detail truncated")
-        assert tool.title == "tool example → ok"
+        assert tool.status_text == "example · ok"
         for widget in (tool, port, tool.query_one("Contents"),
                        tool.query_one("CollapsibleTitle"), tool.query_one(".tool-details")):
             assert widget.styles.background.a == 0
@@ -537,7 +538,7 @@ async def test_checkpoint_tool_calls_and_results_remain_expandable_in_order(
         assert isinstance(first, ToolCallView) and isinstance(second, ToolCallView)
         assert first.output_text == "first result" and second.output_text == "second result"
         assert first.input_text == '{\n  "path": "[x]"\n}'
-        assert first.title == "tool read[/] → finished"
+        assert first.status_text == "read[/] · finished"
         assert isinstance(list(app.query_one("#chat").children)[-1], Markdown)
 
 
@@ -568,7 +569,7 @@ async def test_checkpoint_call_without_a_result_does_not_claim_to_be_running(
         app._session_loaded({"id": SID}, messages, "")
         await pilot.pause()
         tool = app.query_one(ToolCallView)
-        assert tool.title == "tool example → recorded"
+        assert tool.status_text == "example · recorded"
         details = str(tool.query_one(".tool-details", Static).render())
         assert "No result stored in this checkpoint." in details
         assert "Waiting" not in details
@@ -618,4 +619,4 @@ async def test_invalid_duration_never_crashes_or_claims_a_time(
     app, _ = make_app([], monkeypatch)
     async with app.run_test():
         app._tool_event({"name": "example", "durationMs": duration}, completed=True)
-        assert app.query_one(ToolCallView).title == "tool example → finished"
+        assert app.query_one(ToolCallView).status_text == "example · finished"

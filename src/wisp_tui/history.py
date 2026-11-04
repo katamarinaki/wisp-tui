@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .tool_data import ToolCallInfo, ToolHistoryInfo, detail_text
+from .tool_data import ToolCallInfo, ToolHistoryInfo, command_summary, detail_text
 
 
 class HistoryError(Exception):
@@ -68,7 +68,8 @@ def _parse_message(message: Any) -> ChatMessage | None:
             calls.append(ToolCallInfo(name if len(name) <= 200 else name[:199] + "…",
                                       call_id if isinstance(call_id, str)
                                       and 0 < len(call_id) <= 200 else "",
-                                      detail_text(call["args"]) if "args" in call else None))
+                                      detail_text(call["args"]) if "args" in call else None,
+                                      command_summary(call["args"]) if "args" in call else ""))
     if role == "tool" and not isinstance(message.get("content"), (str, list)):
         return None
     if not text.strip() and not calls and role != "tool":
@@ -109,7 +110,8 @@ def tool_history_results(messages: list[ChatMessage], call_ids: set[str] | None 
     matched = {
         call_id: ToolHistoryInfo(calls[call_id].input_text if call_id in calls else None,
                                  detail_text(message.text), message.tool_status,
-                                 message.tool_output_pruned)
+                                 message.tool_output_pruned,
+                                 calls[call_id].summary if call_id in calls else "")
         for call_id, message in results.items() if call_id not in ambiguous}
     return matched, ambiguous
 

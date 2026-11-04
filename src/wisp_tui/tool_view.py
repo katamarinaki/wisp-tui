@@ -4,11 +4,14 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from textual.app import ComposeResult
 from textual.containers import VerticalScroll
 from textual.content import Content
 from textual.widgets import Collapsible, Static
 
-from .tool_data import detail_text
+from .tool_data import command_summary, detail_text
+
+TAIL_LINES = 5
 
 
 class ToolCallView(Collapsible):
@@ -16,6 +19,8 @@ class ToolCallView(Collapsible):
 
     def __init__(self, event: dict[str, Any], *, completed: bool, historical: bool = False) -> None:
         self.tool_name = "?"
+        self.summary = ""
+        self.status_text = ""
         call_id = event.get("toolCallId")
         self.call_id = call_id if isinstance(call_id, str) and 0 < len(call_id) <= 200 else ""
         self.session_id: str | None = None
@@ -32,9 +37,16 @@ class ToolCallView(Collapsible):
         self._ok: bool | None = None
         self._duration_ms: float | None = None
         self._details = Static("", markup=False, classes="tool-details")
+        self._tail = Static("", markup=False, classes="tool-tail")
+        self._stats = Static("", markup=False, classes="tool-stats")
         super().__init__(VerticalScroll(self._details, classes="tool-detail-scroll"),
                          title="tool", collapsed=True, classes="tool-call")
         self.update_event(event, completed=completed)
+
+    def compose(self) -> ComposeResult:
+        yield from super().compose()
+        yield self._tail
+        yield self._stats
 
     def _watch_title(self, title: str) -> None:
         # CollapsibleTitle otherwise parses string labels as Textual markup.
@@ -49,6 +61,7 @@ class ToolCallView(Collapsible):
         if "args" in event:
             self.input_text = detail_text(event["args"])
             self.input_label = "Input (runtime, sanitized)"
+            self.summary = command_summary(event["args"]) or self.summary
         ok = event.get("ok")
         if isinstance(ok, bool):
             self._ok = ok
@@ -56,24 +69,32 @@ class ToolCallView(Collapsible):
         if (isinstance(duration, (int, float)) and not isinstance(duration, bool)
                 and 0 <= duration <= 1e15 and math.isfinite(duration)):
             self._duration_ms = float(duration)
-        status = "…"
+        status = "running…"
         if self.completed:
-            status = "→ ok" if self._ok is True else "→ FAILED" if self._ok is False else "→ finished"
+            status = "ok" if self._ok is True else "failed" if self._ok is False else "finished"
         elif self.historical:
-            status = "→ recorded"
+            status = "recorded"
         elif self.unreported:
-            status = "→ not reported"
-        seconds = f" {self._duration_ms / 1000:.1f}s" if self._duration_ms is not None else ""
-        self.title = f"tool {self.tool_name} {status}{seconds}"
+            status = "not reported"
+        parts = [self.tool_name, status]
+        if self._duration_ms is not None:
+            parts.append(f"{self._duration_ms / 1000:.1f}s")
         if self.terminal_summary:
-            self.title += " (run summary)"
+            parts.append("run summary")
+        self.status_text = " · ".join(parts)
+        self._stats.update(self.status_text)
+        self.title = (self.summary if self.summary.startswith("$ ")
+                      else f"{self.tool_name} {self.summary}".rstrip())
+        self.set_class(self._ok is True, "-ok")
+        self.set_class(self._ok is False, "-failed")
         self._render_details()
 
     def apply_history(self, input_text: str | None = None, output_text: str | None = None,
-                      status: str = "", pruned: bool = False) -> None:
+                      status: str = "", pruned: bool = False, summary: str = "") -> None:
         if self.input_text is None and input_text is not None:
             self.input_text = input_text
             self.input_label = "Input (history/model request)"
+        self.summary = self.summary or summary
         if output_text is not None:
             self.output_text = output_text
             self.output_label = "Output (stored summary)" if pruned else "Output (stored history)"
@@ -93,6 +114,13 @@ class ToolCallView(Collapsible):
         self._render_details()
 
     def _render_details(self) -> None:
+        if self.output_text is not None:
+            lines = self.output_text.rstrip("\n").split("\n")
+            tail = lines[-TAIL_LINES:]
+            if len(lines) > TAIL_LINES:
+                tail.insert(0, f"… ({len(lines) - TAIL_LINES} earlier lines, expand for all)")
+            self._tail.update("\n".join(tail))
+        self.set_class(self.output_text is not None, "-has-tail")
         output = self.output_text
         if output is None:
             output = self.result_notice or (

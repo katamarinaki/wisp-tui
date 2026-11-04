@@ -455,8 +455,9 @@ class WispTuiApp(App[None]):
     #chat > ToolCallView {
         height: auto;
         margin: 0 1 1 1;
-        padding: 0;
+        padding: 0 0 0 1;
         border: none;
+        border-left: outer ansi_bright_black;
         background: transparent;
         background-tint: transparent;
         color: ansi_default;
@@ -473,6 +474,27 @@ class WispTuiApp(App[None]):
         text-style: dim;
     }
     #chat ToolCallView CollapsibleTitle:focus { text-style: dim underline; }
+    #chat > ToolCallView.-ok { border-left: outer ansi_cyan; }
+    #chat > ToolCallView.-failed { border-left: outer ansi_red; }
+    #chat ToolCallView.-ok CollapsibleTitle { color: ansi_cyan; text-style: none; }
+    #chat ToolCallView.-failed CollapsibleTitle { color: ansi_red; text-style: none; }
+    #chat ToolCallView.-ok CollapsibleTitle:focus,
+    #chat ToolCallView.-failed CollapsibleTitle:focus { text-style: underline; }
+    #chat ToolCallView > .tool-tail {
+        display: none;
+        height: auto;
+        background: transparent;
+        color: ansi_default;
+        text-style: dim;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+    }
+    #chat ToolCallView.-collapsed.-has-tail > .tool-tail { display: block; }
+    #chat ToolCallView > .tool-stats {
+        height: auto; background: transparent; color: ansi_default; text-style: dim;
+    }
+    #chat ToolCallView.-ok > .tool-stats { color: ansi_cyan; }
+    #chat ToolCallView.-failed > .tool-stats { color: ansi_red; }
     #chat .tool-detail-scroll {
         height: auto;
         max-height: 16;
@@ -909,7 +931,7 @@ class WispTuiApp(App[None]):
                         else widget.source)
                 items.append(("assistant", _terminal_text(text)))
             elif isinstance(widget, ToolCallView):
-                items.append(("tool", str(widget.title)))
+                items.append(("tool", f"{widget.title}\n{widget.status_text}"))
             elif isinstance(widget, Static):
                 kind = next((cls for cls in ("user", "error", "tool") if widget.has_class(cls)),
                             "system")
@@ -922,7 +944,7 @@ class WispTuiApp(App[None]):
 
     def _tool_event(self, event: dict[str, Any], *, completed: bool,
                     input_text: str | None = None, historical: bool = False,
-                    terminal: bool = False) -> ToolCallView:
+                    terminal: bool = False, summary: str = "") -> ToolCallView:
         call_id = event.get("toolCallId")
         key = call_id if isinstance(call_id, str) and 0 < len(call_id) <= 200 else ""
         if not historical and not terminal:
@@ -952,10 +974,11 @@ class WispTuiApp(App[None]):
                 self._tool_calls[key] = view
         if input_text is not None:
             # Checkpoint arguments have already been bounded/formatted.
-            view.apply_history(input_text=input_text)
+            view.apply_history(input_text=input_text, summary=summary)
         self._scroll_down()
-        if completed and not view.collapsed:
-            self._request_tool_history()
+        if completed and not historical:
+            # Deferred so parallel completions share one history read.
+            self.call_after_refresh(self._request_tool_history)
         return view
 
     def _add_message(self, message: ChatMessage) -> None:
@@ -964,7 +987,8 @@ class WispTuiApp(App[None]):
                 self._mount_chat(AnswerMarkdown(message.text, classes="assistant"))
             for call in message.tool_calls:
                 self._tool_event({"name": call.name, "toolCallId": call.call_id},
-                                 completed=False, input_text=call.input_text, historical=True)
+                                 completed=False, input_text=call.input_text, historical=True,
+                                 summary=call.summary)
         elif message.role == "tool":
             view = self._tool_event({"name": message.tool_name, "toolCallId": message.tool_call_id},
                                     completed=True, historical=True)
@@ -1001,7 +1025,7 @@ class WispTuiApp(App[None]):
             elif view.call_id in matched:
                 details = matched[view.call_id]
                 view.apply_history(details.input_text, details.output_text,
-                                   details.status, details.pruned)
+                                   details.status, details.pruned, details.summary)
             else:
                 view.set_result_notice("Result not in stored history yet. Collapse and expand to retry.")
         if targets:
@@ -1014,7 +1038,7 @@ class WispTuiApp(App[None]):
             return
         if self._tool_history_token is not None:
             self._tool_history_again |= force_after_current or any(
-                view not in self._tool_history_targets for view in targets if not view.collapsed)
+                view not in self._tool_history_targets for view in targets)
             return
         token = object()
         epoch = self._chat_epoch
@@ -1727,7 +1751,7 @@ class WispTuiApp(App[None]):
         self._finish_run()
         if kind == "run.completed" and saved_history is not None and answer:
             self._refresh_finished_history(saved_history, answer)
-        elif any(not view.collapsed for view in self._tool_targets()):
+        elif self._tool_targets():
             self._request_tool_history(force_after_current=True)
 
     def _refresh_finished_history(self, before: list[ChatMessage], answer: str) -> None:

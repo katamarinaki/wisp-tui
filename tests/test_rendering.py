@@ -68,7 +68,7 @@ async def test_chat_lines_status_and_commands_are_literal(
 
         lines = [plain(w) for w in app.query("#chat > Static")]
         tool = app.query_one(ToolCallView)
-        assert tool.title == f"tool {text} …"
+        assert tool.title == text and tool.status_text == f"{text} · running…"
         assert text in plain(tool.query_one("CollapsibleTitle", Static))
         assert f"transcribed: {text}" in lines
         assert any(line.startswith(f"unknown command /x{text.split()[0]}") for line in lines)

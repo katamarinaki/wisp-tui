@@ -260,6 +260,15 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       rest of the process instead of reopening the same refused choice. On exit,
       clear the inline area and print the shown transcript (plain text, newest
       60 items) so it stays in terminal scrollback. Live SSH check pending.
+- [x] Pi-style tool entries: command line (`$ …` for a `command` argument,
+      else name + compact arguments), then the last 5 output lines, then a
+      `name · ok/failed · time` line. A left bar and the text turn cyan on
+      registry `ok`, red on failure (stored history `status` decides only when
+      no live `ok` was seen); no background fill. The stored result is
+      read automatically after each live completion (deferred so parallel
+      completions share one read; skipped while end-of-run reconciliation runs).
+      There is no exit code in the event contract, so a non-zero exit is red
+      only if Wisp reports it as `ok: false`. Live check pending.
 
 **Exit criterion:** composing a real homeserver task and inspecting Wisp's work
 is comfortable over SSH. Keep the existing pickers and commands unless a

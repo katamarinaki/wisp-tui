@@ -206,10 +206,10 @@ transformed by tools/connectors. JSON strings remain strings, and content-block
 arrays are shown literally within the normal display limits. Registry `ok` and
 stored tool-message `status` remain distinct observations.
 
-Expanding an identified entry with no cached result performs one bounded (5s)
-GET through the existing history allowlist. Concurrent requests are coalesced;
-terminal completion refreshes already-expanded missing results, and replay
-reconciliation reuses its history response. This does not reserve the submission
+A live completion, or expanding an identified entry with no cached result,
+performs one bounded (5s) GET through the existing history allowlist.
+Concurrent requests are coalesced; terminal completion refreshes every missing
+result, and replay reconciliation reuses its history response. This does not reserve the submission
 slot or block typing, cancellation or fresh work. Errors appear as safe codes
 inside the entry; collapse/expand explicitly retries. Session/chat generation,
 request identity and exact target widgets fence replies after clear, switching,
