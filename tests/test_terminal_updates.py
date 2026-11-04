@@ -1,4 +1,5 @@
 """Inline repaint correctness against a small relative-cursor terminal model."""
+
 from __future__ import annotations
 
 import re
@@ -70,8 +71,7 @@ class Terminal:
 
 
 def frame(lines: list[str], width: int, style: Style | None = None) -> InlineUpdate:
-    return InlineUpdate([Strip([Segment(line, style)]).adjust_cell_length(width)
-                         for line in lines])
+    return InlineUpdate([Strip([Segment(line, style)]).adjust_cell_length(width) for line in lines])
 
 
 @pytest.mark.parametrize("width", [40, 100])

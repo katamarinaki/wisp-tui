@@ -39,8 +39,8 @@
 ## Upgrading dependencies
 
 `requirements.txt` pins the runtime packages to exact versions, and
-`requirements-dev.txt` adds the test and mypy tooling. `pyproject.toml` allows
-Textual 8.2.x. Every pin lists the sha256 of each wheel PyPI publishes for it,
+`requirements-dev.txt` adds the test, mypy and ruff tooling. `pyproject.toml`
+allows Textual 8.2.x. Every pin lists the sha256 of each wheel PyPI publishes for it,
 and `--only-binary :all:` refuses source builds. `tests/test_dependencies.py`
 fails when your venv drifts from the pins or a pin lacks hashes.
 
@@ -48,7 +48,7 @@ Textual carries the most risk: wisp-tui relies on rendering details that
 Textual has changed before. To upgrade:
 
 1. Bump the pins, swap in the wheel hashes PyPI lists for the new releases,
-   reinstall, and run `pytest` and `mypy`.
+   reinstall, and run `pytest`, `mypy` and `ruff check`.
 2. Read these results first:
    - `test_terminal.py` (PTY): SGR 49 everywhere except prompt blocks
      (`48;5;23`), and answers in the default foreground (SGR 39).

@@ -32,6 +32,10 @@ jobs:
           python -m venv .venv
           .venv/bin/python -m pip install --require-virtualenv -r requirements-dev.txt
           .venv/bin/python -m pip check
+      - name: Lint and format check (ruff)
+        run: |
+          .venv/bin/python -m ruff check src tests
+          .venv/bin/python -m ruff format --check src tests
       - name: Tests (no network; includes the PTY rendering check)
         run: .venv/bin/python -m pytest tests/ -q
       - name: Type check (strict)

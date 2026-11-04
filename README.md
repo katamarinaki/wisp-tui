@@ -58,8 +58,10 @@ Wisp stores your sessions. wisp-tui keeps a private log under
 
 ```sh
 .venv/bin/pip install -r requirements-dev.txt
+git config core.hooksPath .githooks    # ruff + mypy before each commit
 .venv/bin/python -m pytest tests/
 .venv/bin/python -m mypy
+.venv/bin/python -m ruff check src tests && .venv/bin/python -m ruff format src tests
 ```
 
 Pins carry wheel hashes, and the app depends on Textual 8.2.x rendering

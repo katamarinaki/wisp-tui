@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from tests.helpers import FakeJsonResponse, FakeOpener, make_client, sse_response
 from wisp_tui.client import ClientError, WispClient, _route_permitted
-from tests.helpers import FakeJsonResponse, FakeOpener, make_client
 
 
 class TestRouteAllowlist:
@@ -20,8 +20,7 @@ class TestRouteAllowlist:
         assert _route_permitted("POST", f"/v1/sessions/{sid}/cancel")
         assert _route_permitted("GET", f"/v1/runs/{sid}")
         assert _route_permitted("GET", f"/v1/runs/{sid}/events")
-        assert _route_permitted(
-            "POST", f"/v1/runs/{sid}/confirmations/abc.123:_-")
+        assert _route_permitted("POST", f"/v1/runs/{sid}/confirmations/abc.123:_-")
 
     def test_privileged_routes_refused(self) -> None:
         for method, path in [
@@ -58,7 +57,7 @@ class TestRouteAllowlist:
     def test_runs_query_validation(self) -> None:
         sid = "3bf1ba87-760e-4c0c-8a9d-a88a581d6bc5"
         assert _route_permitted("GET", f"/v1/runs?sessionId={sid}&status=parked&limit=1")
-        assert not _route_permitted("GET", f"/v1/runs?sessionId=../../admin")
+        assert not _route_permitted("GET", "/v1/runs?sessionId=../../admin")
         assert not _route_permitted("GET", "/v1/runs?origin=all")
         assert not _route_permitted("GET", "/v1/runs?limit=9999")
         assert not _route_permitted("GET", "/v1/runs?status=parked&status=queued")
@@ -91,8 +90,7 @@ class TestRequests:
         opener = FakeOpener()
         opener.responses.append(FakeJsonResponse({"ok": True}))
         client = make_client(opener)
-        result = client.request("POST", "/v1/sessions",
-                                {"origin": "cli", "title": "t"})
+        result = client.request("POST", "/v1/sessions", {"origin": "cli", "title": "t"})
         assert result == {"ok": True}
         recorded = opener.requests[0]
         assert recorded.method == "POST"
@@ -115,15 +113,18 @@ class TestRequests:
         assert client.request("GET", "/v1/sessions") == [1, 2, 3]
 
     def test_iter_events_sets_resume_header(self) -> None:
-        from tests.helpers import sse_response
+
         opener = FakeOpener()
-        opener.responses.append(sse_response([
-            {"seq": 5, "kind": "text.delta", "text": "hi"},
-            {"seq": 6, "kind": "run.completed", "outcome": {}},
-        ]))
+        opener.responses.append(
+            sse_response(
+                [
+                    {"seq": 5, "kind": "text.delta", "text": "hi"},
+                    {"seq": 6, "kind": "run.completed", "outcome": {}},
+                ]
+            )
+        )
         client = make_client(opener)
-        events = list(client.iter_events(
-            "3bf1ba87-760e-4c0c-8a9d-a88a581d6bc5", last_seq=4))
+        events = list(client.iter_events("3bf1ba87-760e-4c0c-8a9d-a88a581d6bc5", last_seq=4))
         assert [e["kind"] for e in events] == ["text.delta", "run.completed"]
         headers = {k.lower(): v for k, v in opener.requests[0].headers.items()}
         assert headers.get("last-event-id") == "4"

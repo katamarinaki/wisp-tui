@@ -1,17 +1,19 @@
 """First-time configuration, independent of Textual: ``wi setup``."""
+
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
 import json
 import os
-from pathlib import Path
 import re
 import sys
 import tempfile
+from pathlib import Path
 
 from . import config
-from .client import ClientError, WispClient, validate_url
+from .client import ClientError, WispClient, validate_runtime_url
 
 DEFAULT_URL = "http://127.0.0.1:3008"
 
@@ -31,7 +33,7 @@ def verify(client: WispClient) -> None:
 def write_config(path: Path, url: str, token: str) -> None:
     """Write the config atomically; never replace or follow an existing file."""
     try:
-        config._private_directory(path.parent)
+        config.ensure_private_directory(path.parent)
     except OSError:
         raise SetupError("setup_write_failed") from None
     temporary = ""
@@ -49,20 +51,21 @@ def write_config(path: Path, url: str, token: str) -> None:
         raise SetupError("setup_write_failed") from None
     finally:
         if temporary:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(temporary)
-            except OSError:
-                pass
 
 
 def setup(prog: str) -> int:
     path = config.CONFIG_PATH
     if os.path.lexists(path):
-        print(f"{prog}: already configured ({path}). Run `{prog} --check` to test it, "
-              "or delete the file to set up again.", file=sys.stderr)
+        print(
+            f"{prog}: already configured ({path}). Run `{prog} --check` to test it, "
+            "or delete the file to set up again.",
+            file=sys.stderr,
+        )
         return 1
     try:
-        url = validate_url(input(f"Runtime URL [{DEFAULT_URL}]: ").strip() or DEFAULT_URL)
+        url = validate_runtime_url(input(f"Runtime URL [{DEFAULT_URL}]: ").strip() or DEFAULT_URL)
         token = getpass.getpass("Wisp token (input hidden): ").strip()
         client = WispClient(url, token)
         print(f"{prog}: checking the runtime…", flush=True)
@@ -84,8 +87,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog=f"{prog} setup",
         description="Ask for the runtime URL and token (hidden), verify them "
-                    "against the runtime, then save an owner-only config. "
-                    "Never overwrites an existing config.")
+        "against the runtime, then save an owner-only config. "
+        "Never overwrites an existing config.",
+    )
     parser.parse_args(argv)
     try:
         return setup(prog)

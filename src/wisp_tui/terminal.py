@@ -5,6 +5,7 @@ a spinner redraws a long, otherwise idle transcript ten times per second. Keep
 its full-frame path for resize/height changes, and otherwise write only rows
 whose rendered bytes changed, using movements relative to the inline origin.
 """
+
 from __future__ import annotations
 
 from rich.console import Console
@@ -31,7 +32,7 @@ class InlineRenderer:
             # the primary screen and invalidate that origin at the bottom row.
             parts: list[str] = []
             cursor_row = 0
-            for row, (before, after) in enumerate(zip(previous, rows)):
+            for row, (before, after) in enumerate(zip(previous, rows, strict=True)):
                 if before == after:
                     continue
                 if row > cursor_row:

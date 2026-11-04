@@ -1,4 +1,5 @@
 """Prepare failures release only unowned leases, not ambiguous saved requests."""
+
 from __future__ import annotations
 
 import os
@@ -13,7 +14,8 @@ from wisp_tui.submissions import PendingSubmission, SubmissionError, SubmissionS
 
 @pytest.mark.parametrize("acknowledged", [False, True])
 def test_pre_replace_failure_releases_unowned_slot_without_closing_client(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, acknowledged: bool) -> None:
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, acknowledged: bool
+) -> None:
     store = SubmissionStore(URL, tmp_path / "state")
     if acknowledged:
         original = pending()
@@ -24,8 +26,8 @@ def test_pre_replace_failure_releases_unowned_slot_without_closing_client(
         raise OSError("private disk detail")
 
     monkeypatch.setattr(store, "_write", fail)
-    with pytest.raises(SubmissionError, match="^pending_state_unavailable$"):
-        store.prepare(pending(key="wisp-tui:75f8f484-cfec-460b-a2c8-12c4f8d544f4"))
+    with pytest.raises(SubmissionError, match=r"^pending_state_unavailable$"):
+        store.prepare(pending(idempotency_key="wisp-tui:75f8f484-cfec-460b-a2c8-12c4f8d544f4"))
     contender = SubmissionStore(URL, store.root)
     assert contender.load() is None
     assert not store._owns_pending
@@ -39,8 +41,8 @@ def test_conflict_releases_unowned_lease_but_keeps_existing_request(tmp_path: Pa
     owner.prepare(original)
     owner.close()
     contender = SubmissionStore(URL, owner.root)
-    with pytest.raises(SubmissionError, match="^pending_state_conflict$"):
-        contender.prepare(pending(key="wisp-tui:75f8f484-cfec-460b-a2c8-12c4f8d544f4"))
+    with pytest.raises(SubmissionError, match=r"^pending_state_conflict$"):
+        contender.prepare(pending(idempotency_key="wisp-tui:75f8f484-cfec-460b-a2c8-12c4f8d544f4"))
     # No contender.close(): the legitimate recovery must already be possible.
     recovered = owner.load()
     assert recovered is not None and recovered.body() == original.body()
@@ -53,7 +55,7 @@ def test_endpoint_mismatch_does_not_lock_out_the_original_runtime(tmp_path: Path
     owner.prepare(original)
     owner.close()
     wrong = SubmissionStore("http://127.0.0.1:3009", owner.root)
-    with pytest.raises(SubmissionError, match="^pending_runtime_mismatch$"):
+    with pytest.raises(SubmissionError, match=r"^pending_runtime_mismatch$"):
         wrong.prepare(pending())
     recovered = owner.load()
     assert recovered is not None and recovered.body() == original.body()
@@ -62,7 +64,8 @@ def test_endpoint_mismatch_does_not_lock_out_the_original_runtime(tmp_path: Path
 
 @pytest.mark.parametrize("restore_first", [False, True])
 def test_owned_pending_keeps_lease_if_resync_fails(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restore_first: bool) -> None:
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restore_first: bool
+) -> None:
     original = pending()
     store = SubmissionStore(URL, tmp_path / "state")
     store.prepare(original)
@@ -76,10 +79,10 @@ def test_owned_pending_keeps_lease_if_resync_fails(
         raise OSError("private disk detail")
 
     monkeypatch.setattr(os, "fsync", fail)
-    with pytest.raises(SubmissionError, match="^pending_state_unavailable$"):
+    with pytest.raises(SubmissionError, match=r"^pending_state_unavailable$"):
         store.prepare(original)
     contender = SubmissionStore(URL, store.root)
-    with pytest.raises(SubmissionError, match="^pending_state_busy$"):
+    with pytest.raises(SubmissionError, match=r"^pending_state_busy$"):
         contender.load()
     assert store._owns_pending
     store.close()
@@ -89,7 +92,8 @@ def test_owned_pending_keeps_lease_if_resync_fails(
 
 
 def test_failed_directory_sync_after_replace_retains_new_request_lease(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     original = pending()
     store = SubmissionStore(URL, tmp_path / "state")
     real_fsync = os.fsync
@@ -103,11 +107,11 @@ def test_failed_directory_sync_after_replace_retains_new_request_lease(
         real_fsync(fd)
 
     monkeypatch.setattr(os, "fsync", fail_directory)
-    with pytest.raises(SubmissionError, match="^pending_state_unavailable$"):
+    with pytest.raises(SubmissionError, match=r"^pending_state_unavailable$"):
         store.prepare(original)
     assert store._owns_pending
     contender = SubmissionStore(URL, store.root)
-    with pytest.raises(SubmissionError, match="^pending_state_busy$"):
+    with pytest.raises(SubmissionError, match=r"^pending_state_busy$"):
         contender.load()
     store.close()
     restored = contender.load()

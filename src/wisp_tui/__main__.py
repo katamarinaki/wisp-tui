@@ -1,4 +1,5 @@
 """CLI entry point: ``python -m wisp_tui``."""
+
 from __future__ import annotations
 
 import argparse
@@ -10,9 +11,11 @@ from rich.console import Console
 from rich.text import Text
 
 from . import __version__
-from .app import RESUME_QUERY_RE, Startup, WispTuiApp, UUID_RE
-from .client import WispClient, ClientError
+from .app import WispTuiApp
+from .app_base import Startup
+from .client import ClientError, WispClient
 from .config import ConfigError, load_config
+from .sessions import RESUME_QUERY_RE, UUID_RE
 
 
 def program_name() -> str:
@@ -24,8 +27,8 @@ def program_name() -> str:
 def print_transcript(items: list[tuple[str, str]]) -> None:
     console = Console(highlight=False, soft_wrap=False)
     styles = {"user": "bold", "error": "red", "tool": "dim", "system": "dim"}
-    for kind, text in items:
-        text = text.strip("\n")
+    for kind, raw in items:
+        text = raw.strip("\n")
         if not text.strip():
             continue
         if kind == "user":
@@ -39,17 +42,32 @@ def main(argv: list[str] | None = None) -> int:
         prog=program_name(),
         description="Terminal chat client for the local Wisp runtime (loopback only).",
         epilog=f"First-time config: {program_name()} setup. Update the checkout "
-               f"from main: {program_name()} update (launcher only; see --help of each).")
-    parser.add_argument("--check", action="store_true",
-                        help="Authenticated health check only; no TUI, no inference.")
+        f"from main: {program_name()} update (launcher only; see --help of each).",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Authenticated health check only; no TUI, no inference.",
+    )
     start = parser.add_mutually_exclusive_group()
-    start.add_argument("-c", "--continue", dest="resume_latest", action="store_true",
-                       help="Continue the most recent locally saved session.")
-    start.add_argument("-r", "--resume", nargs="?", const="", default=None, metavar="ID",
-                       help="Resume a locally saved session: a picker, or the session "
-                            "whose ID starts with ID (e.g. the 8 characters shown).")
-    start.add_argument("--session", metavar="UUID",
-                       help="Open a specific Wisp session.")
+    start.add_argument(
+        "-c",
+        "--continue",
+        dest="resume_latest",
+        action="store_true",
+        help="Continue the most recent locally saved session.",
+    )
+    start.add_argument(
+        "-r",
+        "--resume",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="ID",
+        help="Resume a locally saved session: a picker, or the session "
+        "whose ID starts with ID (e.g. the 8 characters shown).",
+    )
+    start.add_argument("--session", metavar="UUID", help="Open a specific Wisp session.")
     parser.add_argument("--version", action="version", version="wisp-tui " + __version__)
     args = parser.parse_args(argv)
     if args.session is not None and not UUID_RE.fullmatch(args.session):
@@ -59,8 +77,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config()
     except ConfigError as error:
-        print(f"{parser.prog}: {error} — run `{parser.prog} setup` to create "
-              "~/.config/wisp-tui/config.json", file=sys.stderr)
+        print(
+            f"{parser.prog}: {error} — run `{parser.prog} setup` to create "
+            "~/.config/wisp-tui/config.json",
+            file=sys.stderr,
+        )
         return 1
     client = WispClient(config.url, config.token)
     if args.check:

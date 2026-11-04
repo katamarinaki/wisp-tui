@@ -1,16 +1,23 @@
 """Transcript scrolling that leaves the reader in control during streaming."""
+
 from __future__ import annotations
 
 import asyncio
-from typing import Awaitable
+import contextlib
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from textual import events
 from textual.actions import SkipAction
+from textual.app import App
+from textual.await_complete import AwaitComplete
 from textual.containers import VerticalScroll
 from textual.message import Message
 from textual.reactive import reactive
-from textual.widget import Widget
-from textual.widgets import Static
+from textual.widget import AwaitMount, Widget
+from textual.widgets import Markdown, Static
+
+from .text import terminal_text
 
 
 class ChatScroll(VerticalScroll):
@@ -102,22 +109,21 @@ class ChatScroll(VerticalScroll):
     def on_key(self) -> None:
         self._reading_position = None
 
-    def action_scroll_up(self) -> None:
+    def _pause_following(self) -> None:
         self._reading_position = None
         if self.max_scroll_y > 0:
             self.following = False
+
+    def action_scroll_up(self) -> None:
+        self._pause_following()
         super().action_scroll_up()
 
     def action_page_up(self) -> None:
-        self._reading_position = None
-        if self.max_scroll_y > 0:
-            self.following = False
+        self._pause_following()
         super().action_page_up()
 
     def action_scroll_home(self) -> None:
-        self._reading_position = None
-        if self.max_scroll_y > 0:
-            self.following = False
+        self._pause_following()
         super().action_scroll_home()
 
     def action_scroll_down(self) -> None:
@@ -156,3 +162,78 @@ class ResumeFollow(Static):
     def on_click(self, event: events.Click) -> None:
         event.stop()
         self.post_message(self.Requested())
+
+
+class AnswerMarkdown(Markdown):
+    """Model-authored Markdown: controls neutralized, links never opened."""
+
+    def __init__(self, markdown: str | None = None, *, classes: str | None = None) -> None:
+        super().__init__(
+            None if markdown is None else terminal_text(markdown),
+            classes=classes,
+            open_links=False,
+        )
+
+    def update(self, markdown: str) -> AwaitComplete:
+        return super().update(terminal_text(markdown))
+
+    def append(self, markdown: str) -> AwaitComplete:
+        return super().append(terminal_text(markdown))
+
+
+class StreamView:
+    """Render one streamed answer incrementally, one Markdown operation at a time.
+
+    Re-rendering the whole answer per delta is quadratic. Instead, a single
+    async renderer appends only the new suffix (coalescing deltas that arrive
+    meanwhile, at most ten batches per second) and falls back to a full update
+    when the text is replaced (``gap``/final output that is not a continuation).
+    It waits for the widget's mount, so no delta can be lost to Markdown's
+    initial update.
+    """
+
+    UPDATE_INTERVAL = 0.1
+
+    def __init__(
+        self, app: App[Any], widget: Markdown, mounted: AwaitMount, on_rendered: Callable[[], None]
+    ) -> None:
+        self.app = app
+        self.widget = widget
+        self._mounted = mounted
+        self._on_rendered = on_rendered
+        self.target = ""
+        self.rendered = ""
+        self._running = False
+        self._flush_now = asyncio.Event()
+
+    def set_text(self, text: str) -> None:
+        self.target = text
+        if not self._running and self.rendered != text:
+            self._running = True
+            self.app.run_worker(self._render(), group="render", exclusive=False)
+
+    def flush(self) -> None:
+        """Finish the latest answer without waiting for the next display batch."""
+        if self._running or self.rendered != self.target:
+            self._flush_now.set()
+
+    async def _render(self) -> None:
+        try:
+            await self._mounted
+            while self.rendered != self.target and self.widget.is_attached:
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(self._flush_now.wait(), timeout=self.UPDATE_INTERVAL)
+                self._flush_now.clear()
+                target = self.target
+                if target.startswith(self.rendered):
+                    await self.widget.append(target[len(self.rendered) :])
+                else:
+                    await self.widget.update(target)
+                self.rendered = target
+                self._on_rendered()
+        except Exception:
+            # A widget removed mid-render (/clear, session switch) must not
+            # take the app down; the run state lives elsewhere.
+            pass
+        finally:
+            self._running = False

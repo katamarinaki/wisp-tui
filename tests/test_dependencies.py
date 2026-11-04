@@ -4,28 +4,31 @@ Upgrading Textual can silently change behavior this app depends on (default
 background, markup, margins, Markdown streaming). Pins make upgrades explicit:
 change requirements*.txt, then run the full suite including the PTY check.
 """
+
 from __future__ import annotations
 
 import re
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import PackageNotFoundError, requires, version
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def pins(name: str) -> dict[str, str]:
     result: dict[str, str] = {}
-    for line in (ROOT / name).read_text().replace("\\\n", " ").splitlines():
-        line = line.split("#", 1)[0].strip()
-        if not line or line.startswith("-"):
+    for raw in (ROOT / name).read_text().replace("\\\n", " ").splitlines():
+        entry = raw.split("#", 1)[0].strip()
+        if not entry or entry.startswith("-"):
             continue
-        line, *hashes = line.split()
-        assert hashes and all(h.startswith("--hash=sha256:") for h in hashes), \
-            f"{name}: missing wheel hashes: {line!r}"
-        match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([A-Za-z0-9_.+-]+)", line)
-        assert match, f"{name}: not an exact pin: {line!r}"
+        pin, *hashes = entry.split()
+        assert hashes and all(h.startswith("--hash=sha256:") for h in hashes), (
+            f"{name}: missing wheel hashes: {pin!r}"
+        )
+        match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([A-Za-z0-9_.+-]+)", pin)
+        assert match, f"{name}: not an exact pin: {pin!r}"
         result[match.group(1).lower()] = match.group(2)
     return result
 
@@ -46,8 +49,6 @@ def test_installed_versions_match_lock(lock: str) -> None:
 def runtime_closure(root: str) -> set[str]:
     """Every distribution ``root`` needs at runtime here, following extras
     such as ``markdown-it-py[linkify]`` and evaluating environment markers."""
-    from importlib.metadata import requires
-    from packaging.requirements import Requirement
 
     visited: set[tuple[str, frozenset[str]]] = set()
     pending: list[tuple[str, frozenset[str]]] = [(root, frozenset())]
@@ -60,8 +61,8 @@ def runtime_closure(root: str) -> set[str]:
         for spec in requires(name) or []:
             requirement = Requirement(spec)
             if requirement.marker is None or any(
-                    requirement.marker.evaluate({"extra": extra})
-                    for extra in ["", *sorted(extras)]):
+                requirement.marker.evaluate({"extra": extra}) for extra in ["", *sorted(extras)]
+            ):
                 pending.append((requirement.name, frozenset(requirement.extras)))
     return {name for name, _ in visited}
 

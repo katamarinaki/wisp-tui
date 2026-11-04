@@ -1,4 +1,5 @@
 """Bounded prompt recall and one unsent draft, private and local to a runtime."""
+
 from __future__ import annotations
 
 import fcntl
@@ -8,17 +9,19 @@ import os
 import re
 import stat
 import tempfile
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from . import config
+from .client import UUID
 from .config import ConfigError
-from .submissions import MAX_DRAFT_BYTES, UUID
+from .submissions import MAX_DRAFT_BYTES
 
 MAX_HISTORY = 50
 MAX_HISTORY_BYTES = 256 * 1024
-MAX_FILE = 4 * 1024 * 1024
+MAX_COMPOSER_FILE_BYTES = 4 * 1024 * 1024
 
 
 class ComposerError(Exception):
@@ -26,18 +29,18 @@ class ComposerError(Exception):
 
 
 def bounded_history(prompts: Iterable[str]) -> tuple[str, ...]:
-    history: list[str] = []
+    deduplicated: list[str] = []
     for prompt in prompts:
-        if prompt.strip() and (not history or history[-1] != prompt):
-            history.append(prompt)
+        if prompt.strip() and (not deduplicated or deduplicated[-1] != prompt):
+            deduplicated.append(prompt)
     kept: list[str] = []
-    size = 0
-    for prompt in reversed(history[-MAX_HISTORY:]):
-        length = len(prompt.encode("utf-8"))
-        if length > MAX_DRAFT_BYTES or size + length > MAX_HISTORY_BYTES:
+    total_bytes = 0
+    for prompt in reversed(deduplicated[-MAX_HISTORY:]):
+        prompt_bytes = len(prompt.encode("utf-8"))
+        if prompt_bytes > MAX_DRAFT_BYTES or total_bytes + prompt_bytes > MAX_HISTORY_BYTES:
             break
         kept.append(prompt)
-        size += length
+        total_bytes += prompt_bytes
     return tuple(reversed(kept))
 
 
@@ -50,16 +53,29 @@ class ComposerState:
 
 
 def _decode(data: dict[str, Any]) -> ComposerState:
-    history, draft, session, key = (data.get("history"), data.get("draft"),
-                                       data.get("session_id"), data.get("submission_key"))
-    if (type(data.get("version")) is not int or data.get("version") != 1
-            or not isinstance(history, list) or len(history) > MAX_HISTORY
-            or not all(isinstance(prompt, str) for prompt in history)
-            or not isinstance(draft, str) or len(draft.encode("utf-8")) > MAX_DRAFT_BYTES
-            or (session is not None and (not isinstance(session, str)
-                                        or not re.fullmatch(UUID, session)))
-            or (key is not None and (not isinstance(key, str)
-                                     or not re.fullmatch(rf"wisp-tui:{UUID}", key)))):
+    history, draft, session, key = (
+        data.get("history"),
+        data.get("draft"),
+        data.get("session_id"),
+        data.get("submission_key"),
+    )
+    if (
+        type(data.get("version")) is not int
+        or data.get("version") != 1
+        or not isinstance(history, list)
+        or len(history) > MAX_HISTORY
+        or not all(isinstance(prompt, str) for prompt in history)
+        or not isinstance(draft, str)
+        or len(draft.encode("utf-8")) > MAX_DRAFT_BYTES
+        or (
+            session is not None
+            and (not isinstance(session, str) or not re.fullmatch(UUID, session))
+        )
+        or (
+            key is not None
+            and (not isinstance(key, str) or not re.fullmatch(rf"wisp-tui:{UUID}", key))
+        )
+    ):
         raise ComposerError("composer_state_invalid")
     prompts: tuple[str, ...] = tuple(history)
     if bounded_history(prompts) != prompts:
@@ -76,15 +92,22 @@ class ComposerStore:
         self._lock_fd: int | None = None
 
     def _lock(self) -> None:
-        config._private_directory(self.root)
+        config.ensure_private_directory(self.root)
         if self._lock_fd is not None:
             return
-        fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW
-                     | os.O_NONBLOCK | os.O_CLOEXEC, 0o600)
+        fd = os.open(
+            self.lock_path,
+            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            0o600,
+        )
         try:
             info = os.fstat(fd)
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                    or info.st_mode & 0o077 or info.st_nlink != 1):
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.getuid()
+                or info.st_mode & 0o077
+                or info.st_nlink != 1
+            ):
                 raise ComposerError("composer_state_insecure")
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -100,7 +123,7 @@ class ComposerStore:
             self.path.lstat()
         except FileNotFoundError:
             return ComposerState()
-        return _decode(config._read_private_json(self.path, MAX_FILE))
+        return _decode(config.read_private_json(self.path, MAX_COMPOSER_FILE_BYTES))
 
     def load(self) -> ComposerState:
         try:
@@ -121,7 +144,7 @@ class ComposerStore:
             data["history"] = list(state.history)
             _decode(data)
             payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
-            if len(payload) > MAX_FILE:
+            if len(payload) > MAX_COMPOSER_FILE_BYTES:
                 raise ComposerError("composer_state_too_large")
             fd, name = tempfile.mkstemp(prefix=".composer-", dir=self.root)
             path = Path(name)

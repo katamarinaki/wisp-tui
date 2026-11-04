@@ -295,16 +295,20 @@ not a release criterion.
 
 ## Maintenance alongside the MVP
 
-- Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **524 passing tests**, strict mypy passing.
+- Keep `.venv/bin/python -m pytest tests/`, `.venv/bin/python -m mypy` and
+  `ruff check` / `ruff format --check` green.
+  Current baseline: **523 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
-- [x] Local Git repository (`main` baseline, work on branches). No remote yet.
+- [x] Local Git repository (`main` baseline, work on branches).
 - [x] Reproducible installs: exact pins in `requirements*.txt` with wheel
       hashes and no source builds, Textual held to 8.2.x, drift/hash test,
       documented upgrade checklist (`MAINTAINING.md`).
 - [x] `scripts/install` (venv, hash-checked wheels, launcher link; repairs a
       pip-less venv) and `wi setup` (hidden token prompt, verifies against the
       runtime before writing an owner-only config; never overwrites).
+- [x] ruff lint + format (config in `pyproject.toml`, enforced in CI), a repo
+      pre-commit hook (`.githooks/pre-commit`: ruff + mypy), and `app.py`
+      split into layered modules with the CSS in `app.tcss`.
 - [x] Public remote `katamarinaki/wisp-tui`; CI runs pytest + strict mypy on
       GitHub-hosted runners (`main`, `develop`, PRs). Work lands on `develop`.
 - [x] `wi update` / `wisp-tui update`: fetch fresh `origin/main`, safely

@@ -4,21 +4,26 @@ A dropped stream is never proof of completion. Read the persisted run record
 before following/reconnecting, and poll parked records for current prompts.
 Callbacks are marshalled to the UI by the caller; this module has no widgets.
 """
+
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from threading import Event
-from typing import Any, Callable
+from typing import Any
 
-from .client import ClientError, PROMPT_ID, TERMINAL_RUN_STATUSES, UUID, WispClient
+from .client import PROMPT_ID, TERMINAL_RUN_STATUSES, UUID, ClientError, WispClient
 
 LIVE_STATUSES = ("queued", "running", "parked")
 
 
 def validate_run(payload: Any, run_id: str, session_id: str) -> dict[str, Any]:
-    if (not isinstance(payload, dict) or payload.get("runId") != run_id
-            or payload.get("sessionId") != session_id
-            or payload.get("status") not in LIVE_STATUSES + TERMINAL_RUN_STATUSES):
+    if (
+        not isinstance(payload, dict)
+        or payload.get("runId") != run_id
+        or payload.get("sessionId") != session_id
+        or payload.get("status") not in LIVE_STATUSES + TERMINAL_RUN_STATUSES
+    ):
         raise ClientError("invalid_run_record")
     if payload["status"] == "parked":
         prompts = payload.get("confirmations", [])
@@ -26,10 +31,13 @@ def validate_run(payload: Any, run_id: str, session_id: str) -> dict[str, Any]:
             raise ClientError("invalid_confirmations")
         seen: set[str] = set()
         for prompt in prompts:
-            if (not isinstance(prompt, dict) or not isinstance(prompt.get("id"), str)
-                    or re.fullmatch(PROMPT_ID, prompt["id"]) is None
-                    or not isinstance(prompt.get("toolName"), str)
-                    or prompt["id"] in seen):
+            if (
+                not isinstance(prompt, dict)
+                or not isinstance(prompt.get("id"), str)
+                or re.fullmatch(PROMPT_ID, prompt["id"]) is None
+                or not isinstance(prompt.get("toolName"), str)
+                or prompt["id"] in seen
+            ):
                 raise ClientError("invalid_confirmations")
             seen.add(prompt["id"])
     return payload
@@ -43,23 +51,25 @@ def find_active_run(payload: Any, session_id: str) -> str:
     """
     if not isinstance(payload, dict) or not isinstance(payload.get("runs"), list):
         raise ClientError("invalid_runs_response")
-    running: list[str] = []
+    executing: list[str] = []
     queued: list[str] = []
     for record in payload["runs"]:
         run_id = record.get("runId") if isinstance(record, dict) else None
         if not isinstance(run_id, str) or re.fullmatch(UUID, run_id) is None:
             raise ClientError("invalid_run_reference")
-        validated = validate_run(record, run_id, session_id)
-        if validated["status"] in ("running", "parked"):
-            running.append(run_id)
-        elif validated["status"] == "queued":
+        status = validate_run(record, run_id, session_id)["status"]
+        if status in ("running", "parked"):
+            executing.append(run_id)
+        elif status == "queued":
             queued.append(run_id)
-    if len(running) > 1:
+    if len(executing) > 1:
         raise ClientError("ambiguous_active_runs")
     # Never enable input on the assumption that an incomplete listing is empty.
     if payload.get("nextCursor") is not None:
         raise ClientError("incomplete_runs_response")
-    return running[0] if running else queued[-1] if queued else ""
+    if executing:
+        return executing[0]
+    return queued[-1] if queued else ""
 
 
 class RunFollower:
@@ -78,11 +88,18 @@ class RunFollower:
     RETRY_INTERVAL = 1.0
     MAX_FAILURES = 5
 
-    def __init__(self, client: WispClient, run_id: str, session_id: str,
-                 event_timeout: float, last_seq: int | None,
-                 on_event: Callable[[dict[str, Any]], None],
-                 on_snapshot: Callable[[dict[str, Any]], None],
-                 on_error: Callable[[str], None]) -> None:
+    def __init__(
+        self,
+        client: WispClient,
+        run_id: str,
+        session_id: str,
+        *,
+        event_timeout: float,
+        last_seq: int | None,
+        on_event: Callable[[dict[str, Any]], None],
+        on_snapshot: Callable[[dict[str, Any]], None],
+        on_error: Callable[[str], None],
+    ) -> None:
         self.client = client
         self.run_id = run_id
         self.session_id = session_id
@@ -109,7 +126,9 @@ class RunFollower:
             try:
                 snapshot = validate_run(
                     self.client.request("GET", f"/v1/runs/{self.run_id}", timeout=5.0),
-                    self.run_id, self.session_id)
+                    self.run_id,
+                    self.session_id,
+                )
                 if self.stopped.is_set():
                     return
                 self.on_snapshot(snapshot)

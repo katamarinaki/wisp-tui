@@ -1,4 +1,5 @@
 """Literal, bounded, collapsible tool details. Display never executes a tool."""
+
 from __future__ import annotations
 
 import math
@@ -32,15 +33,19 @@ class ToolCallView(Collapsible):
         self.result_notice = ""
         self.completed = completed
         self.historical = historical
-        self.terminal_summary = False
+        self.is_run_summary = False
         self.unreported = False
         self._ok: bool | None = None
         self._duration_ms: float | None = None
         self._details = Static("", markup=False, classes="tool-details")
         self._tail = Static("", markup=False, classes="tool-tail")
         self._stats = Static("", markup=False, classes="tool-stats")
-        super().__init__(VerticalScroll(self._details, classes="tool-detail-scroll"),
-                         title="tool", collapsed=True, classes="tool-call")
+        super().__init__(
+            VerticalScroll(self._details, classes="tool-detail-scroll"),
+            title="tool",
+            collapsed=True,
+            classes="tool-call",
+        )
         self.update_event(event, completed=completed)
 
     def compose(self) -> ComposeResult:
@@ -66,9 +71,17 @@ class ToolCallView(Collapsible):
         if isinstance(ok, bool):
             self._ok = ok
         duration = event.get("durationMs")
-        if (isinstance(duration, (int, float)) and not isinstance(duration, bool)
-                and 0 <= duration <= 1e15 and math.isfinite(duration)):
+        if (
+            isinstance(duration, (int, float))
+            and not isinstance(duration, bool)
+            and 0 <= duration <= 1e15
+            and math.isfinite(duration)
+        ):
             self._duration_ms = float(duration)
+        self.refresh_entry()
+
+    def refresh_entry(self) -> None:
+        """Re-render status, title, colors and details from the current fields."""
         status = "running…"
         if self.completed:
             status = "ok" if self._ok is True else "failed" if self._ok is False else "finished"
@@ -79,18 +92,27 @@ class ToolCallView(Collapsible):
         parts = [self.tool_name, status]
         if self._duration_ms is not None:
             parts.append(f"{self._duration_ms / 1000:.1f}s")
-        if self.terminal_summary:
+        if self.is_run_summary:
             parts.append("run summary")
         self.status_text = " · ".join(parts)
         self._stats.update(self.status_text)
-        self.title = (self.summary if self.summary.startswith("$ ")
-                      else f"{self.tool_name} {self.summary}".rstrip())
+        self.title = (
+            self.summary
+            if self.summary.startswith("$ ")
+            else f"{self.tool_name} {self.summary}".rstrip()
+        )
         self.set_class(self._ok is True, "-ok")
         self.set_class(self._ok is False, "-failed")
         self._render_details()
 
-    def apply_history(self, input_text: str | None = None, output_text: str | None = None,
-                      status: str = "", pruned: bool = False, summary: str = "") -> None:
+    def apply_history(
+        self,
+        input_text: str | None = None,
+        output_text: str | None = None,
+        status: str = "",
+        pruned: bool = False,
+        summary: str = "",
+    ) -> None:
         if self.input_text is None and input_text is not None:
             self.input_text = input_text
             self.input_label = "Input (history/model request)"
@@ -102,12 +124,12 @@ class ToolCallView(Collapsible):
             self.history_status = status if status in ("success", "error") else ""
             if self._ok is None and status in ("success", "error"):
                 self._ok = status == "success"
-        self.update_event({}, completed=self.completed)
+        self.refresh_entry()
 
     def mark_unreported(self) -> None:
         """The run ended without a completion event for this entry."""
         self.unreported = True
-        self.update_event({}, completed=False)
+        self.refresh_entry()
 
     def set_result_notice(self, notice: str) -> None:
         self.result_notice = notice
@@ -121,12 +143,19 @@ class ToolCallView(Collapsible):
                 tail.insert(0, f"… ({len(lines) - TAIL_LINES} earlier lines, expand for all)")
             self._tail.update("\n".join(tail))
         self.set_class(self.output_text is not None, "-has-tail")
-        output = self.output_text
-        if output is None:
-            output = self.result_notice or (
-                "No result stored in this checkpoint." if self.historical else
-                "Expand to load the stored result." if self.call_id else
-                "No tool-call ID; cannot match a stored result. Reopen the session to inspect history.")
+        if self.output_text is not None:
+            output = self.output_text
+        elif self.result_notice:
+            output = self.result_notice
+        elif self.historical:
+            output = "No result stored in this checkpoint."
+        elif self.call_id:
+            output = "Expand to load the stored result."
+        else:
+            output = (
+                "No tool-call ID; cannot match a stored result. "
+                "Reopen the session to inspect history."
+            )
         history_status = f"\nHistory status: {self.history_status}" if self.history_status else ""
         if self.input_text is not None:
             input_part = f"{self.input_label}\n{self.input_text}"

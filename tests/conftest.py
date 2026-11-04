@@ -1,4 +1,5 @@
 """Suite-wide isolation: no test may touch the owner's real state directory."""
+
 from __future__ import annotations
 
 from pathlib import Path

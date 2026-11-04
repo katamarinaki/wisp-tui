@@ -1,18 +1,20 @@
 """Shared test helpers: a fake opener and fake client for the app tests."""
+
 from __future__ import annotations
 
 import io
 import json
+import urllib.request
 from collections import deque
+from collections.abc import Callable, Iterator
 from threading import Event
-from typing import Any, Callable, Iterator
+from typing import Any, cast
 
 from wisp_tui.client import WispClient
 
 
 class RecordedRequest:
-    def __init__(self, method: str, path: str, body: bytes | None,
-                 headers: dict[str, str]) -> None:
+    def __init__(self, method: str, path: str, body: bytes | None, headers: dict[str, str]) -> None:
         self.method = method
         self.path = path
         self.body = body
@@ -28,9 +30,11 @@ class FakeOpener:
 
     def open(self, request: Any, timeout: float = 10.0) -> Any:
         body = request.data if hasattr(request, "data") else None
-        self.requests.append(RecordedRequest(
-            request.get_method(), request.full_url,
-            body, dict(request.header_items())))
+        self.requests.append(
+            RecordedRequest(
+                request.get_method(), request.full_url, body, dict(request.header_items())
+            )
+        )
         if not self.responses:
             raise AssertionError("no canned response for " + request.full_url)
         response = self.responses.pop(0)
@@ -39,7 +43,7 @@ class FakeOpener:
         return response
 
 
-def sse_response(events: list[dict[str, Any]]) -> "FakeSSEResponse":
+def sse_response(events: list[dict[str, Any]]) -> FakeSSEResponse:
     return FakeSSEResponse(events)
 
 
@@ -60,7 +64,7 @@ class FakeSSEResponse:
     def readline(self, limit: int = -1) -> bytes:
         return self._body.readline(limit)
 
-    def __enter__(self) -> "FakeSSEResponse":
+    def __enter__(self) -> FakeSSEResponse:
         return self
 
     def __exit__(self, *_args: object) -> None:
@@ -80,7 +84,7 @@ class FakeJsonResponse:
         raw = json.dumps(self._payload).encode()
         return raw if limit < 0 else raw[:limit]
 
-    def __enter__(self) -> "FakeJsonResponse":
+    def __enter__(self) -> FakeJsonResponse:
         return self
 
     def __exit__(self, *_args: object) -> None:
@@ -91,10 +95,10 @@ class FakeJsonResponse:
 
 
 def make_client(opener: FakeOpener) -> WispClient:
-    import urllib.request
-    from typing import cast
-    return WispClient("http://127.0.0.1:3008", "t" * 43,
-                      opener=cast(urllib.request.OpenerDirector, opener))
+
+    return WispClient(
+        "http://127.0.0.1:3008", "t" * 43, opener=cast(urllib.request.OpenerDirector, opener)
+    )
 
 
 SID = "3bf1ba87-760e-4c0c-8a9d-a88a581d6bc5"
@@ -113,7 +117,8 @@ class RequestGate:
     def __call__(self, method: str, path: str) -> None:
         if (method, path) == (self.method, self.path):
             self.entered.set()
-            if not self.release.wait(10.0):
+            # Hang guard only; a slow but correct run must never hit it.
+            if not self.release.wait(120.0):
                 raise AssertionError("scripted request was not released")
 
 
@@ -132,8 +137,9 @@ class ScriptedClient(WispClient):
         self.event_requests: list[int | None] = []
         self.event_batches: deque[list[dict[str, Any]] | Exception] = deque()
 
-    def request(self, method: str, path: str, body: dict[str, Any] | None = None,
-                timeout: float = 10.0) -> Any:
+    def request(
+        self, method: str, path: str, body: dict[str, Any] | None = None, timeout: float = 10.0
+    ) -> Any:
         self.calls.append((method, path, body))
         if self.request_hook is not None:
             self.request_hook(method, path)
@@ -148,18 +154,35 @@ class ScriptedClient(WispClient):
         if (method, path) == ("GET", "/v1/sessions"):
             return []
         if (method, path) == ("GET", f"/v1/sessions/{SID}"):
-            return {"id": SID, "title": "test chat", "origin": "cli",
-                    "effectiveSelection": {"mode": "balanced", "thinking": False}}
+            return {
+                "id": SID,
+                "title": "test chat",
+                "origin": "cli",
+                "effectiveSelection": {"mode": "balanced", "thinking": False},
+            }
         if (method, path) == ("GET", f"/v1/sessions/{SID}/history"):
-            return [{"values": {"messages": [
-                {"type": "human", "content": "past question"},
-                {"type": "ai", "content": "past answer"},
-            ]}}]
-        if (method, path) == ("GET", f"/v1/runs?sessionId={SID}&status=queued,running,parked&limit=200"):
+            return [
+                {
+                    "values": {
+                        "messages": [
+                            {"type": "human", "content": "past question"},
+                            {"type": "ai", "content": "past answer"},
+                        ]
+                    }
+                }
+            ]
+        if (method, path) == (
+            "GET",
+            f"/v1/runs?sessionId={SID}&status=queued,running,parked&limit=200",
+        ):
             return {"runs": [], "nextCursor": None}
         if (method, path) == ("GET", f"/v1/runs/{RID}"):
-            return {"runId": RID, "sessionId": SID, "status": self.run_status,
-                    "confirmations": self.pending_confirmations()}
+            return {
+                "runId": RID,
+                "sessionId": SID,
+                "status": self.run_status,
+                "confirmations": self.pending_confirmations(),
+            }
         if (method, path) == ("POST", f"/v1/sessions/{SID}/runs"):
             return {"runId": RID, "status": "queued"}
         if (method, path) == ("POST", "/v1/sessions"):
@@ -174,12 +197,16 @@ class ScriptedClient(WispClient):
         raise AssertionError(f"unexpected request {method} {path}")
 
     def pending_confirmations(self) -> list[dict[str, Any]]:
-        return [event for event in self.events
-                if event.get("kind") == "confirmation.required"
-                and event.get("id") not in self.answered_prompts]
+        return [
+            event
+            for event in self.events
+            if event.get("kind") == "confirmation.required"
+            and event.get("id") not in self.answered_prompts
+        ]
 
-    def iter_events(self, run_id: str, last_seq: int | None = None,
-                    read_timeout: float = 600.0) -> Iterator[dict[str, Any]]:
+    def iter_events(
+        self, run_id: str, last_seq: int | None = None, read_timeout: float = 600.0
+    ) -> Iterator[dict[str, Any]]:
         if run_id != RID:
             raise AssertionError(f"unexpected run {run_id}")
         self.event_requests.append(last_seq)
@@ -187,12 +214,16 @@ class ScriptedClient(WispClient):
         if isinstance(events, Exception):
             raise events
         for event in events:
-            if last_seq is not None and isinstance(event.get("seq"), int) \
-                    and event["seq"] <= last_seq:
+            if (
+                last_seq is not None
+                and isinstance(event.get("seq"), int)
+                and event["seq"] <= last_seq
+            ):
                 continue
-            if event.get("kind") == "confirmation.required" and self.pending_confirmations():
+            kind = event.get("kind")
+            waiting = self.pending_confirmations()
+            if (kind == "confirmation.required" and waiting) or (
+                kind == "run.parked" and (waiting or not self.answered_prompts)
+            ):
                 self.run_status = "parked"
-            elif event.get("kind") == "run.parked":
-                if self.pending_confirmations() or not self.answered_prompts:
-                    self.run_status = "parked"
             yield event
