@@ -108,11 +108,13 @@ def test_inline_terminal_keeps_default_background(width: int) -> None:
     assert b"thinking: on" in capture
     assert b"context: unavailable" not in capture
     assert "↑3".encode() in capture
-    assert b"client:" in capture
+    assert b"~/example" in capture, "launch directory missing from the footer"
+    assert "▔".encode() not in capture and "▁".encode() not in capture, \
+        "inline screen drew its tall top/bottom border"
     borders = re.findall(rb"\x1b\[([0-9;:]*)m(?:" + "─".encode() + rb"){10,}", capture)
     assert any(b"94" in codes.split(b";") for codes in borders), \
         "input rules did not use bright blue"
-    footer_styles = re.findall(rb"\x1b\[([0-9;:]*)m(?:client:|last run )", capture)
+    footer_styles = re.findall(rb"\x1b\[([0-9;:]*)m(?:~/example|last run )", capture)
     assert footer_styles and all(b"2" not in codes.split(b";") for codes in footer_styles), \
         "footer text was dimmed"
     assert b"Wisp asks for approval" in capture

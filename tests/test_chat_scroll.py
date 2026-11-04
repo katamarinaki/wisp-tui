@@ -77,8 +77,12 @@ async def test_chat_navigation_pauses_and_click_or_end_resumes(
         await pilot.pause()
         chat.focus()
         await pilot.press(key)
-        await pilot.pause()
+        # CPU idleness can occur between scroll animation frames. Record the
+        # reading position only after navigation has reached its destination.
+        await pilot.wait_for_scheduled_animations()
         assert not bool(chat.following) and chat.scroll_y < chat.max_scroll_y
+        if key == "home":
+            assert chat.scroll_y == 0
         position = chat.scroll_y
         app._sysline("A new status message")
         await pilot.pause()

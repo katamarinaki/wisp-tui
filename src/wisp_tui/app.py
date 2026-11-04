@@ -47,7 +47,6 @@ UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 # A session ID or a prefix of one (as shown in pickers), for --resume / /resume.
 RESUME_QUERY_RE = re.compile(r"[0-9a-f][0-9a-f-]{3,35}")
 
-HINTS = "Enter send · Ctrl+J newline · F1 help · F2 sessions · F3 model · Ctrl+C cancel/exit"
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 HELP_TEXT = """**wisp-tui** — chat with the local Wisp runtime.
@@ -408,6 +407,9 @@ class WispTuiApp(App[None]):
     CSS = """
     App { background: ansi_default; }
     Screen { background: transparent; color: ansi_default; }
+    /* Textual's inline Screen draws tall top/bottom borders with ▔/▁ in the
+       default foreground: a bright line above and below the app. */
+    Screen:inline { border-top: none; border-bottom: none; }
     ApprovalModal, SessionPicker, ModelPicker { background: transparent; }
     #chat { padding: 0; scrollbar-size: 0 0; }
     #chat > Static { margin: 0 1 1 1; }
@@ -486,17 +488,17 @@ class WispTuiApp(App[None]):
         border-bottom: solid ansi_bright_blue;
         border-left: none;
         border-right: none;
+        border-title-align: left;
         background: transparent;
         color: ansi_default;
         padding: 0;
     }
     #input:focus { background-tint: transparent; }
-    #activity { display: none; }
     #resume-follow {
         display: none; height: 1; background: transparent; color: ansi_default;
         text-style: underline;
     }
-    #activity, #status, #session-info, #thinking-info, #usage-info, #location, #session-id {
+    #status, #session-info, #thinking-info, #usage-info, #location, #session-id {
         height: 1;
         background: transparent;
         color: ansi_default;
@@ -511,7 +513,7 @@ class WispTuiApp(App[None]):
     #session-info, #usage-info { width: 1fr; height: auto; max-height: 2; }
     #session-info { text-align: right; }
     #usage-info { color: ansi_bright_cyan; }
-    #status { height: auto; max-height: 2; }
+    #status { height: auto; max-height: 2; display: none; }
     #bottom.narrow #summary { layout: vertical; }
     #bottom.narrow #session-info { text-align: left; }
     #approval-dialog {
@@ -629,7 +631,7 @@ class WispTuiApp(App[None]):
         self._trim_marker: Static | None = None
         self._status_state = "connecting…"
         self._activity_frame = 0
-        self._activity_indicator = Static("", id="activity", markup=False)
+        self._prompt_input = PromptInput()
         self._activity_timer: Timer | None = None
         self._cancel_requested = False
         self._last_ctrl_c = -10.0
@@ -640,8 +642,7 @@ class WispTuiApp(App[None]):
         yield ChatScroll(id="chat")
         with Container(id="bottom"):
             yield ResumeFollow()
-            yield self._activity_indicator
-            yield PromptInput()
+            yield self._prompt_input
             with Horizontal(id="location-row"):
                 yield Static("", id="location", markup=False)
                 yield Static("", id="session-id", markup=False)
@@ -714,11 +715,10 @@ class WispTuiApp(App[None]):
         self._status_state = _safe_text(text, 200)
         self._render_status()
 
-    def _render_status(self, width: int | None = None) -> None:
-        width = self.size.width if width is None else width
-        hints = HINTS if width >= 80 else "Enter send · Ctrl+J ↵ · F1 help"
-        line = f"{self._status_state} · {hints}" if self._status_state else hints
-        self.query_one("#status", Static).update(_safe_text(line, 250))
+    def _render_status(self) -> None:
+        status = self.query_one("#status", Static)
+        status.update(self._status_state)
+        status.display = bool(self._status_state)
         self._render_activity()
 
     def on_resize(self, event: events.Resize) -> None:
@@ -726,7 +726,6 @@ class WispTuiApp(App[None]):
         # dimensions happen to match the previous ones.
         self._inline_renderer.invalidate()
         self.query_one("#bottom").set_class(event.size.width < 80, "narrow")
-        self._render_status(event.size.width)
 
     def _display(self, screen: Screen[Any], renderable: RenderableType | None) -> None:
         if isinstance(renderable, InlineUpdate):
@@ -734,16 +733,15 @@ class WispTuiApp(App[None]):
         super()._display(screen, renderable)
 
     def _render_activity(self) -> None:
-        indicator = self._activity_indicator
+        editor = self._prompt_input
         # A queued tick may arrive after the screen's children are unmounted.
-        if not indicator.is_attached:
+        if not editor.is_attached:
             if self._activity_timer is not None:
                 self._activity_timer.pause()
             return
         busy = self._submitting or self.active_run is not None
-        indicator.display = busy
         if not busy:
-            indicator.update("")
+            editor.border_title = ""
             self._activity_frame = 0
             if self._activity_timer is not None:
                 self._activity_timer.pause()
@@ -755,7 +753,7 @@ class WispTuiApp(App[None]):
             label = "Cancelling"
         elif self._approval_modal is not None or self._status_state.startswith("run parked"):
             label = "Waiting for approval"
-        indicator.update(f"{SPINNER_FRAMES[self._activity_frame]} {label}")
+        editor.border_title = f" {SPINNER_FRAMES[self._activity_frame]} {label} "
         if self._activity_timer is not None:
             self._activity_timer.resume()
 
@@ -777,7 +775,7 @@ class WispTuiApp(App[None]):
     def _render_metadata(self) -> None:
         session = self.session_id[:8] if self.session_id else "new"
         self.query_one("#location", Static).update(
-            f"client: {_metadata_text(self._launch_dir, 1000)}")
+            _metadata_text(self._launch_dir, 1000))
         self.query_one("#session-id", Static).update(f" · session {session}")
         mode = _metadata_text(self._selection.get("mode"))
         model = _metadata_text(self._selection.get("model"))

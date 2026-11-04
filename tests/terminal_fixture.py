@@ -16,6 +16,8 @@ from wisp_tui.submissions import SubmissionStore
 
 class TerminalFixture(WispTuiApp):
     def on_mount(self) -> None:
+        # A fixed short path keeps footer assertions independent of the checkout.
+        self._launch_dir = "~/example"
         super().on_mount()
         self.set_timer(0.1, self.show_transcript)
         self.set_timer(0.3, self.finish_work)

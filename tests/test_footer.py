@@ -33,7 +33,7 @@ async def test_fresh_footer_and_full_status_explain_unavailable_data(
         assert not app.query_one("#thinking-info").display
         assert footer(app, "usage-info") == ""
         assert not app.query_one("#usage-info").display
-        assert footer(app, "location") == f"client: {launch}"
+        assert footer(app, "location") == str(launch)
         # A later chdir must not relabel the original launch directory.
         monkeypatch.chdir(tmp_path)
         app._status("submitting…")
@@ -79,8 +79,7 @@ async def test_selection_stays_visible_through_run_status_changes(
         assert footer(app, "usage-info") == "last run ↑3 ↓4"
         assert app.session_id == SID and app.active_run is None
         assert app._status_state == ""
-        assert footer(app, "status") == (
-            "Enter send · Ctrl+J newline · F1 help · F2 sessions · F3 model · Ctrl+C cancel/exit")
+        assert not app.query_one("#status").display
 
 
 async def test_follow_up_uses_same_session_and_updates_last_run_not_context(
@@ -255,14 +254,12 @@ async def test_footer_contrast_and_summary_reflow(
                 assert usage.region.y == selection.region.y
                 assert usage.region.right <= selection.region.x
                 assert selection.styles.text_align == "right"
-                assert app.query_one("#bottom").region.height == 6
-                assert "F3 model" in footer(app, "status")
+                assert app.query_one("#bottom").region.height == 5
             else:
                 assert usage.region.bottom == selection.region.y
                 assert selection.styles.text_align == "left"
-                assert app.query_one("#bottom").region.height == 7
-                assert footer(app, "status") == "Enter send · Ctrl+J ↵ · F1 help"
-            assert status.region.height == 1
+                assert app.query_one("#bottom").region.height == 6
+            assert not status.display
 
 
 @pytest.mark.parametrize("width", [40, 80, 100])
@@ -295,7 +292,6 @@ async def test_session_and_thinking_stay_visible_with_long_metadata(
                 assert session.region.right == setting.region.right == width - 1
                 assert session.region.height == setting.region.height == 1
                 assert session.region.bottom <= model.region.y
-                assert setting.region.bottom <= app.query_one("#status").region.y
                 assert app.query_one("#bottom").region.bottom == 24
-                if path.startswith("/example/") or width == 40:
+                if path.startswith("/example/"):
                     assert "…" in location.render_line(0).text
