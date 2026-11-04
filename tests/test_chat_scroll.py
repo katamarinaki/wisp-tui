@@ -231,7 +231,9 @@ async def test_tools_inserted_above_the_answer_preserve_reading_position(
         assert app._stream_view is not None
         answer = app._stream_view.widget
         y = answer.region.y
-        tool = app._tool_event({"name": "new tool", "toolCallId": "new-call"}, completed=False)
+        # Run-summary entries are inserted above the answer.
+        tool = app._tool_event({"name": "new tool", "toolCallId": "new-call"}, completed=False,
+                               terminal=True)
         await eventually(lambda: chat._reading_position is None and not chat._pending_layout)
         await pilot.pause()
         assert not bool(chat.following) and answer.region.y == y

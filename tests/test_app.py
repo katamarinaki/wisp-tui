@@ -8,7 +8,7 @@ import pytest
 from wisp_tui.editor import PromptInput as Input
 
 from wisp_tui.app import ApprovalModal, WispTuiApp
-from tests.helpers import RID, SID, ScriptedClient
+from tests.helpers import RID, SID, RequestGate, ScriptedClient
 from wisp_tui.config import Config
 from wisp_tui.tool_view import ToolCallView
 
@@ -130,6 +130,55 @@ async def test_confirmation_flow_approves(monkeypatch: pytest.MonkeyPatch) -> No
         assert confirms, client.calls
         assert confirms[0][2] == {"decision": "approve", "wait": False}
         await eventually(lambda: "done" in chat_text(app))
+
+
+async def test_refused_rule_decision_offers_only_approve_or_deny(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    from collections import deque
+    from wisp_tui.client import ClientError
+    events = [
+        {"seq": 1, "kind": "confirmation.required", "id": "prompt-1",
+         "toolName": "restart_jellyfin", "args": {}},
+        {"seq": 2, "kind": "confirmation.required", "id": "prompt-2",
+         "toolName": "restart_navidrome", "args": {}},
+        {"seq": 3, "kind": "run.parked"},
+        {"seq": 4, "kind": "run.completed", "outcome": {
+            "runId": RID, "status": "completed", "output": {"text": "done"},
+            "toolCalls": [], "usage": {}, "artifacts": []}},
+    ]
+    app, client = make_app(events, monkeypatch)
+    client.replies[("POST", f"/v1/runs/{RID}/confirmations/prompt-1")] = deque(
+        [ClientError("runtime_http_403")])
+    gate = RequestGate("POST", f"/v1/runs/{RID}/confirmations/prompt-1")
+    client.request_hook = gate
+    async with app.run_test() as pilot:
+        await eventually(lambda: "ready" in text_of(app.query_one("#status")))
+        app.session_id = SID
+        app.query_one("#input", Input).value = "restart both"
+        await pilot.press("enter")
+        await approval_armed(app)
+        await pilot.press("p")
+        # The next prompt's dialog opens (still offering rules) before the 403.
+        await eventually(lambda: gate.entered.is_set() and isinstance(app.screen, ApprovalModal)
+                         and app.screen.allow_rules and app.screen.tool == "restart_navidrome")
+        gate.release.set()
+        await eventually(lambda: app._rule_decisions_refused)
+        await eventually(lambda: isinstance(app.screen, ApprovalModal)
+                         and not app.screen.allow_rules)
+        await approval_armed(app)
+        assert "allow" not in text_of(app.screen.query_one("#approval-hint"))
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("y")
+        await approval_armed(app)
+        assert isinstance(app.screen, ApprovalModal) and not app.screen.allow_rules
+        await pilot.press("y")
+        await eventually(lambda: app.active_run is None)
+        decisions = [(c[1].rsplit("/", 1)[1], c[2]["decision"]) for c in client.calls
+                     if "/confirmations/" in c[1] and c[2] is not None]
+        assert decisions[0] == ("prompt-1", "allow_project")
+        assert sorted(decisions[1:]) == [("prompt-1", "approve"), ("prompt-2", "approve")]
+        assert "may not create project/global rules" in chat_text(app)
 
 
 async def test_confirmation_flow_esc_denies(monkeypatch: pytest.MonkeyPatch) -> None:

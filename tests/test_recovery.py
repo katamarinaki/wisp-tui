@@ -49,8 +49,8 @@ async def test_reopen_reattaches_then_reconciles_current_terminal_state(
             assert not any(method == "POST" for method, _, _ in client.calls)
         finally:
             gate.release.set()
-        await eventually(lambda: app._status_state == "")
-        assert not bool(app.active_run)
+        await eventually(lambda: not app.active_run)
+        assert app._status_state == ""
         assert "finished while disconnected" in chat_text(app)
         assert not client.event_requests
 
@@ -195,7 +195,7 @@ async def test_stale_callbacks_cannot_modify_another_run(monkeypatch: pytest.Mon
         app._follow_event(old, {"seq": 1, "kind": "text.delta", "text": "stale text"})
         app._follow_snapshot(old, record("cancelled"))
         app._follow_error(old, "runtime_unreachable")
-        app._confirmation_sent(RID, "old-prompt", "runtime_timeout")
+        app._confirmation_sent(RID, "old-prompt", "approve", "runtime_timeout")
         assert app.active_run == SID
         assert "stale text" not in chat_text(app)
         assert "disconnected" not in app._status_state

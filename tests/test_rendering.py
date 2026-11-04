@@ -230,6 +230,28 @@ async def test_replacement_text_falls_back_to_full_update(
         assert [text for _, text in rendered_blocks(view.widget)] == ["Final answer."]
 
 
+@pytest.mark.parametrize("gap", ["A long first part. B more", "short"])
+async def test_gap_after_a_live_tool_keeps_server_text(
+        monkeypatch: pytest.MonkeyPatch, gap: str) -> None:
+    app, _ = make_app([], monkeypatch)
+    async with app.run_test() as pilot:
+        app.session_id = SID
+        app._turn_started(RID)
+        app._handle_event({"seq": 1, "kind": "text.delta", "text": "A long first part. "})
+        app._handle_event({"seq": 2, "kind": "tool_call.started", "toolCallId": "c1",
+                           "name": "read_file"})
+        app._handle_event({"seq": 3, "kind": "text.delta", "text": "B"})
+        app._handle_event({"seq": 4, "kind": "gap", "text": gap})
+        assert app._stream_view is not None
+        view = app._stream_view
+        # A continuation keeps segmenting; a replaced prefix shows the whole server text.
+        expected = "B more" if gap.startswith("A long first part. ") else gap
+        await eventually(lambda: view.rendered == expected)
+        await pilot.pause()
+        first, current = app.query("#chat > Markdown").results(Markdown)
+        assert first.source == "A long first part. " and current is view.widget
+
+
 async def test_clear_during_stream_continues_answer_in_fresh_widget(
         monkeypatch: pytest.MonkeyPatch) -> None:
     app, _ = make_app([], monkeypatch)

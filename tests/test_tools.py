@@ -286,7 +286,7 @@ async def test_replay_history_refresh_supplies_tool_outputs_without_a_second_loo
         assert all(card.output_text == "replay result" for card in app.query(ToolCallView))
 
 
-async def test_interleaved_tool_logs_stay_before_the_answer_and_update_by_call_id(
+async def test_interleaved_tool_logs_stay_in_order_and_update_by_call_id(
         monkeypatch: pytest.MonkeyPatch) -> None:
     app, client = make_app([], monkeypatch)
     client.replies[("GET", f"/v1/sessions/{SID}/history")] = deque([tool_history("call-1", "file contents")])
@@ -308,17 +308,20 @@ async def test_interleaved_tool_logs_stay_before_the_answer_and_update_by_call_i
         await pilot.pause()
         items = list(app.query_one("#chat").children)
         tool = app.query_one(ToolCallView)
-        answer = app.query_one("#chat > Markdown", Markdown)
+        before, answer = app.query("#chat > Markdown").results(Markdown)
         assert len(app.query(ToolCallView)) == 1
         assert tool.title == "tool read_file → ok 0.2s"
         assert tool.input_text == '{\n  "path": "/example/file"\n}'
         assert tool.output_text is None
         tool.collapsed = False
         await eventually(lambda: tool.output_text == "file contents")
-        assert answer.source == "I checked. The answer."
-        assert items.index(tool) < items.index(answer) == len(items) - 2
+        assert (before.source, answer.source) == ("I checked. ", "The answer.")
+        assert items.index(before) < items.index(tool) < items.index(answer) == len(items) - 2
         assert str(items[-1].render()) == "approval resolved"
         assert list(app._chat_items) == items
+        assert app.transcript() == [
+            ("assistant", "I checked. "), ("tool", "tool read_file → ok 0.2s"),
+            ("assistant", "The answer."), ("tool", "approval resolved")]
 
 
 @pytest.mark.parametrize("width", [40, 100])
@@ -448,10 +451,10 @@ async def test_unidentified_same_name_calls_are_never_merged_and_remain_bounded(
         for index in range(20):
             app._tool_event({"name": "same tool", "args": {"index": index}}, completed=True)
         await pilot.pause()
-        assert len(app.query(ToolCallView)) == 3
+        assert len(app.query(ToolCallView)) == 4
         assert len(app._chat_items) == 4
         assert not app._tool_calls
-        assert isinstance(list(app.query_one("#chat").children)[-1], Markdown)
+        assert not app.query("#chat > Markdown")
 
 
 @pytest.mark.parametrize("limit", [1, 4])
@@ -462,7 +465,9 @@ async def test_call_id_cache_drops_trimmed_widgets_even_with_only_a_stream_slot(
     async with app.run_test() as pilot:
         app._append_delta("answer")
         for index in range(20):
-            app._tool_event({"toolCallId": str(index), "name": "example"}, completed=False)
+            # Run-summary entries are inserted above the answer that is still shown.
+            app._tool_event({"toolCallId": str(index), "name": "example"}, completed=False,
+                            terminal=True)
         await pilot.pause()
         assert len(app._chat_items) == limit
         assert len(app._tool_calls) == limit - 1

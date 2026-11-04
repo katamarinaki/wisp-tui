@@ -261,11 +261,12 @@ class ApprovalModal(ModalScreen[str | None]):
     # key pressed for this long, so type-ahead or key repeat cannot answer it.
     ARM_DELAY = 0.5
 
-    def __init__(self, tool: str, args: Any, note: str = "") -> None:
+    def __init__(self, tool: str, args: Any, note: str = "", allow_rules: bool = True) -> None:
         super().__init__()
         self.tool = tool
         self.args = args
         self.note = note
+        self.allow_rules = allow_rules
         self.armed = False
         self._arm_timer: Timer | None = None
         args_text = _pretty_args(args, APPROVAL_ARGS_LIMIT + 1)
@@ -285,8 +286,8 @@ class ApprovalModal(ModalScreen[str | None]):
                 if self.note:
                     yield Static(self.note, id="approval-note", markup=False)
                 yield Static(self.args_text, id="approval-args", markup=False)
-            hint = ("↑↓/PgUp/PgDn scroll · y approve · n/Esc deny · "
-                    "p allow for project · g allow globally") if self.reviewable else (
+            rules = " · p allow for project · g allow globally" if self.allow_rules else ""
+            hint = f"↑↓/PgUp/PgDn scroll · y approve · n/Esc deny{rules}" if self.reviewable else (
                     "↑↓/PgUp/PgDn scroll · n/Esc deny (arguments too large to approve)")
             yield Static(hint, id="approval-hint", markup=False)
 
@@ -303,6 +304,8 @@ class ApprovalModal(ModalScreen[str | None]):
                 self._arm_timer.reset()
             return
         if decision != "deny" and not self.reviewable:
+            return
+        if decision in ("allow_project", "allow_global") and not self.allow_rules:
             return
         self.dismiss(decision)
 
@@ -467,9 +470,9 @@ class WispTuiApp(App[None]):
         background: transparent;
         background-tint: transparent;
         color: ansi_default;
-        text-style: none;
+        text-style: dim;
     }
-    #chat ToolCallView CollapsibleTitle:focus { text-style: underline; }
+    #chat ToolCallView CollapsibleTitle:focus { text-style: dim underline; }
     #chat .tool-detail-scroll {
         height: auto;
         max-height: 16;
@@ -477,7 +480,9 @@ class WispTuiApp(App[None]):
         background: transparent;
         scrollbar-size: 0 0;
     }
-    #chat .tool-details { height: auto; background: transparent; color: ansi_default; }
+    #chat .tool-details {
+        height: auto; background: transparent; color: ansi_default; text-style: dim;
+    }
     #bottom { dock: bottom; height: auto; padding: 0 1; }
     #input {
         height: auto;
@@ -613,10 +618,15 @@ class WispTuiApp(App[None]):
         self._approval_notes: dict[str, str] = {}
         self._approval_inflight: set[str] = set()
         self._answered_prompts: set[str] = set()
+        # The token's capabilities do not change while this process runs.
+        self._rule_decisions_refused = False
         self._follower: RunFollower | None = None
         self._disconnected = False
         self._cancel_after_submit = False
         self._delta_text = ""
+        # Offset in _delta_text where the current answer widget starts.
+        self._segment_start = 0
+        self._replay_noted = False
         self._stream_view: StreamView | None = None
         self._reattach_history: list[ChatMessage] | None = None
         self._history_refresh_token: object | None = None
@@ -880,12 +890,31 @@ class WispTuiApp(App[None]):
         self._tool_history_token = None
         self._tool_history_targets = ()
         self._tool_history_again = False
-        # A still-running answer continues in a fresh widget (full text so far).
+        # A still-running answer continues in a fresh widget (current segment so far).
         self._stream_view = None
         self._trim_marker = None
         self._trimmed_count = hidden
         if hidden:
             self._update_trim_marker()
+
+    def transcript(self) -> list[tuple[str, str]]:
+        """(kind, text) for each shown chat item; the inline area is not scrollback."""
+        items: list[tuple[str, str]] = []
+        if self._trim_marker is not None:
+            items.append(("system", str(self._trim_marker.content)))
+        streaming = self._stream_view
+        for widget in self._chat_items:
+            if isinstance(widget, Markdown):
+                text = (streaming.target if streaming is not None and streaming.widget is widget
+                        else widget.source)
+                items.append(("assistant", _terminal_text(text)))
+            elif isinstance(widget, ToolCallView):
+                items.append(("tool", str(widget.title)))
+            elif isinstance(widget, Static):
+                kind = next((cls for cls in ("user", "error", "tool") if widget.has_class(cls)),
+                            "system")
+                items.append((kind, str(widget.content)))
+        return items
 
     def _sysline(self, text: str, cls: str = "system") -> None:
         self._mount_chat(Static(_safe_text(text), classes=cls, markup=False))
@@ -909,7 +938,15 @@ class WispTuiApp(App[None]):
             if terminal:
                 view.terminal_summary = True
                 view.update_event({}, completed=completed)
-            before = self._stream_view.widget if self._stream_view is not None else None
+            before = None
+            if self._stream_view is not None:
+                if historical or terminal:
+                    before = self._stream_view.widget
+                else:
+                    # A live call ends this text segment; later text goes below it.
+                    self._stream_view.flush()
+                    self._stream_view = None
+                    self._segment_start = len(self._delta_text)
             self._mount_chat(view, before=before)
             if key and view in self._chat_items:
                 self._tool_calls[key] = view
@@ -1041,7 +1078,8 @@ class WispTuiApp(App[None]):
     def _show_stream_text(self, text: str) -> None:
         """Show ``text`` as the current answer (appending when it continues it)."""
         if self._stream_view is None:
-            if self._reattach_history is not None:
+            if self._reattach_history is not None and not self._replay_noted:
+                self._replay_noted = True
                 self._sysline("Current run replay — may overlap the saved checkpoint.", "tool")
             self._stream_view = self._begin_stream()
         self._stream_view.set_text(text)
@@ -1427,7 +1465,9 @@ class WispTuiApp(App[None]):
         self._delta_text = ""
         self._stream_view = None
         self._disconnected = False
-        self._status(f"run {run_id[:8]} …")
+        self._segment_start = 0
+        self._replay_noted = False
+        self._status("")
 
     # -- run event stream -----------------------------------------------------------
 
@@ -1476,7 +1516,7 @@ class WispTuiApp(App[None]):
             self._sync_confirmations(record.get("confirmations", []))
         else:
             self._sync_confirmations([])
-            self._status(f"run {follower.run_id[:8]} {status}")
+            self._status("")
         if self._cancel_requested:
             self._status("cancellation requested — awaiting runtime confirmation")
 
@@ -1500,8 +1540,12 @@ class WispTuiApp(App[None]):
             self._append_delta(str(event.get("text", "")))
         elif kind == "gap":
             text = event.get("text")
+            earlier = self._delta_text[:self._segment_start]
             self._delta_text = text if isinstance(text, str) else ""
-            self._show_stream_text(self._delta_text)
+            if not self._delta_text.startswith(earlier):
+                # Server text replaced what is shown above; show all of it.
+                self._segment_start = 0
+            self._show_stream_text(self._delta_text[self._segment_start:])
             if self._stream_view is not None:
                 self._stream_view.flush()
         elif kind == "tool_call.started":
@@ -1521,7 +1565,7 @@ class WispTuiApp(App[None]):
         elif kind == "audio.transcribed":
             self._sysline(f"transcribed: {_safe_text(event.get('text'), 120)}", "tool")
         elif kind in ("run.queued", "run.started", "run.resumed"):
-            self._status(f"run {self.active_run[:8] if self.active_run else ''} {str(kind).split('.')[1]}")
+            self._status("")
         elif kind == "run.parked":
             self._status("run parked — checking current approvals")
         elif kind in ("run.completed", "run.failed", "run.cancelled"):
@@ -1529,7 +1573,7 @@ class WispTuiApp(App[None]):
 
     def _append_delta(self, text: str) -> None:
         self._delta_text += text
-        self._show_stream_text(self._delta_text)
+        self._show_stream_text(self._delta_text[self._segment_start:])
 
     # -- confirmations ------------------------------------------------------------
 
@@ -1563,7 +1607,8 @@ class WispTuiApp(App[None]):
         run_id, prompt_id, tool, args = self.pending_prompts[0]
         if self.active_run != run_id:
             return
-        modal = ApprovalModal(tool, args, self._approval_notes.get(prompt_id, ""))
+        modal = ApprovalModal(tool, args, self._approval_notes.get(prompt_id, ""),
+                              allow_rules=not self._rule_decisions_refused)
         self._approval_modal = modal
         self._approval_prompt_id = prompt_id
         self.push_screen(modal, lambda decision: self._approval_answered(
@@ -1600,12 +1645,12 @@ class WispTuiApp(App[None]):
                 code = str(error)
             except Exception:
                 code = "internal_error"
-            self.call_from_thread(self._confirmation_sent, run_id, prompt_id, code)
+            self.call_from_thread(self._confirmation_sent, run_id, prompt_id, decision, code)
 
         self._run_threaded(work, group="confirm")
         self.call_after_refresh(self._open_next_approval)
 
-    def _confirmation_sent(self, run_id: str, prompt_id: str, code: str) -> None:
+    def _confirmation_sent(self, run_id: str, prompt_id: str, decision: str, code: str) -> None:
         if self.active_run != run_id:
             return
         self._approval_inflight.discard(prompt_id)
@@ -1616,6 +1661,12 @@ class WispTuiApp(App[None]):
             self._answered_prompts.add(prompt_id)
         elif code.startswith("runtime_http_404"):
             self._sysline("Approval already settled or unavailable; checking run status.", "tool")
+        elif code.startswith("runtime_http_403") and decision in ("allow_project", "allow_global"):
+            self._rule_decisions_refused = True
+            # A dialog opened meanwhile still offers rules; reopen it without them.
+            self._dismiss_approval()
+            self._sysline("The runtime token may not create project/global rules "
+                          f"({code}). Answer with approve or deny.", "error")
         else:
             self._sysline(f"approval error: {code}", "error")
         # Re-read current prompts even after a failed/ambiguous POST. Never
@@ -1647,8 +1698,13 @@ class WispTuiApp(App[None]):
             if has_final_text:
                 assert isinstance(output, dict)
                 text = output["text"]
-                if text or self._stream_view is not None:
-                    self._show_stream_text(text)
+                shown = text
+                # Text before the last tool call is already on screen above it.
+                earlier = self._delta_text[:self._segment_start]
+                if earlier and shown.startswith(earlier):
+                    shown = shown[len(earlier):]
+                if shown or self._stream_view is not None:
+                    self._show_stream_text(shown)
             answer = text if has_final_text else self._delta_text
             if answer:
                 self._record({"type": "message", "role": "assistant", "text": answer,
@@ -1752,6 +1808,7 @@ class WispTuiApp(App[None]):
             self.last_seq.pop(self.active_run, None)
         self.active_run = None
         self._delta_text = ""
+        self._segment_start = 0
         self._stream_view = None
         self._reattach_history = None
         self.pending_prompts.clear()

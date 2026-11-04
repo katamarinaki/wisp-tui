@@ -69,9 +69,10 @@ async def test_streaming_answer_is_never_dropped(monkeypatch: pytest.MonkeyPatch
         assert app._stream_view is not None
         view = app._stream_view
         assert view.widget.is_attached
-        await eventually(lambda: view.rendered == "streaming answer continues")
+        # Text after the tools continues in a new answer block below them.
+        await eventually(lambda: view.rendered == " continues")
         items = chat_items(app)
-        assert "streaming answer continues" in items
+        assert items[-1] == " continues"
         assert len(items) == LIMIT + 1
 
 
