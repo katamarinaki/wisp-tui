@@ -251,6 +251,16 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       default background, inline mode and terminal settings on exit. Live SSH
       responsiveness and shell behavior still require acceptance below.
 
+- [x] First user-test feedback: keep the transcript chronological (text before
+      a live tool call stays above it; later text starts a new block below;
+      final text that repeats earlier blocks shows only the new part). Run-summary
+      entries still go above the answer. Dim tool entries. Drop `run … started`
+      status lines (the spinner shows activity). After a 403 on an allow-for-
+      project/global decision, explain it and offer only approve/deny for the
+      rest of the process instead of reopening the same refused choice. On exit,
+      clear the inline area and print the shown transcript (plain text, newest
+      60 items) so it stays in terminal scrollback. Live SSH check pending.
+
 **Exit criterion:** composing a real homeserver task and inspecting Wisp's work
 is comfortable over SSH. Keep the existing pickers and commands unless a
 specific usability problem requires a change.
@@ -277,7 +287,7 @@ not a release criterion.
 ## Maintenance alongside the MVP
 
 - Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **508 passing tests**, strict mypy passing.
+  Current baseline: **512 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
 - [x] Local Git repository (`main` baseline, work on branches). No remote yet.
 - [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held

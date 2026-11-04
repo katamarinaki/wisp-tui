@@ -23,7 +23,7 @@ def test_exit_hint_uses_launcher_name_and_only_an_existing_session(
     monkeypatch.setattr(cli, "WispClient", lambda *args: client)
 
     def run(app: WispTuiApp, *, inline: bool, inline_no_clear: bool) -> None:
-        assert inline and inline_no_clear
+        assert inline and not inline_no_clear
         assert not capsys.readouterr().out, "hint printed before terminal restoration"
         app.session_id = session_id
 
@@ -35,6 +35,16 @@ def test_exit_hint_uses_launcher_name_and_only_an_existing_session(
                           if session_id else "")
     assert output.err == ""
     assert client.calls == []
+
+
+def test_exit_transcript_is_printed_in_order_without_empty_items(
+        capsys: pytest.CaptureFixture[str]) -> None:
+    cli.print_transcript([("user", "check disk\nplease"), ("assistant", "\n\n"),
+                          ("assistant", "Let me look."), ("tool", "tool bash → ok 0.3s"),
+                          ("assistant", "Disk is **fine**.\n")])
+    assert capsys.readouterr().out == (
+        "› check disk\n› please\n\nLet me look.\n\ntool bash → ok 0.3s\n\n"
+        "Disk is **fine**.\n\n")
 
 
 @pytest.mark.parametrize("session_id", ["not-a-session", "bad\x1b[31m\ncommand"])

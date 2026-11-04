@@ -198,8 +198,9 @@ owner must merge this feature from `develop` to `main` for main installations.
   followed over SSE (`GET /v1/runs/{id}/events`): `text.delta` streaming,
   `tool_call` lines, `gap` recovery (server text wins), `Last-Event-ID` resume
   after timeouts and after answering a parked prompt.
-- **Expandable tool details:** tool entries stay above the active answer, even
-  when progress events arrive after text has started streaming. Click a title
+- **Expandable tool details:** tool entries appear in order with the text: text
+  streamed before a live tool call stays above it and later text continues
+  below it; run-summary entries go above the answer. Click a title
   to expand/collapse, or Tab to it and press Enter. Inputs and outputs are
   literal text, with no markup or command execution. The expanded body scrolls
   within 16 rows; each field shows up to 12,288 characters or 200 lines, followed

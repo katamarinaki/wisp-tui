@@ -6,6 +6,9 @@ import os
 import re
 import sys
 
+from rich.console import Console
+from rich.text import Text
+
 from . import __version__
 from .app import RESUME_QUERY_RE, Startup, WispTuiApp, UUID_RE
 from .client import WispClient, ClientError
@@ -16,6 +19,19 @@ def program_name() -> str:
     """The name the launcher was invoked as (e.g. a `wi` symlink)."""
     name = os.environ.get("WISP_TUI_PROG", "")
     return name if re.fullmatch(r"[A-Za-z0-9._-]{1,32}", name) else "wisp-tui"
+
+
+def print_transcript(items: list[tuple[str, str]]) -> None:
+    console = Console(highlight=False, soft_wrap=False)
+    styles = {"user": "bold", "error": "red", "tool": "dim", "system": "dim"}
+    for kind, text in items:
+        text = text.strip("\n")
+        if not text.strip():
+            continue
+        if kind == "user":
+            text = "\n".join("› " + line for line in text.splitlines())
+        console.print(Text(text, style=styles.get(kind, "")))
+        console.print()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -69,9 +85,10 @@ def main(argv: list[str] | None = None) -> int:
     else:
         startup = Startup()
     app = WispTuiApp(client, config, startup)
-    # Inline mode: no alternate screen — the chat stays in the terminal's
-    # scrollback after quitting, like Pi.
-    app.run(inline=True, inline_no_clear=True)
+    # Inline mode keeps only its visible rows on screen, so clear it on exit and
+    # print the transcript instead: the chat stays in scrollback, like Pi.
+    app.run(inline=True, inline_no_clear=False)
+    print_transcript(app.transcript())
     # Print only after Textual restores the terminal, using the final active
     # session (which may differ from the one requested at startup).
     if app.session_id and UUID_RE.fullmatch(app.session_id):
