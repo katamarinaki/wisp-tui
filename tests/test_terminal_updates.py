@@ -158,7 +158,8 @@ def test_geometry_changes_and_explicit_clear_use_textual_full_update(change: str
     console = Console(force_terminal=True, color_system="256", width=100)
     renderer = InlineRenderer()
     old = frame(["answer", "footer"], 40)
-    assert renderer.render(old, console, 40) == old.render_segments(console)
+    # Textual's full frame, minus its trailing cursor-position query.
+    assert renderer.render(old, console, 40) == old.render_segments(console)[: -len("\x1b[6n")]
     width = 100 if change == "width" else 40
     lines = ["answer", "footer", "new line"] if change == "height" else ["answer", "footer"]
     new = frame(lines, width)
@@ -166,7 +167,7 @@ def test_geometry_changes_and_explicit_clear_use_textual_full_update(change: str
         new = InlineUpdate(frame(["answer"], width).strips, clear=True)
     elif change == "invalidate":
         renderer.invalidate()
-    assert renderer.render(new, console, width) == new.render_segments(console)
+    assert renderer.render(new, console, width) == new.render_segments(console)[: -len("\x1b[6n")]
 
 
 def test_modal_overlay_and_dismissal_restore_the_underlying_rows() -> None:

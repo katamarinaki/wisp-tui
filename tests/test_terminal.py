@@ -107,7 +107,8 @@ def test_inline_terminal_keeps_default_background(width: int) -> None:
     capture = capture_terminal("tests.terminal_fixture", width)
     startup = capture.split(b"Show the server status", 1)[0]
     # The first frame now includes the welcome, so reserved rows aren't all blank.
-    first_frame = startup.split(b"\x1b[6n", 1)[0]
+    # A full frame ends by moving the cursor back up to the inline origin.
+    first_frame = re.split(rb"\x1b\[\d+A\r", startup, maxsplit=1)[0]
     assert first_frame.count(b"\n") >= 29, "startup did not reserve the terminal height"
     assert b"session new" not in startup
     assert b"model: runtime default" not in startup

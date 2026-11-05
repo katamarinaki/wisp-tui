@@ -46,7 +46,10 @@ class InlineRenderer:
         rows = tuple(strip.render(console) for strip in update.strips)
         previous = self._rows
         if update.clear or width != self._width or len(rows) != len(previous):
-            output = update.render_segments(console)
+            # Textual ends each frame with a cursor-position query. Its reply
+            # only offsets mouse events, and the app runs with mouse=False, so
+            # it would cost the terminal a round trip per frame for nothing.
+            output = update.render_segments(console).removesuffix("\x1b[6n")
         else:
             # App._display has moved from the input cursor to the inline origin.
             # Never use absolute screen coordinates or newlines: they can scroll
@@ -63,7 +66,7 @@ class InlineRenderer:
                 cursor_row = row
             if cursor_row:
                 parts.append(f"\x1b[{cursor_row}A")
-            parts.append("\r\x1b[6n")
+            parts.append("\r")
             output = "".join(parts)
         self._rows = rows
         self._width = width

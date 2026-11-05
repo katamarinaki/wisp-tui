@@ -314,7 +314,15 @@ class AppBase(App[None]):
         self._update_tab_status(tab_status)
         editor.border_title = f" {SPINNER_FRAMES[self._activity_frame]} {label} "
         if self._activity_timer is not None:
-            self._activity_timer.resume()
+            # Hold the frame while the terminal tab is in the background: ten
+            # repaints a second there only slow the terminal's other tabs.
+            if self.app_focus:
+                self._activity_timer.resume()
+            else:
+                self._activity_timer.pause()
+
+    def watch_app_focus(self) -> None:
+        self._render_activity()
 
     def _tick_activity(self) -> None:
         self._activity_frame = (self._activity_frame + 1) % len(SPINNER_FRAMES)

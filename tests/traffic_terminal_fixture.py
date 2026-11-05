@@ -6,6 +6,8 @@ import json
 import tempfile
 from pathlib import Path
 
+from rich.console import Console
+
 from tests.helpers import RID, SID, ScriptedClient
 from tests.test_app import eventually
 from wisp_tui.app import WispTuiApp
@@ -14,6 +16,7 @@ from wisp_tui.editor import PromptInput
 from wisp_tui.history import ChatMessage
 from wisp_tui.sessions import SessionStore
 from wisp_tui.submissions import SubmissionStore
+from wisp_tui.terminal import InlineUpdate
 
 
 class TrafficFixture(WispTuiApp):
@@ -32,11 +35,18 @@ class TrafficFixture(WispTuiApp):
         def record(data: str) -> None:
             if self.measuring:
                 self.bytes_sent += len(data.encode("utf-8"))
-                self.frames += data.count("\x1b[6n")
                 self.transcript_rewrites += data.count("Unchanged transcript")
             write(data)
 
         self._driver.write = record  # type: ignore[method-assign]
+        render = self._inline_renderer.render
+
+        def count_frame(update: InlineUpdate, console: Console, width: int) -> str:
+            if self.measuring:
+                self.frames += 1
+            return render(update, console, width)
+
+        self._inline_renderer.render = count_frame  # type: ignore[method-assign]
         self.session_id = SID
         self._add_message(
             ChatMessage(
