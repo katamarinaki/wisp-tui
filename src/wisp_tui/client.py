@@ -10,6 +10,7 @@ Security model (mirrors the ask-wisp proxy):
 - Response bodies are size-bounded; error diagnostics carry status codes and
   server-provided ``code`` fields only, never raw bodies, headers or the token.
 """
+
 from __future__ import annotations
 
 import json
@@ -18,10 +19,11 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Iterator, Protocol
+from collections.abc import Iterator
+from typing import Any, Protocol
 
-MAX_JSON = 8_388_608  # 8 MiB cap for JSON API responses
-MAX_EVENT = 1_048_576  # per SSE event
+MAX_JSON_BYTES = 8_388_608  # 8 MiB cap for JSON API responses
+MAX_EVENT_BYTES = 1_048_576  # per SSE event
 UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 PROMPT_ID = r"[A-Za-z0-9._:-]{1,128}"
 
@@ -52,15 +54,22 @@ def safe_code(value: object, fallback: str) -> str:
     return value if isinstance(value, str) and re.fullmatch(r"[a-z0-9_]{1,80}", value) else fallback
 
 
-def validate_url(value: object) -> str:
+def validate_runtime_url(value: object) -> str:
     if not isinstance(value, str):
         raise ClientError("invalid_runtime_url")
     try:
         parsed = urllib.parse.urlsplit(value)
-        if (parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "::1")
-                or parsed.username is not None or parsed.password is not None
-                or parsed.query or parsed.fragment or parsed.path not in ("", "/")
-                or not parsed.port or not 1 <= parsed.port <= 65535):
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname not in ("127.0.0.1", "::1")
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in ("", "/")
+            or not parsed.port
+            or not 1 <= parsed.port <= 65535
+        ):
             raise ClientError("runtime_must_be_explicit_loopback_http")
     except ValueError:
         raise ClientError("invalid_runtime_url") from None
@@ -73,7 +82,7 @@ def validate_token(value: object) -> str:
     return value
 
 
-def _parse_query(path: str) -> dict[str, str]:
+def _validate_runs_query(path: str) -> dict[str, str]:
     """Parse and validate a conservative query string for GET /v1/runs."""
     query = urllib.parse.urlsplit(path).query
     if not query:
@@ -100,15 +109,16 @@ def _route_permitted(method: str, path: str) -> bool:
         return False
     if base == "/v1/runs":
         try:
-            _parse_query(path)
+            _validate_runs_query(path)
         except ClientError:
             return False
     return True
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req: Any, fp: Any, code: int, msg: str,
-                         headers: Any, newurl: str) -> None:
+    def redirect_request(
+        self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
+    ) -> None:
         # Never forward the bearer credential to a different endpoint.
         return None
 
@@ -124,7 +134,7 @@ class _FakeResponse:
     def __iter__(self) -> Iterator[bytes]:
         return iter(self._lines)
 
-    def __enter__(self) -> "_FakeResponse":
+    def __enter__(self) -> _FakeResponse:
         return self
 
     def __exit__(self, *_args: object) -> None:
@@ -135,30 +145,35 @@ class _FakeResponse:
 
 
 class WispClient:
-    def __init__(self, url: str, token: str,
-                 opener: urllib.request.OpenerDirector | None = None) -> None:
-        self.url = validate_url(url)
+    def __init__(
+        self, url: str, token: str, opener: urllib.request.OpenerDirector | None = None
+    ) -> None:
+        self.url = validate_runtime_url(url)
         self.token = validate_token(token)
         self.opener = opener or urllib.request.build_opener(
-            urllib.request.ProxyHandler({}), _NoRedirect())
+            urllib.request.ProxyHandler({}), _NoRedirect()
+        )
 
     # -- plain JSON requests -------------------------------------------------
 
-    def request(self, method: str, path: str, body: dict[str, Any] | None = None,
-                timeout: float = 10.0) -> Any:
+    def request(
+        self, method: str, path: str, body: dict[str, Any] | None = None, timeout: float = 10.0
+    ) -> Any:
         if not _route_permitted(method, path):
             raise ClientError("route_not_permitted")
         payload = None if body is None else json.dumps(body, allow_nan=False).encode()
         request = urllib.request.Request(
-            self.url + path, data=payload, method=method,
-            headers={"Authorization": "Bearer " + self.token,
-                     "Content-Type": "application/json"})
+            self.url + path,
+            data=payload,
+            method=method,
+            headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"},
+        )
         try:
             with self.opener.open(request, timeout=timeout) as response:
                 if response.status == 204:
                     return {}
-                raw = response.read(MAX_JSON + 1)
-            if len(raw) > MAX_JSON:
+                raw = response.read(MAX_JSON_BYTES + 1)
+            if len(raw) > MAX_JSON_BYTES:
                 raise ClientError("runtime_response_too_large")
             return json.loads(raw)
         except urllib.error.HTTPError as error:
@@ -180,8 +195,9 @@ class WispClient:
 
     # -- SSE event stream ----------------------------------------------------
 
-    def iter_events(self, run_id: str, last_seq: int | None = None,
-                    read_timeout: float = 600.0) -> Iterator[dict[str, Any]]:
+    def iter_events(
+        self, run_id: str, last_seq: int | None = None, read_timeout: float = 600.0
+    ) -> Iterator[dict[str, Any]]:
         """Yield the Run's events as dicts until the stream ends.
 
         Raises ClientError("event_stream_timeout") on a read timeout; callers
@@ -193,8 +209,10 @@ class WispClient:
         if not _route_permitted("GET", path):
             raise ClientError("route_not_permitted")
         request = urllib.request.Request(
-            self.url + path, method="GET",
-            headers={"Authorization": "Bearer " + self.token, "Accept": "text/event-stream"})
+            self.url + path,
+            method="GET",
+            headers={"Authorization": "Bearer " + self.token, "Accept": "text/event-stream"},
+        )
         if last_seq is not None:
             if not isinstance(last_seq, int) or last_seq < 0:
                 raise ClientError("invalid_last_seq")
@@ -218,8 +236,8 @@ class _SSESource(Protocol):
 
 def _bounded_sse_lines(source: _SSESource) -> Iterator[bytes]:
     """Bound allocations even if the peer never terminates a line."""
-    while raw := source.readline(MAX_EVENT + 1):
-        if len(raw) > MAX_EVENT:
+    while raw := source.readline(MAX_EVENT_BYTES + 1):
+        if len(raw) > MAX_EVENT_BYTES:
             raise ClientError("event_too_large")
         yield raw
 
@@ -235,9 +253,13 @@ def parse_sse(lines: Iterator[bytes | str]) -> Iterator[dict[str, Any]]:
     frame_bytes = 0
     for raw in lines:
         frame_bytes += len(raw) if isinstance(raw, bytes) else len(raw.encode("utf-8"))
-        if frame_bytes > MAX_EVENT:
+        if frame_bytes > MAX_EVENT_BYTES:
             raise ClientError("event_too_large")
-        line = raw.decode("utf-8", "replace").rstrip("\r\n") if isinstance(raw, bytes) else raw.rstrip("\r\n")
+        line = (
+            raw.decode("utf-8", "replace").rstrip("\r\n")
+            if isinstance(raw, bytes)
+            else raw.rstrip("\r\n")
+        )
         if line == "":
             frame_bytes = 0
             if data_lines:

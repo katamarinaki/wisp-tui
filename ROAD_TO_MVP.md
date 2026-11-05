@@ -260,6 +260,15 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       rest of the process instead of reopening the same refused choice. On exit,
       clear the inline area and print the shown transcript (plain text, newest
       60 items) so it stays in terminal scrollback. Live SSH check pending.
+- [x] Pi-style tool entries: command line (`$ …` for a `command` argument,
+      else name + compact arguments), then the last 5 output lines, then a
+      `name · ok/failed · time` line. A left bar and the text turn cyan on
+      registry `ok`, red on failure (stored history `status` decides only when
+      no live `ok` was seen); no background fill. The stored result is
+      read automatically after each live completion (deferred so parallel
+      completions share one read; skipped while end-of-run reconciliation runs).
+      There is no exit code in the event contract, so a non-zero exit is red
+      only if Wisp reports it as `ok: false`. Live check pending.
 
 **Exit criterion:** composing a real homeserver task and inspecting Wisp's work
 is comfortable over SSH. Keep the existing pickers and commands unless a
@@ -279,24 +288,34 @@ smoke task with the owner; tests must never invoke inference or real services.
 - [ ] Resolve a parked approval through another client and verify TUI recovery.
 - [ ] Verify terminal scrollback, background, and shell restoration on exit.
 - [ ] Record runtime/Textual versions and results, not transcripts or private
-      config. Document remaining limitations in `README.md`.
+      config. Document remaining limitations in `MAINTAINING.md`.
 
 **MVP done:** this exact SSH workflow works reliably. Feature parity with Pi is
 not a release criterion.
 
 ## Maintenance alongside the MVP
 
-- Keep `.venv/bin/python -m pytest tests/` and `.venv/bin/python -m mypy` green.
-  Current baseline: **512 passing tests**, strict mypy passing.
+- Keep `.venv/bin/python -m pytest tests/`, `.venv/bin/python -m mypy` and
+  `ruff check` / `ruff format --check` green.
+  Current baseline: **523 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
-- [x] Local Git repository (`main` baseline, work on branches). No remote yet.
-- [x] Reproducible installs: exact pins in `requirements*.txt`, Textual held
-      to 8.2.x, drift test, documented upgrade checklist (README).
+- [x] Local Git repository (`main` baseline, work on branches).
+- [x] Reproducible installs: exact pins in `requirements*.txt` with wheel
+      hashes and no source builds, Textual held to 8.2.x, drift/hash test,
+      documented upgrade checklist (`MAINTAINING.md`).
+- [x] `scripts/install` (venv, hash-checked wheels, launcher link; repairs a
+      pip-less venv) and `wi setup` (hidden token prompt, verifies against the
+      runtime before writing an owner-only config; never overwrites).
+- [x] ruff lint + format (config in `pyproject.toml`, enforced in CI), a repo
+      pre-commit hook (`.githooks/pre-commit`: ruff + mypy), and `app.py`
+      split into layered modules with the CSS in `app.tcss`.
 - [x] Public remote `katamarinaki/wisp-tui`; CI runs pytest + strict mypy on
       GitHub-hosted runners (`main`, `develop`, PRs). Work lands on `develop`.
 - [x] `wi update` / `wisp-tui update`: fetch fresh `origin/main`, safely
-      switch/fast-forward to `main`, refresh pinned project-venv dependencies.
-      Refuse dirty/divergent checkouts and in-progress Git operations; no
+      switch/fast-forward to `main` after showing the commit range and asking,
+      refresh the runtime pins (`requirements.txt`) in the project venv.
+      Refuse dirty/divergent checkouts, pip-less venvs and in-progress Git
+      operations; no
       reset/stash, private config/state access, or runtime calls. Offline
       regression tests use temporary local Git repositories and stub pip.
 

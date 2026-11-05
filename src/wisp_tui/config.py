@@ -5,9 +5,10 @@ live inside the (group-readable) project tree. Expected layout::
 
     ~/.config/wisp-tui/config.json   {"url": "http://127.0.0.1:3008", "token": "...", ...}
 
-State (locally saved sessions, see sessions.py) lives under
-~/.local/state/wisp-tui/.
+State (saved sessions, composer draft/history, the pending-submission journal
+and its lock) lives under ~/.local/state/wisp-tui/.
 """
+
 from __future__ import annotations
 
 import json
@@ -19,27 +20,32 @@ from typing import Any
 
 CONFIG_PATH = Path.home() / ".config/wisp-tui/config.json"
 STATE_DIR = Path.home() / ".local/state/wisp-tui"
-MAX_CONFIG = 16384
+MAX_CONFIG_BYTES = 16384
 
 
 class ConfigError(Exception):
     """Raised when the private configuration or state is missing or unsafe."""
 
 
-def _private_directory(path: Path) -> None:
+def ensure_private_directory(path: Path) -> None:
     path.mkdir(parents=True, mode=0o700, exist_ok=True)
     info = path.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise ConfigError("insecure_private_directory")
 
 
-def _read_private_json(path: Path, maximum: int) -> dict[str, Any]:
+def read_private_json(path: Path, maximum: int) -> dict[str, Any]:
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as source:
             info = os.fstat(source.fileno())
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                    or info.st_mode & 0o077 or info.st_nlink != 1 or info.st_size > maximum):
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.getuid()
+                or info.st_mode & 0o077
+                or info.st_nlink != 1
+                or info.st_size > maximum
+            ):
                 raise ConfigError("insecure_or_invalid_private_file")
             raw = source.read(maximum + 1)
         if len(raw) > maximum:
@@ -63,8 +69,8 @@ class Config:
 
 
 def load_config(path: Path = CONFIG_PATH) -> Config:
-    _private_directory(path.parent)
-    data = _read_private_json(path, MAX_CONFIG)
+    ensure_private_directory(path.parent)
+    data = read_private_json(path, MAX_CONFIG_BYTES)
     url = data.get("url")
     token = data.get("token")
     if not isinstance(url, str) or not isinstance(token, str):

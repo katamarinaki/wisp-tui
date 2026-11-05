@@ -5,11 +5,12 @@
 set -eu
 ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 # -P: never import modules from the directory the launcher is started in.
-# Run updates without importing Textual or loading private runtime config.
-if [ "${1-}" = update ]; then
+# Run update/setup without importing Textual or loading private runtime config.
+if [ "${1-}" = update ] || [ "${1-}" = setup ]; then
+    command=$1
     shift
     exec env PYTHONPATH="$ROOT/src" WISP_TUI_PROG="$(basename "$0")" \
-        "$ROOT/.venv/bin/python" -P -m wisp_tui.update "$@"
+        "$ROOT/.venv/bin/python" -P -m "wisp_tui.$command" "$@"
 fi
 exec env PYTHONPATH="$ROOT/src" WISP_TUI_PROG="$(basename "$0")" \
     "$ROOT/.venv/bin/python" -P -m wisp_tui "$@"

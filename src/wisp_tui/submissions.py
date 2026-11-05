@@ -6,6 +6,7 @@ POST. An acknowledged record remains until the next reservation, so a crash
 never turns a failed unlink into a silently forgotten pending request.
 No credentials or runtime configuration are stored, only a URL fingerprint.
 """
+
 from __future__ import annotations
 
 import fcntl
@@ -23,12 +24,12 @@ from threading import RLock
 from typing import Any
 
 from . import config
+from .client import UUID
 from .config import ConfigError
 
-UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 MAX_DRAFT_BYTES = 128 * 1024
-MAX_FILE = 1024 * 1024
-RETRY_AGE = 23 * 3600
+MAX_SUBMISSION_FILE_BYTES = 1024 * 1024
+MAX_RETRY_AGE_SECONDS = 23 * 3600
 
 
 class SubmissionError(Exception):
@@ -40,8 +41,8 @@ class PendingSubmission:
     session_id: str
     draft: str
     max_turns: int
-    key: str
-    created_at: float = field(default_factory=time.monotonic)
+    idempotency_key: str
+    created_monotonic: float = field(default_factory=time.monotonic)
     created_wall: float = field(default_factory=time.time)
 
     def body(self) -> dict[str, Any]:
@@ -50,45 +51,67 @@ class PendingSubmission:
             "confirmationMode": "interactive",
             "wait": False,
             "maxTurns": self.max_turns,
-            "idempotencyKey": self.key,
+            "idempotencyKey": self.idempotency_key,
         }
 
     def retry_error(self) -> str:
         age = time.time() - self.created_wall
         if age < 0:
             return "pending_submission_clock_error"
-        if age >= RETRY_AGE or time.monotonic() - self.created_at >= RETRY_AGE:
+        if (
+            age >= MAX_RETRY_AGE_SECONDS
+            or time.monotonic() - self.created_monotonic >= MAX_RETRY_AGE_SECONDS
+        ):
             return "pending_submission_expired"
         return ""
 
 
 def _decode(data: dict[str, Any]) -> tuple[PendingSubmission, str | None]:
     session, draft, turns, key, created = (
-        data.get("sessionId"), data.get("draft"), data.get("maxTurns"),
-        data.get("key"), data.get("createdAt"))
+        data.get("sessionId"),
+        data.get("draft"),
+        data.get("maxTurns"),
+        data.get("key"),
+        data.get("createdAt"),
+    )
     run_id = data.get("runId")
-    if (type(data.get("version")) is not int or data.get("version") != 1
-            or not isinstance(session, str) or not re.fullmatch(UUID, session)
-            or not isinstance(draft, str) or not draft.strip()
-            or len(draft.encode("utf-8")) > MAX_DRAFT_BYTES
-            or not isinstance(turns, int) or isinstance(turns, bool) or not 1 <= turns <= 200
-            or not isinstance(key, str) or not re.fullmatch(rf"wisp-tui:{UUID}", key)
-            or not isinstance(created, (int, float)) or isinstance(created, bool)
-            or created < 0 or created > 253402300799 or not math.isfinite(created)
-            or (run_id is not None and (not isinstance(run_id, str)
-                                       or not re.fullmatch(UUID, run_id)))):
+    if (
+        type(data.get("version")) is not int
+        or data.get("version") != 1
+        or not isinstance(session, str)
+        or not re.fullmatch(UUID, session)
+        or not isinstance(draft, str)
+        or not draft.strip()
+        or len(draft.encode("utf-8")) > MAX_DRAFT_BYTES
+        or not isinstance(turns, int)
+        or isinstance(turns, bool)
+        or not 1 <= turns <= 200
+        or not isinstance(key, str)
+        or not re.fullmatch(rf"wisp-tui:{UUID}", key)
+        or not isinstance(created, (int, float))
+        or isinstance(created, bool)
+        or created < 0
+        or created > 253402300799
+        or not math.isfinite(created)
+        or (run_id is not None and (not isinstance(run_id, str) or not re.fullmatch(UUID, run_id)))
+    ):
         raise SubmissionError("pending_state_invalid")
     age = max(0.0, time.time() - float(created))
-    return PendingSubmission(session, draft, turns, key,
-                             created_at=time.monotonic() - age,
-                             created_wall=float(created)), run_id
+    return PendingSubmission(
+        session,
+        draft,
+        turns,
+        key,
+        created_monotonic=time.monotonic() - age,
+        created_wall=float(created),
+    ), run_id
 
 
 class SubmissionStore:
     def __init__(self, runtime_url: str, root: Path | None = None) -> None:
         self.root = root if root is not None else config.STATE_DIR
         self.path = self.root / "submission.json"
-        self.runtime = hashlib.sha256(runtime_url.encode()).hexdigest()
+        self.runtime_fingerprint = hashlib.sha256(runtime_url.encode()).hexdigest()
         self._lock_fd: int | None = None
         self._owns_pending = False
         self._mutex = RLock()
@@ -96,16 +119,22 @@ class SubmissionStore:
         self.loaded_acknowledgement: PendingSubmission | None = None
 
     def _lock(self) -> None:
-        config._private_directory(self.root)
+        config.ensure_private_directory(self.root)
         if self._lock_fd is not None:
             return
-        fd = os.open(self.root / "submission.lock",
-                     os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
-                     0o600)
+        fd = os.open(
+            self.root / "submission.lock",
+            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            0o600,
+        )
         try:
             info = os.fstat(fd)
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                    or info.st_mode & 0o077 or info.st_nlink != 1):
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.getuid()
+                or info.st_mode & 0o077
+                or info.st_nlink != 1
+            ):
                 raise SubmissionError("pending_state_insecure")
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -129,10 +158,10 @@ class SubmissionStore:
             self.path.lstat()
         except FileNotFoundError:
             return None
-        data = config._read_private_json(self.path, MAX_FILE)
+        data = config.read_private_json(self.path, MAX_SUBMISSION_FILE_BYTES)
         pending, run_id = _decode(data)
         # A pending request must never be replayed against another endpoint.
-        if data.get("runtime") != self.runtime:
+        if data.get("runtime") != self.runtime_fingerprint:
             if run_id is not None:
                 return None  # An acknowledged slot does not bind future work.
             raise SubmissionError("pending_runtime_mismatch")
@@ -148,11 +177,14 @@ class SubmissionStore:
         try:
             self._lock()
             record = self._read()
-            if record is not None and record[1] is None:
+            if record is None:
+                self.close()
+                return None
+            pending, run_id = record
+            if run_id is None:
                 self._owns_pending = True
-                return record[0]
-            if record is not None:
-                self.loaded_acknowledgement = record[0]
+                return pending
+            self.loaded_acknowledgement = pending
             self.close()
             return None
         except (ConfigError, OSError, ValueError, RecursionError, OverflowError):
@@ -163,14 +195,20 @@ class SubmissionStore:
             raise
 
     def _write(self, pending: PendingSubmission, run_id: str | None = None) -> None:
-        config._private_directory(self.root)
-        data = {"version": 1, "runtime": self.runtime,
-                "sessionId": pending.session_id, "draft": pending.draft,
-                "maxTurns": pending.max_turns, "key": pending.key,
-                "createdAt": pending.created_wall, "runId": run_id}
+        config.ensure_private_directory(self.root)
+        data = {
+            "version": 1,
+            "runtime": self.runtime_fingerprint,
+            "sessionId": pending.session_id,
+            "draft": pending.draft,
+            "maxTurns": pending.max_turns,
+            "key": pending.idempotency_key,
+            "createdAt": pending.created_wall,
+            "runId": run_id,
+        }
         _decode(data)
         payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        if len(payload) > MAX_FILE:
+        if len(payload) > MAX_SUBMISSION_FILE_BYTES:
             raise SubmissionError("pending_state_too_large")
         fd, name = tempfile.mkstemp(prefix=".submission-", dir=self.root)
         path = Path(name)
@@ -193,8 +231,16 @@ class SubmissionStore:
 
     @staticmethod
     def _same_request(left: PendingSubmission, right: PendingSubmission) -> bool:
-        return (left.session_id, left.draft, left.max_turns, left.key, left.created_wall) == (
-            right.session_id, right.draft, right.max_turns, right.key, right.created_wall)
+        def identity(request: PendingSubmission) -> tuple[str, str, int, str, float]:
+            return (
+                request.session_id,
+                request.draft,
+                request.max_turns,
+                request.idempotency_key,
+                request.created_wall,
+            )
+
+        return identity(left) == identity(right)
 
     def prepare(self, pending: PendingSubmission) -> str | None:
         """Durably reserve before POST. A previously saved ack needs no POST."""
@@ -218,7 +264,7 @@ class SubmissionStore:
                     if run_id is not None:
                         return run_id
                     self._owns_pending = True
-                elif run_id is None or previous.key == pending.key:
+                elif run_id is None or previous.idempotency_key == pending.idempotency_key:
                     raise SubmissionError("pending_state_conflict")
             # Re-sync even an existing pending record after a previous I/O error.
             self._write(pending)
@@ -234,7 +280,10 @@ class SubmissionStore:
         try:
             self._lock()
             record = self._read()
-            if record is None or not self._same_request(record[0], pending):
+            if record is None:
+                raise SubmissionError("pending_state_conflict")
+            previous, _ = record
+            if not self._same_request(previous, pending):
                 raise SubmissionError("pending_state_conflict")
             self._write(pending, run_id)
             self.close()

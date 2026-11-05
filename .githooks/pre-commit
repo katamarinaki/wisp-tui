@@ -1,0 +1,19 @@
+#!/bin/sh
+# Lint, format check and strict mypy before each commit (pytest stays in CI).
+# Enable once per clone: git config core.hooksPath .githooks
+# It checks the working tree, so stage everything you changed in a file.
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+PY=.venv/bin/python
+if [ ! -x "$PY" ]; then
+    echo "pre-commit: no dev environment (.venv); run scripts/install, then:" >&2
+    echo "  $PY -m pip install -r requirements-dev.txt" >&2
+    exit 1
+fi
+if ! "$PY" -I -m ruff --version >/dev/null 2>&1; then
+    echo "pre-commit: ruff is missing; run: $PY -m pip install -r requirements-dev.txt" >&2
+    exit 1
+fi
+"$PY" -I -m ruff check src tests
+"$PY" -I -m ruff format --check src tests
+"$PY" -I -m mypy

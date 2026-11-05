@@ -1,15 +1,16 @@
 """Long sessions stay responsive: only the newest chat items are mounted."""
+
 from __future__ import annotations
 
 from collections import deque
 
 import pytest
 from textual.widgets import Markdown, Static
-from wisp_tui.editor import PromptInput as Input
 
 from tests.helpers import RID, SID
 from tests.test_app import eventually, make_app
 from wisp_tui.app import WispTuiApp
+from wisp_tui.editor import PromptInput as Input
 from wisp_tui.history import ChatMessage
 from wisp_tui.tool_view import ToolCallView
 
@@ -43,10 +44,13 @@ async def test_live_chat_drops_oldest_and_counts_them(monkeypatch: pytest.Monkey
             app._add_message(ChatMessage("user" if index % 2 == 0 else "assistant", f"m{index}"))
         await pilot.pause()
         items = chat_items(app)
-        assert items[0] == "MARKER: \u2191 7 earlier items not shown \u2014 Wisp keeps the full session history."
+        assert (
+            items[0] == "MARKER: \u2191 7 earlier items not shown "
+            "\u2014 Wisp keeps the full session history."
+        )
         assert items[1:] == [f"m{index}" for index in range(7, 12)]
         # One more item updates the existing marker instead of adding another.
-        app._sysline("note")
+        app._show_line("note")
         await pilot.pause()
         items = chat_items(app)
         assert items[0].startswith("MARKER: \u2191 8 earlier items")
@@ -56,34 +60,41 @@ async def test_live_chat_drops_oldest_and_counts_them(monkeypatch: pytest.Monkey
 
 async def test_streaming_answer_is_never_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
     app, _ = make_app([], monkeypatch)
-    async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_state)
+    async with app.run_test():
+        await eventually(lambda: "ready" in app._status_text)
         app.session_id = SID
-        app._turn_started(RID)
+        app._begin_run(RID)
         app._handle_event({"seq": 1, "kind": "text.delta", "text": "streaming answer"})
-        # Flood with tool lines (newer than the answer) well past the limit.
-        for seq in range(2, 2 + LIMIT * 3):
-            app._handle_event({"seq": seq, "kind": "tool_call.started", "name": f"t{seq}"})
-        app._handle_event({"seq": 99, "kind": "text.delta", "text": " continues"})
-        await pilot.pause()
-        assert app._stream_view is not None
         view = app._stream_view
-        assert view.widget.is_attached
-        # Text after the tools continues in a new answer block below them.
-        await eventually(lambda: view.rendered == " continues")
-        items = chat_items(app)
-        assert items[-1] == " continues"
-        assert len(items) == LIMIT + 1
+        assert view is not None
+        # Lines appended below the answer until it is the oldest item, well past the limit.
+        for index in range(LIMIT * 3):
+            app._show_line(f"line {index}")
+        app._handle_event({"seq": 99, "kind": "text.delta", "text": " continues"})
+        assert app._stream_view is view and view.widget.is_attached
+        await eventually(lambda: view.rendered == "streaming answer continues")
+        await eventually(lambda: len(chat_items(app)) == LIMIT + 1)
+        assert chat_items(app)[1] == "streaming answer continues"
 
 
 async def test_long_history_mounts_only_the_tail(monkeypatch: pytest.MonkeyPatch) -> None:
     app, client = make_app([], monkeypatch)
-    client.replies[("GET", f"/v1/sessions/{SID}/history")] = deque([[{
-        "values": {"messages": [
-            {"type": "human" if index % 2 == 0 else "ai", "content": f"h{index}"}
-            for index in range(500)]}}]])
+    client.replies[("GET", f"/v1/sessions/{SID}/history")] = deque(
+        [
+            [
+                {
+                    "values": {
+                        "messages": [
+                            {"type": "human" if index % 2 == 0 else "ai", "content": f"h{index}"}
+                            for index in range(500)
+                        ]
+                    }
+                }
+            ]
+        ]
+    )
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_state)
+        await eventually(lambda: "ready" in app._status_text)
         app._open_session(SID)
         await eventually(lambda: app.session_id == SID)
         await pilot.pause()
@@ -100,9 +111,11 @@ async def test_clear_resets_the_marker(monkeypatch: pytest.MonkeyPatch) -> None:
             app._add_message(ChatMessage("user", f"m{index}"))
         app.query_one("#input", Input).value = "/clear"
         await pilot.press("enter")
-        await pilot.pause()
-        assert chat_items(app) == []
-        for index in range(LIMIT):
+        await eventually(lambda: chat_items(app) == [])
+        # One past the limit: the marker counts only what was trimmed after /clear.
+        for index in range(LIMIT + 1):
             app._add_message(ChatMessage("user", f"n{index}"))
-        await pilot.pause()
-        assert chat_items(app) == [f"n{index}" for index in range(LIMIT)]
+        await eventually(lambda: len(chat_items(app)) == LIMIT + 1)
+        items = chat_items(app)
+        assert items[0].startswith("MARKER: \u2191 1 earlier item not shown")
+        assert items[1:] == [f"n{index}" for index in range(1, LIMIT + 1)]

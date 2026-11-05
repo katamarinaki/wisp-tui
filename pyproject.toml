@@ -5,7 +5,7 @@ description = "Terminal chat client for the local Wisp runtime (loopback only, c
 requires-python = ">=3.11"
 # Compatible range only; exact versions live in requirements*.txt. Textual
 # minor upgrades can change rendering internals this app relies on (see
-# README "Upgrading dependencies"), so stay within 8.2.x until verified.
+# MAINTAINING.md "Upgrading dependencies"), so stay within 8.2.x until verified.
 dependencies = ["textual~=8.2.8"]
 
 [tool.mypy]
@@ -24,3 +24,26 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 pythonpath = ["src", "."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "."]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "B", "UP", "SIM", "C4", "PIE", "RET", "RUF", "PL"]
+ignore = [
+    "PLR2004",  # protocol limits and status codes read clearer inline than as constants
+    # Worker results reach the UI as positional call_from_thread arguments, and
+    # stdlib overrides (urllib's redirect_request) fix their signatures.
+    "PLR0913",
+    "PLR0917",
+]
+allowed-confusables = ["›"]  # the transcript's prompt marker
+
+[tool.ruff.lint.per-file-ignores]
+# Test scenarios are long and fake runtimes branch per route by design.
+"tests/*" = ["PLR0911", "PLR0912", "PLR0915"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["wisp_tui", "tests"]

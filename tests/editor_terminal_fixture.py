@@ -1,4 +1,5 @@
 """Exercise real bracketed-paste/key bytes against a fake runtime, never config."""
+
 from __future__ import annotations
 
 import json
@@ -32,7 +33,7 @@ class EditorTerminalFixture(WispTuiApp):
     def on_mount(self) -> None:
         super().on_mount()
         self.session_id = SID
-        self._status("EDITOR_READY")
+        self._set_status("EDITOR_READY")
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         super().on_text_area_changed(event)
@@ -40,7 +41,7 @@ class EditorTerminalFixture(WispTuiApp):
         if self.history_ready:
             if editor.value == PROMPT:
                 self.history_checked = True
-                self._status("EDITOR_RECALL_READY")
+                self._set_status("EDITOR_RECALL_READY")
             elif self.history_checked and editor.value == "":
                 self.scratch_checked = True
                 self.set_timer(0.1, self.exit)
@@ -50,34 +51,54 @@ class EditorTerminalFixture(WispTuiApp):
             # The capture must cover selected text and matching brackets, not
             # only an empty editor. Both should remain unpainted.
             editor.selection = Selection((0, 0), (1, 9))
-            self._status("EDITOR_PASTE_READY")
+            self._set_status("EDITOR_PASTE_READY")
         elif editor.value == PROMPT:
             assert all(method == "GET" for method, _, _ in self.client.calls)
             self.newline_checked = True
-            self._status("EDITOR_NEWLINE_READY")
+            self._set_status("EDITOR_NEWLINE_READY")
 
     def _finalize_run(self, kind: str, outcome: Any) -> None:
         super()._finalize_run(kind, outcome)
         self.history_ready = True
-        self._status("EDITOR_HISTORY_READY")
+        self._set_status("EDITOR_HISTORY_READY")
 
 
 def main() -> None:
-    client = ScriptedClient([
-        {"seq": 1, "kind": "run.completed", "outcome": {
-            "output": {"text": "Scripted editor response"}}}])
+    client = ScriptedClient(
+        [
+            {
+                "seq": 1,
+                "kind": "run.completed",
+                "outcome": {"output": {"text": "Scripted editor response"}},
+            }
+        ]
+    )
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        app = EditorTerminalFixture(client, Config(client.url, client.token),
-                                    sessions=SessionStore(root / "sessions"),
-                                    submissions=SubmissionStore(client.url, root))
+        app = EditorTerminalFixture(
+            client,
+            Config(client.url, client.token),
+            sessions=SessionStore(root / "sessions"),
+            submissions=SubmissionStore(client.url, root),
+        )
         app.run(inline=True)
-        inputs = [body["input"] for method, path, body in client.calls
-                  if method == "POST" and path.endswith("/runs") and body is not None]
-        print("EDITOR_RESULT=" + json.dumps({
-            "paste_checked": app.paste_checked, "newline_checked": app.newline_checked,
-            "history_checked": app.history_checked, "scratch_checked": app.scratch_checked,
-            "inputs": inputs}))
+        inputs = [
+            body["input"]
+            for method, path, body in client.calls
+            if method == "POST" and path.endswith("/runs") and body is not None
+        ]
+        print(
+            "EDITOR_RESULT="
+            + json.dumps(
+                {
+                    "paste_checked": app.paste_checked,
+                    "newline_checked": app.newline_checked,
+                    "history_checked": app.history_checked,
+                    "scratch_checked": app.scratch_checked,
+                    "inputs": inputs,
+                }
+            )
+        )
 
 
 if __name__ == "__main__":

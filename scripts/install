@@ -1,0 +1,41 @@
+#!/bin/sh
+# Install from this checkout: project venv with hash-checked wheels, plus a
+# launcher link in ~/.local/bin (default name `wi`). Safe to rerun. Python runs
+# with -I so modules in the current directory are never imported.
+set -eu
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+NAME=${1:-wi}
+PYTHON=${PYTHON:-python3}
+BIN="$HOME/.local/bin"
+LINK="$BIN/$NAME"
+TARGET="$ROOT/scripts/wisp-tui"
+
+case $NAME in
+    wisp | -* | .* | *[!A-Za-z0-9._-]*)
+        echo "install: invalid link name '$NAME' (not 'wisp'; letters, digits, . _ -)" >&2
+        exit 2 ;;
+esac
+if ! "$PYTHON" -I -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+    echo "install: needs Python 3.11+; set PYTHON=/path/to/python3.11 or newer" >&2
+    exit 1
+fi
+if [ -e "$LINK" ] || [ -L "$LINK" ]; then
+    if [ "$(readlink "$LINK" || true)" != "$TARGET" ]; then
+        echo "install: $LINK already exists; remove it or pass another name: $0 NAME" >&2
+        exit 1
+    fi
+fi
+
+# Recreating in place also repairs a venv without pip (uv-made, half-built).
+"$ROOT/.venv/bin/python" -I -m pip --version >/dev/null 2>&1 \
+    || "$PYTHON" -I -m venv "$ROOT/.venv"
+"$ROOT/.venv/bin/python" -I -m pip install --require-virtualenv --quiet --disable-pip-version-check \
+    -r "$ROOT/requirements.txt"
+mkdir -p "$BIN"
+[ -L "$LINK" ] || ln -s "$TARGET" "$LINK"
+
+case ":$PATH:" in
+    *":$BIN:"*) ;;
+    *) echo "install: add $BIN to your PATH to run $NAME from anywhere" ;;
+esac
+echo "install: done. Next: $NAME setup"

@@ -41,8 +41,8 @@ reattachment. Do not expand this into a general-purpose Pi replacement.
 - Interactive approval is the only privileged action; it must stay explicit
   per prompt. No auto-approval paths.
 - The terminal background must stay unpainted: `App { background: ansi_default; }` +
-  `Screen { background: transparent; }` in the CSS and `ansi_color=True` in
-  `WispTuiApp.__init__` work together to emit SGR 49. Changing any of these
+  `Screen { background: transparent; }` in `src/wisp_tui/app.tcss` and
+  `ansi_color=True` in `AppBase.__init__` (`app_base.py`) work together to emit SGR 49. Changing any of these
   (or re-enabling the ANSI→truecolor filter) paints a hardcoded background.
   Verify with a pty capture that no other `48;...` SGR is emitted.
   Sole owner-approved exception: user prompt blocks (`#chat > .user`) are
@@ -59,8 +59,16 @@ reattachment. Do not expand this into a general-purpose Pi replacement.
 ```sh
 .venv/bin/python -m pytest tests/
 .venv/bin/python -m mypy   # strict; must pass with no issues
+.venv/bin/python -m ruff check src tests
+.venv/bin/python -m ruff format --check src tests
 ```
 
-Both must pass before any change is considered done. No formatter/linter is
-configured; keep the existing style (dataclasses, explicit types, no star
-imports).
+All four must pass before any change is considered done. ruff owns formatting
+and import order (config in `pyproject.toml`); keep dataclasses, explicit types
+and no star imports. `.githooks/pre-commit` runs ruff and mypy; enable it with
+`git config core.hooksPath .githooks`.
+
+The chat app is split into layers (`app_base` → `app_chat` → `app_composer` →
+`app_runs` → `app_submission` → `app_sessions` → `app`). A layer calls only
+methods of itself or of layers below it; shared state is declared in
+`AppBase.__init__`.

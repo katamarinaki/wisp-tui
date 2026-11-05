@@ -1,4 +1,5 @@
 """Copyable resume hints after the terminal has been restored on normal exit."""
+
 from __future__ import annotations
 
 import pytest
@@ -14,12 +15,14 @@ OTHER = "0b7e5a52-3c3b-4f7e-9a41-2f8d6c1e9b10"
 @pytest.mark.parametrize("name", ["wi", "wisp-tui", "bad name; echo nope"])
 @pytest.mark.parametrize("session_id", [SID, None])
 def test_exit_hint_uses_launcher_name_and_only_an_existing_session(
-        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
-        name: str, session_id: str | None) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    name: str,
+    session_id: str | None,
+) -> None:
     client = ScriptedClient([])
     monkeypatch.setenv("WISP_TUI_PROG", name)
-    monkeypatch.setattr(cli, "load_config",
-                        lambda: Config(url=client.url, token=client.token))
+    monkeypatch.setattr(cli, "load_config", lambda: Config(url=client.url, token=client.token))
     monkeypatch.setattr(cli, "WispClient", lambda *args: client)
 
     def run(app: WispTuiApp, *, inline: bool, inline_no_clear: bool) -> None:
@@ -31,29 +34,34 @@ def test_exit_hint_uses_launcher_name_and_only_an_existing_session(
     assert cli.main([]) == 0
     output = capsys.readouterr()
     expected = name if name != "bad name; echo nope" else "wisp-tui"
-    assert output.out == (f"\nTo continue: {expected} --resume {SID}\n"
-                          if session_id else "")
+    assert output.out == (f"\nTo continue: {expected} --resume {SID}\n" if session_id else "")
     assert output.err == ""
     assert client.calls == []
 
 
 def test_exit_transcript_is_printed_in_order_without_empty_items(
-        capsys: pytest.CaptureFixture[str]) -> None:
-    cli.print_transcript([("user", "check disk\nplease"), ("assistant", "\n\n"),
-                          ("assistant", "Let me look."), ("tool", "tool bash → ok 0.3s"),
-                          ("assistant", "Disk is **fine**.\n")])
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli.print_transcript(
+        [
+            ("user", "check disk\nplease"),
+            ("assistant", "\n\n"),
+            ("assistant", "Let me look."),
+            ("tool", "tool bash → ok 0.3s"),
+            ("assistant", "Disk is **fine**.\n"),
+        ]
+    )
     assert capsys.readouterr().out == (
-        "› check disk\n› please\n\nLet me look.\n\ntool bash → ok 0.3s\n\n"
-        "Disk is **fine**.\n\n")
+        "› check disk\n› please\n\nLet me look.\n\ntool bash → ok 0.3s\n\nDisk is **fine**.\n\n"
+    )
 
 
 @pytest.mark.parametrize("session_id", ["not-a-session", "bad\x1b[31m\ncommand"])
 def test_exit_hint_does_not_print_invalid_identifiers(
-        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
-        session_id: str) -> None:
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], session_id: str
+) -> None:
     client = ScriptedClient([])
-    monkeypatch.setattr(cli, "load_config",
-                        lambda: Config(url=client.url, token=client.token))
+    monkeypatch.setattr(cli, "load_config", lambda: Config(url=client.url, token=client.token))
     monkeypatch.setattr(cli, "WispClient", lambda *args: client)
 
     def run(app: WispTuiApp, **kwargs: object) -> None:
@@ -65,11 +73,11 @@ def test_exit_hint_does_not_print_invalid_identifiers(
 
 
 def test_exit_hint_reflects_session_changed_after_launch(
-        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     client = ScriptedClient([])
     monkeypatch.setenv("WISP_TUI_PROG", "wi")
-    monkeypatch.setattr(cli, "load_config",
-                        lambda: Config(url=client.url, token=client.token))
+    monkeypatch.setattr(cli, "load_config", lambda: Config(url=client.url, token=client.token))
     monkeypatch.setattr(cli, "WispClient", lambda *args: client)
 
     def run(app: WispTuiApp, **kwargs: object) -> None:
@@ -82,10 +90,10 @@ def test_exit_hint_reflects_session_changed_after_launch(
 
 
 def test_health_check_does_not_print_resume_hint(
-        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     client = ScriptedClient([])
-    monkeypatch.setattr(cli, "load_config",
-                        lambda: Config(url=client.url, token=client.token))
+    monkeypatch.setattr(cli, "load_config", lambda: Config(url=client.url, token=client.token))
     monkeypatch.setattr(cli, "WispClient", lambda *args: client)
     assert cli.main(["--check"]) == 0
     output = capsys.readouterr().out

@@ -1,11 +1,13 @@
 """A small multiline composer: explicit send, literal paste, terminal-default colors."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 from rich.style import Style
 from textual import events
-from textual.binding import Binding
+from textual.binding import Binding, BindingType
 from textual.message import Message
 from textual.widgets import TextArea
 from textual.widgets.text_area import TextAreaTheme
@@ -19,7 +21,7 @@ class PromptInput(TextArea):
     app's draft/acknowledgement interface independent of the editor document.
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "submit", show=False),
         Binding("ctrl+j,shift+enter", "newline", show=False),
         Binding("ctrl+home", "document_start", show=False),
@@ -40,14 +42,24 @@ class PromptInput(TextArea):
             return self.input
 
     def __init__(self, *, id: str = "input") -> None:
-        super().__init__(id=id, soft_wrap=True, highlight_cursor_line=False,
-                         placeholder="Message Wisp — Enter send · Ctrl+J newline · /help")
+        super().__init__(
+            id=id,
+            soft_wrap=True,
+            highlight_cursor_line=False,
+            placeholder="Message Wisp — Enter send · Ctrl+J newline · /help",
+        )
         # Explicit non-painting component styles also cover selections and
         # matching brackets; TextArea's default styles can emit filled cells.
-        self.register_theme(TextAreaTheme(
-            "terminal", cursor_style=Style(reverse=True), selection_style=Style(reverse=True),
-            cursor_line_style=Style(), cursor_line_gutter_style=Style(),
-            bracket_matching_style=Style(underline=True)))
+        self.register_theme(
+            TextAreaTheme(
+                "terminal",
+                cursor_style=Style(reverse=True),
+                selection_style=Style(reverse=True),
+                cursor_line_style=Style(),
+                cursor_line_gutter_style=Style(),
+                bracket_matching_style=Style(underline=True),
+            )
+        )
         self.theme = "terminal"
         self._prompt_history: tuple[str, ...] = ()
         self._history_index: int | None = None
@@ -109,11 +121,12 @@ class PromptInput(TextArea):
         if not 0 <= target <= len(self._prompt_history):
             return
         self._history_edits[index] = self.value
-        value = self._history_edits.get(target, self._prompt_history[target]
-                                        if target < len(self._prompt_history) else "")
+        recalled = self._history_edits.get(
+            target, self._prompt_history[target] if target < len(self._prompt_history) else ""
+        )
         # Recall is an undoable edit; merely browsing never sends anything.
         self.history.checkpoint()
-        self.replace(value, (0, 0), self.document.end, maintain_selection_offset=False)
+        self.replace(recalled, (0, 0), self.document.end, maintain_selection_offset=False)
         self.history.checkpoint()
         self.move_cursor(self.document.end)
         self._history_index = target if target < len(self._prompt_history) else None

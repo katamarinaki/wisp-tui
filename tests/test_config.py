@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from wisp_tui import config as config_mod
 from wisp_tui.config import ConfigError, load_config
 
 
@@ -44,7 +43,6 @@ class TestLoadConfig:
 
     def test_bad_max_turns_rejected(self, tmp_path: Path) -> None:
         path = tmp_path / "config.json"
-        write_config(path, {"url": "http://127.0.0.1:3008", "token": "t" * 43,
-                            "max_turns": 0})
+        write_config(path, {"url": "http://127.0.0.1:3008", "token": "t" * 43, "max_turns": 0})
         with pytest.raises(ConfigError):
             load_config(path)
