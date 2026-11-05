@@ -22,7 +22,6 @@ class ChatMessage:
     tool_name: str = ""
     tool_call_id: str = ""
     tool_status: str = ""
-    tool_output_pruned: bool = False
 
 
 _ROLE_MAP = {"human": "user", "ai": "assistant", "system": "system", "tool": "tool"}
@@ -90,7 +89,6 @@ def _parse_message(message: Any) -> ChatMessage | None:
     tool_name = message.get("name")
     tool_call_id = message.get("tool_call_id")
     status = message.get("status")
-    additional = message.get("additional_kwargs")
     return ChatMessage(
         role=role,
         text=text,
@@ -101,9 +99,6 @@ def _parse_message(message: Any) -> ChatMessage | None:
         if role == "tool" and isinstance(tool_call_id, str) and 0 < len(tool_call_id) <= 200
         else "",
         tool_status=status if role == "tool" and status in ("success", "error") else "",
-        tool_output_pruned=role == "tool"
-        and isinstance(additional, dict)
-        and additional.get("wisp_tool_output_pruned") is True,
     )
 
 
@@ -133,38 +128,12 @@ def tool_history_results(
             calls[call_id].input_text if call_id in calls else None,
             detail_text(message.text),
             message.tool_status,
-            message.tool_output_pruned,
             calls[call_id].summary if call_id in calls else "",
         )
         for call_id, message in results.items()
         if call_id not in ambiguous
     }
     return matched, ambiguous
-
-
-def checkpoint_covers_answer(
-    before: list[ChatMessage], after: list[ChatMessage], answer: str
-) -> bool:
-    """Whether a *progressed* checkpoint visibly contains the finished answer.
-
-    Equal text alone is not run identity. An unchanged checkpoint might contain
-    a previous, legitimately identical reply while the latest turn isn't saved
-    yet. Accept an appended answer or an updated, stable-ID trailing assistant;
-    ambiguous/rewritten/compacted histories retain the separate run output.
-    """
-    if not answer or not after or after[-1].role != "assistant" or after[-1].text != answer:
-        return False
-    if len(after) > len(before) and after[: len(before)] == before:
-        return True
-    if not before or len(after) != len(before) or after[:-1] != before[:-1]:
-        return False
-    previous, current = before[-1], after[-1]
-    return (
-        previous.role == "assistant"
-        and bool(previous.message_id)
-        and previous.message_id == current.message_id
-        and previous.text != current.text
-    )
 
 
 def parse_history(payload: Any) -> list[ChatMessage]:

@@ -6,9 +6,6 @@ import json
 import tempfile
 from pathlib import Path
 
-from textual.widgets import Markdown
-from textual.widgets._markdown import MarkdownBlock
-
 from tests.helpers import RID, SID, ScriptedClient
 from tests.test_app import eventually
 from wisp_tui.app import WispTuiApp
@@ -62,14 +59,7 @@ class TrafficFixture(WispTuiApp):
     async def measure(self) -> None:
         # Start only once the whole transcript has been painted, and measure a
         # fixed number of spinner ticks rather than a wall-clock window.
-        answer = self.query_one("#chat > Markdown", Markdown)
-        await eventually(
-            lambda: (
-                len(answer.query(MarkdownBlock)) == 30
-                and all(block.is_mounted for block in answer.query(MarkdownBlock))
-            )
-        )
-        await answer.wait_for_refresh()
+        await eventually(lambda: not self._scrollback and not self._sync_queued)
         await self.screen.wait_for_refresh()
         self.measuring = True
         await eventually(lambda: self.ticks >= self.TICKS)
@@ -88,7 +78,7 @@ def main() -> None:
             sessions=SessionStore(Path(state) / "sessions"),
             submissions=SubmissionStore(client.url, Path(state)),
         )
-        app.run(inline=True)
+        app.run(inline=True, mouse=False)
         print(
             "TRAFFIC_RESULT="
             + json.dumps(

@@ -20,17 +20,18 @@ from textual._compositor import InlineUpdate
 from textual.app import App
 from textual.screen import Screen
 from textual.timer import Timer
-from textual.widget import Widget
 from textual.widgets import Static
 
-from .chat_view import StreamView
+from .chat_view import ChatItem, StreamView
 from .client import ClientError, WispClient
 from .composer import ComposerState, ComposerStore
 from .config import Config
 from .editor import PromptInput
+from .help_text import COMMANDS
 from .history import ChatMessage
 from .runs import RunFollower
 from .screens import ApprovalModal
+from .scrollback import render_ansi
 from .sessions import SessionStore
 from .submissions import PendingSubmission, SubmissionStore
 from .terminal import ChangedRowsUpdate, InlineRenderer
@@ -61,11 +62,14 @@ class Startup:
 
 
 class AppBase(App[None]):
-    # Layout cost grows with every mounted chat widget (measured: streaming is
-    # ~4x slower after 50 exchanges, ~45x after 500). Keep only the newest
-    # items on screen (several screens' worth); Wisp keeps the full session
-    # history server-side. 500-exchange session: load 22s -> ~1s.
+    # A loaded history prints only its newest items (several screens' worth);
+    # Wisp keeps the full session history server-side.
     MAX_CHAT_ITEMS = 60
+    # Textual writes this many blank rows above the inline app and moves back up
+    # over them on exit, which would overwrite the last line printed to scrollback.
+    INLINE_PADDING = 0
+    # Printed items kept to redraw scrollback at a new width after a resize.
+    REPRINT_ITEMS = 200
 
     def __init__(  # noqa: PLR0915 - one place declares every layer's state
         self,
@@ -135,19 +139,23 @@ class AppBase(App[None]):
         self._replay_label_shown = False
         self._stream_view: StreamView | None = None
         self._reattached_checkpoint: list[ChatMessage] | None = None
-        self._history_refresh_token: object | None = None
         self._chat_epoch = 0
-        self._chat_items: deque[Widget] = deque()
+        # Live (not yet printed) items, in display order.
+        self._chat_items: deque[ChatItem | ToolCallView] = deque()
+        # Finished items waiting for the next inline frame to print them.
+        self._scrollback: list[tuple[str, str]] = []
+        self._printed: deque[tuple[str, str]] = deque(maxlen=self.REPRINT_ITEMS)
+        self._printed_total = 0
+        self._reprint = False
+        self._sync_queued = False
         self._tool_calls: dict[str, ToolCallView] = {}
         self._saw_live_tool_events = False
         self._tool_history_token: object | None = None
         self._tool_history_targets: tuple[ToolCallView, ...] = ()
         self._tool_history_again = False
-        self._trimmed_count = 0
-        self._trim_marker: Static | None = None
         self._status_text = "connecting…"
         self._activity_frame = 0
-        self._prompt_input = PromptInput()
+        self._prompt_input = PromptInput(commands=tuple(name for name, _, _ in COMMANDS))
         self._activity_timer: Timer | None = None
         self._cancel_requested = False
         self._last_ctrl_c = -10.0
@@ -188,12 +196,33 @@ class AppBase(App[None]):
         # The inline driver clears the terminal on resize, even if its final
         # dimensions happen to match the previous ones.
         self._inline_renderer.invalidate()
+        # That clear also erased the visible part of the printed chat.
+        self._reprint = bool(self._printed)
         self.query_one("#bottom").set_class(event.size.width < 80, "narrow")
 
     def _display(self, screen: Screen[Any], renderable: RenderableType | None) -> None:
         if isinstance(renderable, InlineUpdate):
-            renderable = ChangedRowsUpdate(renderable, self._inline_renderer, self.size.width)
+            renderable = ChangedRowsUpdate(
+                renderable, self._inline_renderer, self.size.width, self._take_scrollback
+            )
         super()._display(screen, renderable)
+
+    def _take_scrollback(self) -> str:
+        items, self._scrollback = self._scrollback, []
+        prefix = ""
+        if self._reprint:
+            # Like Pi/Claude Code: redraw the printed chat at the new width
+            # instead of leaving it half erased and wrapped at the old one.
+            self._reprint = False
+            prefix = "\x1b[H\x1b[2J\x1b[3J"
+            items = list(self._printed)
+            hidden = self._printed_total - len(items)
+            if hidden:
+                note = f"\u2191 {hidden} earlier item{'s' if hidden != 1 else ''} not reprinted"
+                items.insert(0, ("system", note))
+        if not items:
+            return prefix
+        return prefix + render_ansi(items, self.size.width, self.console.color_system)
 
     def _render_activity(self) -> None:
         editor = self._prompt_input

@@ -8,11 +8,11 @@ import pytest
 from textual import events
 from textual.containers import VerticalScroll
 from textual.timer import Timer
-from textual.widgets import ListItem, ListView, Markdown, Static
+from textual.widgets import ListItem, ListView, Static
 
 from tests.helpers import RID, SID
 from tests.test_app import eventually, freeze_ctrl_c_clock, make_app
-from tests.test_rendering import rendered_blocks
+from tests.test_rendering import lines, printed
 from wisp_tui.editor import PromptInput
 from wisp_tui.screens import APPROVAL_ARGS_LIMIT, ApprovalModal, ModelPicker, SessionPicker
 
@@ -257,11 +257,8 @@ async def test_long_mixed_stream_resizes_with_modal_and_preserves_exact_render(
         await eventually(lambda: view.rendered == expected)
         await pilot.pause()
         assert editor.value == "draft stays editable!!!" and editor.has_focus
-        assert view.widget.source == expected
-        assert app.query_one("#chat").region.height > 0
         assert editor.region.bottom <= app.size.height
-        reference = Markdown(expected)
-        await app.query_one("#chat").mount(reference)
-        await pilot.pause()
-        assert rendered_blocks(view.widget) == rendered_blocks(reference)
-        assert view.widget.region.height == reference.region.height
+        # Printed block by block, it reads exactly like the whole answer.
+        streamed = [(kind, text) for kind, text in app.transcript() if kind == "assistant"]
+        assert len(streamed) > 1 and "".join(text for _, text in streamed) == expected
+        assert lines(printed(streamed)) == lines(printed([("assistant", expected)]))

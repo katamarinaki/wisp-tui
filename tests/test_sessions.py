@@ -203,7 +203,8 @@ async def test_new_command_starts_fresh_without_server_calls(
         await pilot.pause()
         assert app.session_id is None
         assert len(client.calls) == calls_before
-        assert "past answer" not in chat_text(app)
+        # The old conversation stays in scrollback; nothing of it is live.
+        assert not app._chat_items
         editor.value = "check the backups"
         await pilot.press("enter")
         await eventually(lambda: app._status_text == "")

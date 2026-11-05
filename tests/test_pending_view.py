@@ -84,13 +84,7 @@ async def test_explicit_retry_waits_for_read_only_load_and_keeps_known_model_aft
             app.query_one("#input", Input).value = "keep newer draft"
         finally:
             gate.release.set()
-        await eventually(
-            lambda: (
-                app._status_text == ""
-                and app.active_run is None
-                and app._history_refresh_token is None
-            )
-        )
+        await eventually(lambda: app._status_text == "" and app.active_run is None)
         await eventually(lambda: "done" in chat_text(app))
         posted = [body for method, path, body in client.calls if (method, path) == ("POST", RUNS)]
         assert posted == [original.body()]
@@ -129,28 +123,6 @@ async def test_failed_read_keeps_original_request_and_allows_explicit_retry(
         await eventually(lambda: app._status_text == "" and app.active_run is None)
         posted = [body for method, path, body in client.calls if (method, path) == ("POST", RUNS)]
         assert posted == [original.body()]
-
-
-async def test_clear_cancels_restored_history_but_can_still_show_model(
-    monkeypatch: pytest.MonkeyPatch, private_state_dir: Path
-) -> None:
-    seed_pending(private_state_dir)
-    app, client = make_app(COMPLETED, monkeypatch)
-    gate = RequestGate("GET", HISTORY)
-    client.request_hook = gate
-    async with app.run_test() as pilot:
-        try:
-            await eventually(gate.entered.is_set)
-            app._handle_command("/clear")
-            app.query_one("#input", Input).value = "keep this draft"
-        finally:
-            gate.release.set()
-        await eventually(lambda: app._recovery_view_token is None)
-        await pilot.pause()
-        assert chat_text(app) == ""
-        assert app._model_selection.get("mode") == "balanced"
-        assert app.query_one("#input", Input).value == "keep this draft"
-        assert not any(method == "POST" for method, _, _ in client.calls)
 
 
 @pytest.mark.parametrize("change", ["session", "pending", "submitting", "run", "unmount"])
@@ -239,8 +211,7 @@ async def test_recovery_history_is_bounded_and_does_not_open_replayed_approvals(
         await pilot.pause()
         assert "history 99" in chat_text(app)
         assert "history 0" not in chat_text(app)
-        assert len(app._chat_items) <= 5
-        assert app._trimmed_count > 0
+        assert "\u2191 95 earlier items not shown" in chat_text(app)
         assert len(app.screen_stack) == 1
         assert app._approval_modal is None
         assert not client.event_requests

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from textual.widgets import Markdown, Static
+from textual.widgets import Static
 
 from tests.helpers import RID, SID, RequestGate, ScriptedClient
 from wisp_tui import app as app_module
@@ -17,7 +17,6 @@ from wisp_tui.client import ClientError
 from wisp_tui.config import Config
 from wisp_tui.editor import PromptInput as Input
 from wisp_tui.screens import ApprovalModal
-from wisp_tui.tool_view import ToolCallView
 
 
 def text_of(widget: object) -> str:
@@ -30,16 +29,8 @@ def screen_text(app: WispTuiApp) -> str:
 
 
 def chat_text(app: WispTuiApp) -> str:
-
-    parts: list[str] = []
-    for child in app.query("#chat > *"):
-        if isinstance(child, Markdown):
-            parts.append(str(child.source))
-        elif isinstance(child, ToolCallView):
-            parts.append(child.title)
-        else:
-            parts.append(str(child.render()))
-    return "\n".join(parts)
+    """Printed (scrollback) and live chat text, in display order."""
+    return "\n".join(text for _, text in app.transcript())
 
 
 async def eventually(condition: Any, timeout: float = 60.0) -> None:
@@ -319,6 +310,16 @@ async def test_session_history_load(monkeypatch: pytest.MonkeyPatch) -> None:
         await eventually(lambda: app.session_id == SID)
         await eventually(lambda: "past answer" in str(chat_text(app)))
         assert app.title == "Wisp — test chat"
+
+
+@pytest.mark.parametrize("command", ["/exit", "/quit"])
+async def test_exit_commands_leave(monkeypatch: pytest.MonkeyPatch, command: str) -> None:
+    app, _ = make_app([], monkeypatch)
+    async with app.run_test() as pilot:
+        await eventually(lambda: "ready" in text_of(app.query_one("#status")))
+        app.query_one("#input", Input).value = command
+        await pilot.press("enter")
+        await eventually(lambda: bool(app._exit))
 
 
 async def test_ctrl_c_exits_when_idle(monkeypatch: pytest.MonkeyPatch) -> None:

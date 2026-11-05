@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from textual.widgets import Markdown, Static
+from textual.widgets import Static
 
 from tests.helpers import RID, SID, RequestGate
 from tests.test_app import chat_text, eventually, make_app, text_of
@@ -132,7 +132,8 @@ async def test_follow_up_uses_same_session_and_updates_last_run_not_context(
         await eventually(
             lambda: "First answer" in chat_text(app) and "Follow-up answer" in chat_text(app)
         )
-        assert app.query("#chat > *").last(Markdown).source == "Follow-up answer"
+        answers = [text for kind, text in app.transcript() if kind == "assistant"]
+        assert answers[-1] == "Follow-up answer"
         assert "Ready for your next message" not in chat_text(app)
         assert "run completed" not in footer(app, "status")
         creates = [c for c in client.calls if c[:2] == ("POST", "/v1/sessions")]
@@ -258,7 +259,6 @@ async def test_footer_is_bounded_transparent_and_survives_resize(
             assert 6 <= bottom.region.height <= 10
             assert bottom.region.bottom == 24
             assert app.query_one("#input").region.y >= 0
-            assert app.query_one("#chat").region.height >= 14
             for name in names:
                 widget = app.query_one(f"#{name}", Static)
                 assert widget.styles.background.a == 0

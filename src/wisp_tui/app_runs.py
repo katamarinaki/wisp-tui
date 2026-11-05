@@ -7,9 +7,8 @@ from typing import Any
 
 from .app_base import ApprovalPrompt
 from .app_composer import ComposerLayer
-from .chat_view import ChatScroll
 from .client import TERMINAL_RUN_STATUSES, ClientError, safe_code
-from .history import ChatMessage, HistoryError, checkpoint_covers_answer, parse_history
+from .history import ChatMessage
 from .runs import RunFollower
 from .screens import ApprovalModal
 from .text import safe_text, usage_line
@@ -25,6 +24,8 @@ RUN_PROGRESS_STATUS = {
 
 class RunLayer(ComposerLayer):
     def _begin_run(self, run_id: str, history: list[ChatMessage] | None = None) -> None:
+        if self._stream_view is not None:
+            self._stream_view.flush()
         self.active_run = run_id
         self._tool_calls.clear()
         self._saw_live_tool_events = False
@@ -32,6 +33,7 @@ class RunLayer(ComposerLayer):
         self._cancel_requested = False
         self._answer_text = ""
         self._stream_view = None
+        self._queue_sync()
         self._disconnected = False
         self._answer_segment_start = 0
         self._replay_label_shown = False
@@ -277,7 +279,6 @@ class RunLayer(ComposerLayer):
         self._start_follow()
 
     def _finalize_run(self, kind: str, outcome: Any) -> None:
-        saved_history = self._reattached_checkpoint
         answer = ""
         data = outcome if isinstance(outcome, dict) else {}
         if not self._saw_live_tool_events:
@@ -325,9 +326,7 @@ class RunLayer(ComposerLayer):
             self._record_locally({"type": "run", "runId": self.active_run, "status": "cancelled"})
             self._set_status("run cancelled")
         self._finish_run()
-        if kind == "run.completed" and saved_history is not None and answer:
-            self._refresh_finished_history(saved_history, answer)
-        elif self._tool_targets():
+        if self._tool_targets():
             self._request_tool_history(force_after_current=True)
 
     def _show_summarized_tool_calls(self, tool_calls: Any) -> None:
@@ -344,85 +343,13 @@ class RunLayer(ComposerLayer):
             }
             self._show_tool_call(details, completed=True, terminal=True)
 
-    def _refresh_finished_history(self, before: list[ChatMessage], answer: str) -> None:
-        """Reconcile replay with one fresh checkpoint, never text-dedup old turns."""
-        session_id = self.session_id
-        if session_id is None:
-            return
-        token = object()
-        self._history_refresh_token = token
-        epoch = self._chat_epoch
-
-        def work() -> None:
-            try:
-                payload = self.client.request(
-                    "GET", f"/v1/sessions/{session_id}/history", timeout=5.0
-                )
-                messages = parse_history(payload)
-            except ClientError as error:
-                code = str(error)
-            except HistoryError:
-                code = "unexpected_history_shape"
-            except Exception:
-                code = "internal_error"
-            else:
-                self.call_from_thread(
-                    self._history_refreshed, token, session_id, epoch, before, messages, answer
-                )
-                return
-            self.call_from_thread(self._history_refresh_failed, token, session_id, epoch, code)
-
-        self._run_threaded(work, group="history", on_done=lambda: self._history_refresh_done(token))
-
-    def _history_refresh_current(self, token: object, session_id: str, epoch: int) -> bool:
-        return (
-            self._history_refresh_token is token
-            and self.session_id == session_id
-            and self._chat_epoch == epoch
-            and self.active_run is None
-        )
-
-    def _history_refreshed(
-        self,
-        token: object,
-        session_id: str,
-        epoch: int,
-        before: list[ChatMessage],
-        messages: list[ChatMessage],
-        answer: str,
-    ) -> None:
-        if not self._history_refresh_current(token, session_id, epoch):
-            return
-        self._apply_tool_history(messages, self._tool_targets())
-        if not checkpoint_covers_answer(before, messages, answer):
-            return
-        # Replacing the entire transcript would displace a reader inspecting
-        # replay. Keep that labelled view until an explicit reload instead.
-        if not self.query_one("#chat", ChatScroll).following:
-            return
-        hidden = max(0, len(messages) - self.MAX_CHAT_ITEMS)
-        self._reset_chat(hidden)
-        for message in messages[hidden:]:
-            self._add_message(message)
-
-    def _history_refresh_failed(
-        self, token: object, session_id: str, epoch: int, code: str
-    ) -> None:
-        if self._history_refresh_current(token, session_id, epoch):
-            self._set_status(f"history refresh failed: {safe_code(code, 'history_unavailable')}")
-            for view in self._tool_targets():
-                view.set_result_notice("history_unavailable · collapse and expand to retry.")
-
-    def _history_refresh_done(self, token: object) -> None:
-        if self._history_refresh_token is token:
-            self._history_refresh_token = None
-
     def _finish_run(self) -> None:
         if self._stream_view is not None:
             self._stream_view.flush()
         for item in self._chat_items:
             if isinstance(item, ToolCallView) and not item.completed and not item.historical:
                 item.mark_unreported()
+        self._queue_sync()
         if self._follower is not None:
             self._follower.stop()
         self._dismiss_approval()

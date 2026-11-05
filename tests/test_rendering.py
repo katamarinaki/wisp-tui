@@ -10,16 +10,16 @@ from typing import Any
 
 import pytest
 from textual.widget import Widget
-from textual.widgets import Markdown, Static
-from textual.widgets._markdown import MarkdownBlock
+from textual.widgets import Static
 
 from tests.helpers import RID, SID
 from tests.test_app import eventually, make_app
 from wisp_tui.app import WispTuiApp
-from wisp_tui.chat_view import StreamView
+from wisp_tui.chat_view import ChatItem, StreamView
 from wisp_tui.editor import PromptInput as Input
 from wisp_tui.history import ChatMessage
 from wisp_tui.screens import ApprovalModal, ModelPicker, SessionPicker, server_session_label
+from wisp_tui.scrollback import render_ansi, settled_length
 from wisp_tui.sessions import SessionSummary
 from wisp_tui.tool_view import ToolCallView
 
@@ -36,6 +36,15 @@ TRICKY = [
 
 def plain(widget: Widget) -> str:
     return str(widget.render())
+
+
+def printed(items: list[tuple[str, str]], color_system: str | None = None) -> str:
+    """What the items look like in scrollback (wide, so nothing wraps)."""
+    return render_ansi(items, 200, color_system).replace("\r\n", "\n")
+
+
+def answers(app: WispTuiApp) -> list[str]:
+    return [text for kind, text in app.transcript() if kind == "assistant"]
 
 
 @pytest.mark.parametrize("text", TRICKY)
@@ -71,19 +80,16 @@ async def test_chat_lines_status_and_commands_are_literal(
         app._add_message(ChatMessage("assistant", text))
         await pilot.pause()
 
-        lines = [plain(w) for w in app.query("#chat > Static")]
+        lines = [text for kind, text in app.transcript() if kind == "system"]
         tool = app.query_one(ToolCallView)
         assert tool.title == text and tool.status_text == f"{text} · running…"
-        assert text in plain(tool.query_one("CollapsibleTitle", Static))
-        assert f"transcribed: {text}" in lines
+        assert text in printed([tool.entry()])
+        assert f"transcribed: {text}" in [t for k, t in app.transcript() if k == "tool"]
         assert any(
             line.startswith(f"unknown command /x{text.split(maxsplit=1)[0]}") for line in lines
         )
         assert plain(app.query_one("#status", Static)).startswith(text)
-        answer = app.query("#chat > Markdown").last(Markdown)
-        assert text.replace("\\[", "[") in "".join(
-            str(b.render()) for b in answer.query(MarkdownBlock)
-        )
+        assert text.replace("\\[", "[") in printed([("assistant", answers(app)[-1])])
 
 
 async def test_pickers_show_titles_and_model_ids_literally(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -136,15 +142,10 @@ async def test_runtime_text_cannot_send_terminal_control_sequences(
         app._handle_event({"seq": 1, "kind": "text.delta", "text": "live " + HOSTILE + "\r\n"})
         app._add_message(ChatMessage("assistant", "saved " + HOSTILE + "\r\nnext"))
         app._add_message(ChatMessage("system", "sys " + HOSTILE))
-        await eventually(
-            lambda: any(
-                m.source.startswith("live") for m in app.query("#chat > Markdown").results(Markdown)
-            )
-        )
-        answers = [m.source for m in app.query("#chat > Markdown").results(Markdown)]
-        assert any(source.startswith("saved") and source.endswith("\nnext") for source in answers)
-        assert not any(has_controls(source) for source in answers)
-        assert not has_controls(plain(app.query("#chat > Static.system").last(Static)))
+        await eventually(lambda: any(text.startswith("live") for text in answers(app)))
+        assert any(text.startswith("saved") and text.endswith("\nnext") for text in answers(app))
+        assert not any(has_controls(text) for _, text in app.transcript())
+        assert not has_controls(printed(app.transcript()))
 
         app.push_screen(ApprovalModal("shell" + HOSTILE, {"command": HOSTILE}))
         await pilot.pause()
@@ -167,17 +168,14 @@ async def test_runtime_text_cannot_send_terminal_control_sequences(
     assert not has_controls(local) and "\n" not in local
 
 
-async def test_answer_links_are_never_opened(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_answer_links_are_never_made_clickable(monkeypatch: pytest.MonkeyPatch) -> None:
     app, _ = make_app([], monkeypatch)
-    opened: list[str] = []
-    monkeypatch.setattr(WispTuiApp, "open_url", lambda self, url, **_: opened.append(url))
     async with app.run_test() as pilot:
         app._add_message(ChatMessage("assistant", "[docs](https://attacker.example/?q=x)"))
         await pilot.pause()
-        answer = app.query("#chat > Markdown").last(Markdown)
-        answer.post_message(Markdown.LinkClicked(answer, "https://attacker.example/?q=x"))
-        await pilot.pause()
-    assert opened == []
+        # No OSC 8 hyperlink: the URL is shown as text, never as a link target.
+        shown = printed(app.transcript(), "truecolor")
+        assert "\x1b]8" not in shown and "https://attacker.example/?q=x" in shown
 
 
 def test_chat_css_avoids_structural_pseudo_classes() -> None:
@@ -185,12 +183,12 @@ def test_chat_css_avoids_structural_pseudo_classes() -> None:
     every streamed block (measured ~3x slower on long answers)."""
 
     css = Path(WispTuiApp.CSS_PATH).read_text()
-    assert "#chat > Markdown" in css, "the app stylesheet moved; point this check at it"
+    assert "#chat > *" in css, "the app stylesheet moved; point this check at it"
     assert not re.search(r":(first|last)-(child|of-type)|:nth-|:odd|:even", css)
 
 
-def rendered_blocks(markdown: Markdown) -> list[tuple[str, str]]:
-    return [(type(block).__name__, str(block.render())) for block in markdown.query(MarkdownBlock)]
+def lines(text: str) -> list[str]:
+    return [line.rstrip() for line in text.splitlines() if line.strip()]
 
 
 ANSWER_PARTS = [
@@ -211,18 +209,10 @@ ANSWER_PARTS = [
 ]
 
 
-async def test_streaming_appends_incrementally_and_matches_full_render(
+async def test_streaming_prints_finished_blocks_and_matches_full_render(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app, _ = make_app([], monkeypatch)
-    updates: list[int] = []
-    original_update = Markdown.update
-
-    def counting_update(self: Markdown, markdown: str) -> Any:
-        updates.append(len(markdown))
-        return original_update(self, markdown)
-
-    monkeypatch.setattr(Markdown, "update", counting_update)
     async with app.run_test(size=(100, 60)) as pilot:
         await eventually(lambda: "ready" in app._status_text)
         app.session_id = SID
@@ -237,17 +227,15 @@ async def test_streaming_appends_incrementally_and_matches_full_render(
         assert app._stream_view is not None
         view = app._stream_view
         await eventually(lambda: view.rendered == expected)
-        await app.workers.wait_for_complete()
-
-        streamed = view.widget
-        assert streamed.source == expected
-        # No per-delta full re-render: only the mount-time update of "".
-        assert updates == [0], updates
-        app._add_message(ChatMessage("assistant", expected))
         await pilot.pause()
-        reference = app.query("#chat > Markdown").last(Markdown)
-        assert reference is not streamed
-        assert rendered_blocks(streamed) == rendered_blocks(reference)
+        # Complete blocks already went to scrollback; only the last one is live.
+        assert len([kind for kind, _ in app._scrollback if kind == "assistant"]) > 1
+        assert view.widget.remaining() == "Done [/] ok."
+        app._finalize_run("run.completed", {})
+        await pilot.pause()
+        streamed = [(kind, text) for kind, text in app.transcript() if kind == "assistant"]
+        assert "".join(text for _, text in streamed) == expected
+        assert lines(printed(streamed)) == lines(printed([("assistant", expected)]))
 
 
 async def test_replacement_text_falls_back_to_full_update(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -263,16 +251,14 @@ async def test_replacement_text_falls_back_to_full_update(monkeypatch: pytest.Mo
         view = app._stream_view
         await eventually(lambda: view.rendered == "Server-side text wins. More.")
         await pilot.pause()
-        assert [text for _, text in rendered_blocks(view.widget)] == [
-            "Server-side text wins. More."
-        ]
+        assert view.widget.remaining() == "Server-side text wins. More."
         # Final output that differs from the stream replaces it exactly.
         app._handle_event(
             {"seq": 4, "kind": "run.completed", "outcome": {"output": {"text": "Final answer."}}}
         )
         await eventually(lambda: view.rendered == "Final answer.")
         await pilot.pause()
-        assert [text for _, text in rendered_blocks(view.widget)] == ["Final answer."]
+        assert answers(app) == ["Final answer."]
 
 
 @pytest.mark.parametrize("gap", ["A long first part. B more", "short"])
@@ -295,48 +281,22 @@ async def test_gap_after_a_live_tool_keeps_server_text(
         expected = "B more" if gap.startswith("A long first part. ") else gap
         await eventually(lambda: view.rendered == expected)
         await pilot.pause()
-        first, current = app.query("#chat > Markdown").results(Markdown)
-        assert first.source == "A long first part. " and current is view.widget
-
-
-async def test_clear_during_stream_continues_answer_in_fresh_widget(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app, _ = make_app([], monkeypatch)
-    async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
-        app.session_id = SID
-        app._begin_run(RID)
-        app._handle_event({"seq": 1, "kind": "text.delta", "text": "partial " * 50})
-        app.query_one("#input", Input).value = "/clear"
-        await pilot.press("enter")
-        app._handle_event({"seq": 2, "kind": "text.delta", "text": "more"})
-        await pilot.pause()
-        await app.workers.wait_for_complete()
-        assert app.is_running
-        expected = "partial " * 50 + "more"
-        assert app._answer_text == expected
-        # The answer keeps showing after /clear: one fresh widget, full text.
-        answers = list(app.query("#chat > Markdown"))
-        assert len(answers) == 1
-        assert app._stream_view is not None and answers[0] is app._stream_view.widget
-        await eventually(
-            lambda: app._stream_view is not None and app._stream_view.rendered == expected
-        )
+        assert answers(app) == ["A long first part. ", expected]
+        assert view.widget in app._chat_items
 
 
 async def test_fast_deltas_are_batched_without_losing_the_final_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app, _ = make_app([], monkeypatch)
-    appends: list[str] = []
-    original_append = Markdown.append
+    updates: list[str] = []
+    original_set_text = ChatItem.set_text
 
-    def counting_append(self: Markdown, markdown: str) -> Any:
-        appends.append(markdown)
-        return original_append(self, markdown)
+    def counting_set_text(self: ChatItem, text: str) -> None:
+        updates.append(text)
+        original_set_text(self, text)
 
-    monkeypatch.setattr(Markdown, "append", counting_append)
+    monkeypatch.setattr(ChatItem, "set_text", counting_set_text)
     # No display batch falls due during the test, so every delta must coalesce.
     monkeypatch.setattr(StreamView, "UPDATE_INTERVAL", 30.0)
     async with app.run_test():
@@ -350,10 +310,9 @@ async def test_fast_deltas_are_batched_without_losing_the_final_text(
         view = app._stream_view
         assert view is not None
         app._finalize_run("run.completed", {})
-        await app.workers.wait_for_complete()
         expected = "".join(deltas)
-        assert view.rendered == view.widget.source == expected
-        assert appends == [expected]
+        assert view.rendered == view.widget.text == expected
+        assert updates == [expected]
 
 
 @pytest.mark.parametrize(
@@ -379,7 +338,23 @@ async def test_terminal_outcome_flushes_the_answer_without_waiting_for_a_batch(
         await eventually(lambda: view.widget.is_mounted)
         assert view.rendered == ""
         app._finalize_run(kind, outcome)
-        # The flush is requested synchronously; nothing waits for the 30 s batch.
-        assert view._flush_now.is_set()
+        # Flushed synchronously; nothing waits for the 30 s batch.
+        assert view.rendered == view.widget.text == expected
         await app.workers.wait_for_complete()
-        assert view.rendered == view.widget.source == expected
+        assert answers(app) == [expected]
+
+
+@pytest.mark.parametrize(
+    ("text", "settled"),
+    [
+        ("one\n\ntwo", "one\n\n"),
+        ("one\ntwo", ""),
+        ("intro\n\n```\ncode\n\nmore\n", "intro\n\n"),
+        ("```\ncode\n\nmore\n```\n\nafter", "```\ncode\n\nmore\n```\n\n"),
+        ("~~~\n```\n\nstill code\n", ""),
+        ("- item\n\n  continued\n\n- next", "- item\n\n  continued\n\n"),
+        ("    indented code\n\n    more", ""),
+    ],
+)
+def test_streamed_answers_settle_only_complete_blocks(text: str, settled: str) -> None:
+    assert text[: settled_length(text)] == settled

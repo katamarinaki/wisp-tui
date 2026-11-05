@@ -48,8 +48,10 @@ wi update         # show new commits on main, switch after you confirm
 
 Inside the app: **Enter** sends, **Ctrl+J** adds a newline, **F1** lists keys,
 **F2** opens sessions, **F3** picks a model. Commands: `/new`, `/resume`,
-`/sessions`, `/model`, `/cancel`, `/retry`, `/reconnect`, `/status`, `/clear`,
-`/quit`.
+`/sessions`, `/model`, `/cancel`, `/retry`, `/reconnect`, `/status`, `/exit`
+(or `/quit`); typing `/` lists them and Tab completes. Finished output goes into
+the terminal's normal scrollback, so scrolling, selecting and copying work as
+in any shell, and the conversation stays there after you quit.
 
 Wisp stores your sessions. wisp-tui keeps a private log under
 `~/.local/state/wisp-tui/` so `-c` and `-r` know which ones you used.

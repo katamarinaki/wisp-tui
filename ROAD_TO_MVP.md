@@ -258,17 +258,36 @@ approvals cannot silently lose work or make the UI act on the wrong run/session.
       status lines (the spinner shows activity). After a 403 on an allow-for-
       project/global decision, explain it and offer only approve/deny for the
       rest of the process instead of reopening the same refused choice. On exit,
-      clear the inline area and print the shown transcript (plain text, newest
-      60 items) so it stays in terminal scrollback. Live SSH check pending.
+      clear the inline area and print what is still live; finished items are
+      already in terminal scrollback (see below). Live SSH check pending.
 - [x] Pi-style tool entries: command line (`$ …` for a `command` argument,
       else name + compact arguments), then the last 5 output lines, then a
       `name · ok/failed · time` line. A left bar and the text turn cyan on
       registry `ok`, red on failure (stored history `status` decides only when
       no live `ok` was seen); no background fill. The stored result is
       read automatically after each live completion (deferred so parallel
-      completions share one read; skipped while end-of-run reconciliation runs).
+      completions share one read; a result not stored yet is read once more
+      after 1 s while the run is active, and again at run end).
       There is no exit code in the event contract, so a non-zero exit is red
       only if Wisp reports it as `ok: false`. Live check pending.
+- [x] Second user-test feedback — Pi-style terminal output. Finished items
+      (prompts, answer blocks, settled tool entries, status lines) are printed
+      once into the terminal's own scrollback above a small live area (the
+      answer block being written, running tools, input, footer); items print
+      strictly in order, and a tool waits for its stored-result read. Streamed
+      answers print block by block (blank line outside a code fence), so the
+      live area stays short. The mouse is no longer captured: scrolling,
+      selection and copy are the terminal's, and the chat stays as rendered
+      after exit. Live and printed items share one Rich renderer (teal
+      `48;5;23` prompt blocks, no code fills, ` ▌ ` cyan/red tool bars,
+      links shown as text). After a resize the printed chat (last 200 items)
+      is cleared, scrollback included, and reprinted at the new width, as Pi
+      and Claude Code do. Supersedes the follow-pause/F4 hint, tool
+      expansion, in-app trimming, `/clear` (removed by owner) and the
+      transcript-replacing checkpoint refresh (replay stays labelled).
+      Typing `/` lists matching commands with a Tab/Right completion; `/exit`
+      joins `/quit`. Offline PTY checks cover printing, exit and background;
+      live SSH/iTerm2 check pending (resize clears shell scrollback too).
 
 **Exit criterion:** composing a real homeserver task and inspecting Wisp's work
 is comfortable over SSH. Keep the existing pickers and commands unless a
@@ -297,7 +316,7 @@ not a release criterion.
 
 - Keep `.venv/bin/python -m pytest tests/`, `.venv/bin/python -m mypy` and
   `ruff check` / `ruff format --check` green.
-  Current baseline: **523 passing tests**, strict mypy passing.
+  Current baseline: **476 passing tests**, strict mypy passing.
 - Keep this checklist accurate after each implementation slice.
 - [x] Local Git repository (`main` baseline, work on branches).
 - [x] Reproducible installs: exact pins in `requirements*.txt` with wheel

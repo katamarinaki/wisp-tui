@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from textual.widgets import TextArea
+from textual.widgets import Static, TextArea
 
 from .app_chat import ChatLayer
 from .composer import ComposerError, ComposerState, bounded_history
 from .editor import PromptInput
+from .help_text import COMMANDS
 from .submissions import MAX_DRAFT_BYTES
 
 
@@ -110,9 +111,24 @@ class ComposerLayer(ChatLayer):
             self._composer_timer = self.set_timer(0.35, self._flush_composer)
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if event.text_area is self._prompt_input:
+            self._render_command_hints(self._prompt_input.text)
         if event.text_area is self._composer_editor:
             self._capture_composer()
             self._queue_composer_save()
+
+    def _render_command_hints(self, text: str) -> None:
+        matches = []
+        if text.startswith("/") and not any(char.isspace() for char in text):
+            matches = [command for command in COMMANDS if command[0].startswith(text)]
+        lines = [f"{f'{name} {args}'.rstrip():<16}{about}" for name, args, about in matches]
+        if len(matches) > 6:
+            # Too many to describe without crowding the transcript: names only.
+            lines = ["  ".join(name for name, _, _ in matches)]
+        # A queued change can arrive after shutdown removed the footer.
+        for hints in self.query("#command-hints").results(Static):
+            hints.update("\n".join(lines))
+            hints.display = bool(lines)
 
     def _flush_composer(self) -> None:
         self._capture_composer()

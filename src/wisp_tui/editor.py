@@ -41,7 +41,7 @@ class PromptInput(TextArea):
         def control(self) -> PromptInput:
             return self.input
 
-    def __init__(self, *, id: str = "input") -> None:
+    def __init__(self, *, id: str = "input", commands: tuple[str, ...] = ()) -> None:
         super().__init__(
             id=id,
             soft_wrap=True,
@@ -64,6 +64,7 @@ class PromptInput(TextArea):
         self._prompt_history: tuple[str, ...] = ()
         self._history_index: int | None = None
         self._history_edits: dict[int, str] = {}
+        self._commands = commands
 
     @property
     def value(self) -> str:
@@ -73,6 +74,8 @@ class PromptInput(TextArea):
     def value(self, text: str) -> None:
         self.load_text(text)
         self.move_cursor(self.document.end)
+        # load_text computed the suggestion with the cursor still at the start.
+        self.update_suggestion()
 
     async def _on_key(self, event: events.Key) -> None:
         # Consume these before TextArea's default Enter-to-newline handler.
@@ -90,6 +93,23 @@ class PromptInput(TextArea):
             event.stop()
             event.prevent_default()
             action()
+        elif event.key == "tab" and self.suggestion:
+            event.stop()
+            event.prevent_default()
+            self.insert(self.suggestion)
+
+    def update_suggestion(self) -> None:
+        text = self.text
+        self.suggestion = ""
+        if (
+            self.read_only
+            or not text.startswith("/")
+            or any(char.isspace() for char in text)
+            or self.cursor_location != self.document.end
+        ):
+            return
+        match = next((name for name in self._commands if name.startswith(text)), "")
+        self.suggestion = match[len(text) :]
 
     async def _on_paste(self, event: events.Paste) -> None:
         # Consume the whole paste once; never bubble it back for forwarding.
