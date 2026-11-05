@@ -29,6 +29,7 @@ class RunLayer(ComposerLayer):
         self.active_run = run_id
         self._tool_calls.clear()
         self._saw_live_tool_events = False
+        self._tool_history_post_run_reads = 0
         self._reattached_checkpoint = list(history) if history is not None else None
         self._cancel_requested = False
         self._answer_text = ""

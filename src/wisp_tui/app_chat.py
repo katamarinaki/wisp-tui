@@ -14,6 +14,10 @@ from .tool_view import ToolCallView
 
 ChatEntry = ChatItem | ToolCallView
 
+# A finished run's final checkpoint can commit moments after the run.completed
+# event; retry the stored-result read before reporting it as missing.
+TOOL_HISTORY_POST_RUN_DELAYS = (1.0, 3.0, 6.0)
+
 
 class ChatLayer(AppBase):
     def _scroll_down(self) -> None:
@@ -98,6 +102,7 @@ class ChatLayer(AppBase):
         self._tool_history_token = None
         self._tool_history_targets = ()
         self._tool_history_again = False
+        self._tool_history_post_run_reads = 0
         if hidden:
             self._show_line(
                 f"\u2191 {hidden} earlier item{'s' if hidden != 1 else ''} not shown "
@@ -207,6 +212,7 @@ class ChatLayer(AppBase):
     ) -> None:
         matched, ambiguous = tool_history_results(messages, {view.call_id for view in targets})
         retry = False
+        post_run_retry = False
         for view in targets:
             if (
                 view not in self._chat_items
@@ -225,9 +231,19 @@ class ChatLayer(AppBase):
                 # A queued read, or the call's own completion read, may still find it.
                 view.set_result_notice("")
                 continue
-            elif self.active_run is not None and not view.result_retried:
-                # Wisp may store the result after reporting the completion.
-                view.result_retried = retry = True
+            elif self.active_run is not None:
+                # Wisp may store the result after reporting the completion, and
+                # the run-end read is still coming: a miss is never final while
+                # the run is live, so the entry stays available to that read.
+                if not view.result_retried:
+                    view.result_retried = retry = True
+                view.set_result_notice("")
+                continue
+            elif self._tool_history_post_run_reads < len(TOOL_HISTORY_POST_RUN_DELAYS):
+                # The final checkpoint may commit just after run.completed;
+                # keep waiting instead of declaring the result missing.
+                view.set_result_notice("")
+                post_run_retry = True
                 continue
             else:
                 view.set_result_notice("Result not in stored history.")
@@ -235,6 +251,10 @@ class ChatLayer(AppBase):
             view.refresh_entry()
         if retry:
             self.set_timer(1.0, self._request_tool_history)
+        if post_run_retry:
+            delay = TOOL_HISTORY_POST_RUN_DELAYS[self._tool_history_post_run_reads]
+            self._tool_history_post_run_reads += 1
+            self.set_timer(delay, self._request_tool_history)
         self._queue_sync()
 
     def _request_tool_history(self, *, force_after_current: bool = False) -> None:
@@ -308,6 +328,10 @@ class ChatLayer(AppBase):
         if self._tool_history_current(token, session_id, epoch):
             for view in targets:
                 if view in self._chat_items and view.output_text is None:
+                    if self.active_run is not None:
+                        # Not final while the run is live; the run-end read retries.
+                        view.set_result_notice("")
+                        continue
                     # A running call still gets its own read on completion.
                     finished = view.completed or view.unreported
                     view.result_checked = finished

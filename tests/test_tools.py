@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections import deque
 from typing import Any
@@ -11,6 +12,7 @@ import pytest
 from tests.helpers import RID, SID, RequestGate
 from tests.test_app import eventually, make_app
 from tests.test_submissions import COMPLETED
+from wisp_tui import app_chat
 from wisp_tui.client import ClientError
 from wisp_tui.editor import PromptInput
 from wisp_tui.history import parse_history, tool_history_results
@@ -679,18 +681,13 @@ async def test_invalid_duration_never_crashes_or_claims_a_time(
         assert VIEWS[0].status_text == "example · finished"
 
 
-@pytest.mark.parametrize(
-    ("second_read", "shown"),
-    [(True, "finished output"), (False, "Result not in stored history.")],
-)
 async def test_active_run_reads_a_missing_result_once_more_before_printing(
-    monkeypatch: pytest.MonkeyPatch, second_read: bool, shown: str
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app, client = make_app([], monkeypatch)
     route = f"/v1/sessions/{SID}/history"
     # Wisp may report the completion before it stores the tool result.
-    later = tool_history("one", "finished output") if second_read else []
-    client.replies[("GET", route)] = deque([[], later])
+    client.replies[("GET", route)] = deque([[], tool_history("one", "finished output")])
     async with app.run_test():
         app.session_id = SID
         app._begin_run(RID)
@@ -699,5 +696,79 @@ async def test_active_run_reads_a_missing_result_once_more_before_printing(
         await eventually(lambda: app._tool_history_token is None)
         assert not tool.settled
         await eventually(lambda: tool.settled)
-        assert shown in tool.entry()[1]
+        assert "finished output" in tool.entry()[1]
         assert sum(path == route for _, path, _ in client.calls) == 2
+
+
+async def test_missing_result_waits_for_the_run_end_read_and_late_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app_chat, "TOOL_HISTORY_POST_RUN_DELAYS", (0.05,))
+    app, client = make_app([], monkeypatch)
+    route = f"/v1/sessions/{SID}/history"
+    # The completion read, its 1 s retry and the run-end read all miss; the
+    # final checkpoint commits only after the run completed.
+    client.replies[("GET", route)] = deque([[], [], [], tool_history("one", "late output")])
+    async with app.run_test():
+        app.session_id = SID
+        app._begin_run(RID)
+        tool = app._show_tool_call({"toolCallId": "one", "name": "read_file"}, completed=True)
+        await eventually(lambda: sum(path == route for _, path, _ in client.calls) == 2)
+        await eventually(lambda: app._tool_history_token is None)
+        # Never final while the run is live: no notice, entry still repairable.
+        assert not tool.settled
+        assert "Result not in stored history." not in tool.entry()[1]
+        app._finalize_run("run.completed", {"output": {"text": "done"}})
+        await eventually(lambda: tool.settled)
+        assert "late output" in tool.entry()[1]
+        assert "Result not in stored history." not in tool.entry()[1]
+        assert sum(path == route for _, path, _ in client.calls) == 4
+
+
+async def test_missing_result_is_reported_only_after_bounded_post_run_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app_chat, "TOOL_HISTORY_POST_RUN_DELAYS", (0.05, 0.05))
+    app, client = make_app([], monkeypatch)
+    route = f"/v1/sessions/{SID}/history"
+    # An empty deque falls back to the default history, which has no tools.
+    client.replies[("GET", route)] = deque()
+    async with app.run_test():
+        app.session_id = SID
+        app._begin_run(RID)
+        tool = app._show_tool_call({"toolCallId": "one", "name": "read_file"}, completed=True)
+        await eventually(lambda: sum(path == route for _, path, _ in client.calls) == 2)
+        await eventually(lambda: app._tool_history_token is None)
+        app._finalize_run("run.completed", {"output": {"text": "done"}})
+        await eventually(lambda: "Result not in stored history." in tool.entry()[1])
+        assert tool.settled
+        # Two in-run reads, the run-end read and two bounded retries — no more.
+
+        def reads() -> int:
+            return sum(path == route for _, path, _ in client.calls)
+
+        assert reads() == 5
+        await asyncio.sleep(0.3)
+        assert reads() == 5
+
+
+async def test_history_read_failure_waits_for_the_run_end_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, client = make_app([], monkeypatch)
+    route = f"/v1/sessions/{SID}/history"
+    client.replies[("GET", route)] = deque(
+        [ClientError("runtime_timeout"), tool_history("one", "later output")]
+    )
+    async with app.run_test():
+        app.session_id = SID
+        app._begin_run(RID)
+        tool = app._show_tool_call({"toolCallId": "one", "name": "read_file"}, completed=True)
+        await eventually(lambda: sum(path == route for _, path, _ in client.calls) == 1)
+        await eventually(lambda: app._tool_history_token is None)
+        # A failed read is not final while the run is live either.
+        assert not tool.settled
+        assert "result unavailable" not in tool.entry()[1]
+        app._finalize_run("run.completed", {"output": {"text": "done"}})
+        await eventually(lambda: tool.settled)
+        assert "later output" in tool.entry()[1]
