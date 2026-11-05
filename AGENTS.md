@@ -5,7 +5,8 @@ Terminal chat client for the local Wisp runtime. Python 3.11+, stdlib + textual
 
 ## Scope and plan
 
-The only target workflow is Mac → SSH → homeserver → Wisp:
+The only target workflow is a terminal, local or over SSH, on the machine
+that runs Wisp:
 reliable task submission, progress, explicit approvals, cancellation, and
 reattachment. Do not expand this into a general-purpose Pi replacement.
 
@@ -19,8 +20,8 @@ reattachment. Do not expand this into a general-purpose Pi replacement.
   Never push to or merge into `main` yourself. Never create, push or publish
   release tags or GitHub releases: the owner signs releases (MAINTAINING.md).
 - CI (`.github/workflows/ci.yml`) runs pytest + strict mypy on pushes to
-  `main`/`develop` and on PRs, on GitHub-hosted runners only. Never use the
-  homeserver's self-hosted runner here: fork PRs would execute code on it.
+  `main`/`develop` and on PRs, on GitHub-hosted runners only. Never use a
+  self-hosted runner here: fork PRs would execute code on it.
 - Because the repo is public, keep infrastructure identifiers out of code,
   tests and docs: no real IPs/hostnames/usernames or private ops notes. Use
   documentation addresses (e.g. `192.0.2.10`, `100.64.0.1`) in tests.

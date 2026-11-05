@@ -268,7 +268,7 @@ async def test_continue_without_saved_sessions_starts_fresh(
 async def test_resume_picker_lists_saved_sessions_newest_first(
     monkeypatch: pytest.MonkeyPatch, private_state_dir: Path
 ) -> None:
-    seed(private_state_dir, (SID, "restart jellyfin", 1_000), (OTHER, "check disks", 2_000))
+    seed(private_state_dir, (SID, "restart webapp", 1_000), (OTHER, "check disks", 2_000))
     app, _ = make_app([], monkeypatch)
     app.startup = Startup("resume")
     async with app.run_test() as pilot:
@@ -276,7 +276,7 @@ async def test_resume_picker_lists_saved_sessions_newest_first(
         picker = app.screen
         assert isinstance(picker, SessionPicker)
         assert [sid for sid, _ in picker.entries] == [OTHER, SID]
-        assert picker.entries[1][1].startswith("restart jellyfin")
+        assert picker.entries[1][1].startswith("restart webapp")
         await pilot.press("down", "enter")
         await eventually(lambda: app.session_id == SID and not app._session_change_in_progress)
         assert "past answer" in chat_text(app)
@@ -298,7 +298,7 @@ def test_find_matches_prefixes_newest_first(tmp_path: Path) -> None:
 async def test_resume_by_unique_prefix_opens_it(
     monkeypatch: pytest.MonkeyPatch, private_state_dir: Path
 ) -> None:
-    seed(private_state_dir, (SID, "restart jellyfin", 1_000), (OTHER, "check disks", 2_000))
+    seed(private_state_dir, (SID, "restart webapp", 1_000), (OTHER, "check disks", 2_000))
     app, _ = make_app([], monkeypatch)
     app.startup = Startup("resume", "3bf1")
     async with app.run_test():
@@ -411,7 +411,7 @@ async def test_approval_decision_is_recorded_with_what_was_approved(
             "kind": "confirmation.required",
             "id": "prompt-1",
             "toolName": "restart_service",
-            "args": {"name": "jellyfin"},
+            "args": {"name": "webapp"},
         },
         {"seq": 2, "kind": "run.parked"},
         {"seq": 3, "kind": "run.completed", "outcome": {"output": {"text": "restarted"}}},
@@ -420,7 +420,7 @@ async def test_approval_decision_is_recorded_with_what_was_approved(
     app.config = dataclasses.replace(app.config, log_approval_args=log_args)
     async with app.run_test() as pilot:
         await eventually(lambda: "new session" in app._status_text)
-        app.query_one("#input", Input).value = "restart jellyfin"
+        app.query_one("#input", Input).value = "restart webapp"
         await pilot.press("enter")
         await eventually(lambda: len(app.screen_stack) > 1)
         await approval_armed(app)
@@ -433,7 +433,7 @@ async def test_approval_decision_is_recorded_with_what_was_approved(
     assert approvals[0]["decision"] == "approve"
     # Arguments are logged only with log_approval_args.
     if log_args:
-        assert json.loads(approvals[0]["args"]) == {"name": "jellyfin"}
+        assert json.loads(approvals[0]["args"]) == {"name": "webapp"}
     else:
         assert "args" not in approvals[0]
 

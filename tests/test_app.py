@@ -123,8 +123,8 @@ async def test_confirmation_flow_approves(monkeypatch: pytest.MonkeyPatch) -> No
             "seq": 2,
             "kind": "confirmation.required",
             "id": "prompt-1",
-            "toolName": "restart_jellyfin",
-            "args": {"target": "jellyfin"},
+            "toolName": "restart_webapp",
+            "args": {"target": "webapp"},
         },
         {"seq": 3, "kind": "run.parked"},
         {"seq": 4, "kind": "run.resumed"},
@@ -145,11 +145,11 @@ async def test_confirmation_flow_approves(monkeypatch: pytest.MonkeyPatch) -> No
     async with app.run_test() as pilot:
         await eventually(lambda: "ready" in text_of(app.query_one("#status")))
         app.session_id = SID
-        app.query_one("#input", Input).value = "restart jellyfin please"
+        app.query_one("#input", Input).value = "restart webapp please"
         await pilot.press("enter")
         # the approval dialog appears
         await eventually(lambda: len(app.screen_stack) > 1)
-        assert "restart_jellyfin" in str(screen_text(app))
+        assert "restart_webapp" in str(screen_text(app))
         await approval_armed(app)
         await pilot.press("y")  # approve
         await eventually(lambda: app.active_run is None)
@@ -168,14 +168,14 @@ async def test_refused_rule_decision_offers_only_approve_or_deny(
             "seq": 1,
             "kind": "confirmation.required",
             "id": "prompt-1",
-            "toolName": "restart_jellyfin",
+            "toolName": "restart_webapp",
             "args": {},
         },
         {
             "seq": 2,
             "kind": "confirmation.required",
             "id": "prompt-2",
-            "toolName": "restart_navidrome",
+            "toolName": "restart_database",
             "args": {},
         },
         {"seq": 3, "kind": "run.parked"},
@@ -214,7 +214,7 @@ async def test_refused_rule_decision_offers_only_approve_or_deny(
                 gate.entered.is_set()
                 and isinstance(app.screen, ApprovalModal)
                 and app.screen.allow_rules
-                and app.screen.tool_name == "restart_navidrome"
+                and app.screen.tool_name == "restart_database"
             )
         )
         gate.release.set()
@@ -247,7 +247,7 @@ async def test_confirmation_flow_esc_denies(monkeypatch: pytest.MonkeyPatch) -> 
             "seq": 1,
             "kind": "confirmation.required",
             "id": "prompt-2",
-            "toolName": "restart_navidrome",
+            "toolName": "restart_database",
             "args": {},
         },
         {"seq": 2, "kind": "run.parked"},
@@ -268,7 +268,7 @@ async def test_confirmation_flow_esc_denies(monkeypatch: pytest.MonkeyPatch) -> 
     async with app.run_test() as pilot:
         await eventually(lambda: "ready" in text_of(app.query_one("#status")))
         app.session_id = SID
-        app.query_one("#input", Input).value = "restart navidrome"
+        app.query_one("#input", Input).value = "restart database"
         await pilot.press("enter")
         await eventually(lambda: len(app.screen_stack) > 1)
         await pilot.press("escape")

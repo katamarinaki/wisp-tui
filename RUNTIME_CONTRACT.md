@@ -273,7 +273,7 @@ explicit/deferred retry, stale/error paths and no replayed approvals;
 `tests/test_submission_leases.py` checks unowned failure/conflict cleanup and
 retention of owned or post-replacement ambiguous requests.
 All runtime responses are synthetic. The 2026-11-05 owner acceptance run
-additionally exercised the live Mac SSH workflow against runtime 0.1.8
+additionally exercised the live SSH workflow against runtime 0.1.8
 (apiVersion 2) with Textual 8.2.8: launch, multiline submission, streamed
 text/tool progress, a live approval, cancellation, disconnect/reconnect
 recovery, a cross-client parked approval, and exit restoration. The **deny**
