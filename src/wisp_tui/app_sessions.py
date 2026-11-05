@@ -20,7 +20,7 @@ class SessionLayer(SubmissionLayer):
         if self._pending_state_error:
             self._show_line("Pending-request state must be recovered first (/retry).")
             return False
-        if self._session_change_in_progress or self._history_refresh_token is not None:
+        if self._session_change_in_progress:
             self._show_line("Session/history load already in progress — please wait.")
             return False
         if self._pending_submission is not None:
@@ -92,7 +92,7 @@ class SessionLayer(SubmissionLayer):
             self._queue_composer_save()
         self.session_title = safe_text(session.get("title"), 80) or "(untitled)"
         self.title = f"Wisp — {self.session_title}"
-        # Only mount the tail of long histories (see MAX_CHAT_ITEMS).
+        # Only show the tail of long histories (see MAX_CHAT_ITEMS).
         hidden = max(0, len(messages) - self.MAX_CHAT_ITEMS)
         self._reset_chat(hidden)
         for message in messages[hidden:]:

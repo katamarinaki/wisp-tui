@@ -1,4 +1,19 @@
-"""The F1 / /help text shown in the chat."""
+"""The F1 / /help text and the slash commands offered while typing."""
+
+# (command, arguments, description); the first prefix match is completed.
+COMMANDS: tuple[tuple[str, str, str], ...] = (
+    ("/help", "", "keys and commands"),
+    ("/new", "[title]", "start a fresh session"),
+    ("/resume", "[id]", "pick or open a saved session"),
+    ("/sessions", "", "browse all Wisp sessions"),
+    ("/model", "", "choose model or mode"),
+    ("/cancel", "", "cancel the active run"),
+    ("/retry", "", "resend the unacknowledged request"),
+    ("/reconnect", "", "reattach to the active run"),
+    ("/status", "", "connection and session details"),
+    ("/exit", "", "leave wisp-tui"),
+    ("/quit", "", "leave wisp-tui"),
+)
 
 HELP_TEXT = """**wisp-tui** — chat with the local Wisp runtime.
 
@@ -12,7 +27,6 @@ HELP_TEXT = """**wisp-tui** — chat with the local Wisp runtime.
 | F1 | This help |
 | F2 | Session picker |
 | F3 | Model / mode picker |
-| F4 | Resume following the latest output |
 | Ctrl+C | Cancel the active run — press twice to leave |
 
 Bracketed paste stays literal in the editor until you press Enter. Slash
@@ -21,7 +35,8 @@ starting with `/` is a prompt, not a sequence of commands. Ctrl+J works over
 ordinary SSH; Shift+Enter may arrive as plain Enter in some terminals.
 
 **Commands:** `/new [title]`, `/resume`, `/sessions`, `/model`, `/cancel`,
-`/retry`, `/reconnect`, `/status`, `/clear`, `/help`, `/quit`.
+`/retry`, `/reconnect`, `/status`, `/help`, `/exit` (or `/quit`).
+Typing `/` lists matching commands; Tab or Right completes the suggestion.
 
 **Sessions:** every launch starts fresh; your first message creates the Wisp
 session. `/new` starts another one. Sessions you use here are saved locally
@@ -49,18 +64,12 @@ setting and last finished run's reported tokens visible (↑ input, ↓ output,
 Tokens update when a run finishes, not live; context occupancy is unavailable.
 The launch directory belongs to this client, not Wisp's tools.
 
-Tool entries stay above the current answer. Click a tool title to expand or
-collapse its details, or Tab to the title and press Enter. Live inputs may be
-sanitized; outputs load from stored session history when a unique call ID is
-available. Long details scroll inside the expanded entry. Collapse/expand
-retries a missing result. Opening details never executes or approves a tool.
-
-Scroll up in the transcript to pause automatic following while output continues.
-Click the paused-follow hint or press F4 to jump to the latest output and resume.
-Tab to the transcript for Up/PageUp/Home navigation; End, or scrolling back
-to the bottom, also resumes following.
-Editor and expanded tool-body scrolling stay independent. Opening a tool with
-Tab pauses following so new output will not pull you away from its details.
+Finished output is printed into the terminal's own scrollback, like any
+command's output: scroll, select and copy it with the terminal as usual, and it
+stays after you quit. Only the answer being written, running tools and the
+input stay in the live area at the bottom. Tool entries show the command, the
+last 5 output lines (read from stored session history when a unique call ID is
+available) and the status; full output stays in Wisp's history.
 
 While a run is active you will see tool calls as they happen. When Wisp needs
 approval for a tool, a dialog appears: **y** approve, **n** deny, **p** allow

@@ -119,13 +119,18 @@ def test_inline_terminal_keeps_default_background(width: int) -> None:
     assert all(re.search(rb"(?:^|;)38;5;25[0-5](?:;|$)", codes) for codes in prompt_styles), (
         "prompt text is not the fixed light foreground"
     )
+    # Answers are printed to scrollback after a reset: only attributes (bold)
+    # or explicit defaults, never a fixed foreground or background color.
     response_styles = re.findall(rb"\x1b\[([0-9;:]*)mScripted response", capture)
     assert response_styles, "scripted answer was not rendered"
-    assert all(b"39" in codes.split(b";") for codes in response_styles), (
-        "answer did not use the terminal's default foreground"
-    )
-    assert all(b"49" in codes.split(b";") for codes in response_styles), (
-        "answer did not use the terminal's default background"
+    assert all(
+        part in (b"0", b"1", b"2", b"39", b"49")
+        for codes in response_styles
+        for part in codes.split(b";")
+    ), "answer did not use the terminal's default colors"
+    printed = capture.index(b"Scripted response")
+    assert printed < capture.index(b"Wisp asks for approval"), (
+        "answer was not printed to scrollback before the approval frame"
     )
     assert b"Working" in capture
     assert b"thinking: on" in capture
@@ -203,47 +208,6 @@ def test_busy_spinner_does_not_retransmit_the_unchanged_chat(width: int) -> None
     )
 
 
-@pytest.mark.parametrize("width", [40, 100])
-def test_tool_details_fold_with_real_keys_without_painting_a_background(width: int) -> None:
-    capture = capture_terminal(
-        "tests.tool_terminal_fixture",
-        width,
-        (
-            (b"TOOL_READY", b"\r"),
-            (b"TOOL_EXPANDED", b"\r"),
-        ),
-    )
-    result = json.loads(capture.split(b"TOOL_RESULT=", 1)[1].splitlines()[0])
-    assert result == {"expanded": True, "collapsed": True, "draft": "keep draft"}
-    assert b"SCRIPTED_TOOL_OUTPUT [/]" in capture
-    assert b"Input" in capture and b"Output" in capture
-    assert b"\x1b[?1049h" not in capture, "alternate screen was enabled"
-    sgr = re.findall(rb"\x1b\[([0-9;:]*)m", capture)
-    assert not any(re.search(rb"(?:^|[;:])48(?:[;:]|$)", codes) for codes in sgr), (
-        "expanded/focused tool details painted a background"
-    )
-
-
-@pytest.mark.parametrize("width", [40, 100])
-def test_follow_pause_and_resume_with_real_keys_keep_the_default_background(width: int) -> None:
-    capture = capture_terminal(
-        "tests.scroll_terminal_fixture",
-        width,
-        (
-            (b"SCROLL_READY", b"\x1b[5~"),  # PageUp with the transcript focused.
-            (b"SCROLL_PAUSED_READY", b"\x1bOS"),  # F4 resumes following.
-        ),
-    )
-    result = json.loads(capture.split(b"SCROLL_RESULT=", 1)[1].splitlines()[0])
-    assert result == {"paused": True, "resumed": True}
-    assert b"Follow paused" in capture and b"click to resume" in capture
-    assert b"\x1b[?1049h" not in capture, "alternate screen was enabled"
-    sgr = re.findall(rb"\x1b\[([0-9;:]*)m", capture)
-    assert not any(re.search(rb"(?:^|[;:])48(?:[;:]|$)", codes) for codes in sgr), (
-        "follow controls painted a background"
-    )
-
-
 def test_long_stream_resize_and_modal_keys_in_a_real_inline_terminal() -> None:
     capture = capture_terminal(
         "tests.usability_terminal_fixture",
@@ -267,5 +231,5 @@ def test_long_stream_resize_and_modal_keys_in_a_real_inline_terminal() -> None:
     assert not any(re.search(rb"(?:^|[;:])48(?:[;:]|$)", codes) for codes in sgr), (
         "stream, picker or approval painted a background"
     )
-    for restore in (b"\x1b[?25h", b"\x1b[?2004l", b"\x1b[?1000l", b"\x1b[?1006l"):
+    for restore in (b"\x1b[?25h", b"\x1b[?2004l"):
         assert restore in capture and capture.rfind(restore) < capture.index(b"USABILITY_RESULT=")

@@ -81,7 +81,7 @@ def main() -> None:
             sessions=SessionStore(root / "sessions"),
             submissions=SubmissionStore(client.url, root),
         )
-        app.run(inline=True)
+        app.run(inline=True, mouse=False)
         inputs = [
             body["input"]
             for method, path, body in client.calls

@@ -84,8 +84,8 @@ no automatic POST, SSE attachment, confirmation or reservation release follows.
 An explicit `/retry` received during the read waits for completion and then
 reuses the same identity/options, even if the read failed. Duplicate retry
 keypresses do not create multiple submissions. Pending identity, session and
-operation token fence callbacks; `/clear` invalidates history restoration but
-allows metadata to update, and exit cancels any deferred retry. A successful
+operation token fence callbacks; a newer view invalidates history restoration
+but allows metadata to update, and exit cancels any deferred retry. A successful
 read also supplies the saved checkpoint baseline for later replay presentation.
 
 ## Discovery and records
@@ -141,31 +141,21 @@ snapshot: a run that both starts and finishes outside that discovery window
 still requires runtime guarantees/live acceptance to reason about fully.
 
 When attaching to a known run, the saved checkpoint and streamed replay are
-explicitly separated. SSE cursor/gap handling remains run-scoped. After a
-successful terminal outcome, one additional history GET (5s timeout) reconciles
-the display only when a progressed checkpoint contains the exact finished
-answer as its trailing assistant message:
+explicitly separated: the checkpoint is printed first, then the replay below a
+"Current run replay — may overlap the saved checkpoint." label. Printed output
+lives in the terminal's scrollback and is never rewritten, so a successful
+terminal outcome no longer triggers a checkpoint re-read to replace the replay
+(the earlier coverage heuristic was removed with the in-app transcript). The
+overlap therefore always stays visible and labelled; nothing is removed because
+texts match. Failed/cancelled runs keep their error/cancel lines and any partial
+replay.
 
-- The checkpoint appends messages without rewriting the prior snapshot; or
-- The trailing assistant has the same nonempty message ID, changes its text to
-  the finished answer, and the earlier messages are unchanged.
-
-An unchanged checkpoint, missing/changing IDs on an updated message, compaction,
-rewritten earlier messages, a lagging partial answer, or an answer split across
-multiple checkpoint messages cannot prove coverage. Keep the saved snapshot
-and labelled run output in these cases. In particular, never remove a previous
-“OK” solely because a new run also replies “OK”. Genuine identical replies
-remain separate when the checkpoint includes both turns. This is conservative
-presentation reconciliation, not a claim of lossless cross-client/run-ID merge.
-
-The refresh uses the existing history route, never submits work, and blocks new
-submission/session changes while retaining drafts. Session/run identity, an
-operation token and chat generation fence every callback. `/clear` invalidates
-pending refreshes and cancels reconciliation for an active replay; failed reads
-preserve the terminal result and visible answer. Rebuilding the view retains
-the normal bounded chat tail and does not write the assistant answer twice to
-the local session record. Failed/cancelled runs retain their error/cancel lines
-and any partial replay; they do not trigger this successful-answer refresh.
+Known limit: a streamed answer prints block by block. If a gap snapshot or the
+final `output.text` does not extend the blocks already printed for the current
+segment (for example, it rewords an earlier paragraph), the whole new text is
+printed below the earlier blocks, so both versions stay visible. Whether the
+runtime's final text can differ from its deltas this way is part of the live
+acceptance test.
 
 The live acceptance test must establish message-ID stability, how the final
 run output relates to multi-message checkpoints, checkpoint commit timing, and
@@ -199,21 +189,26 @@ This is static package evidence, not a live trace or a universal ID guarantee.
 
 Live arguments may already be truncated, redacted, parsed or changed after
 approval. History arguments are the model request and can differ from actual
-execution inputs. The UI labels these sources separately and keeps live inputs
-when history supplies a result. `additional_kwargs.wisp_tool_output_pruned ===
-true` labels a stored result as a summary; stored content can also be limited or
-transformed by tools/connectors. JSON strings remain strings, and content-block
-arrays are shown literally within the normal display limits. Registry `ok` and
-stored tool-message `status` remain distinct observations.
+execution inputs. A tool entry's title comes from the live arguments when the
+runtime sent them, else from history; the full input is not shown. The printed
+tail is the stored result as returned, which may be a summary
+(`additional_kwargs.wisp_tool_output_pruned`, not shown) or otherwise limited
+or transformed by tools/connectors. JSON strings remain strings, and
+content-block arrays are shown literally within the normal display limits.
+Registry `ok` decides the entry's ok/failed state; stored tool-message `status`
+is used only when no live `ok` was seen.
 
-A live completion, or expanding an identified entry with no cached result,
-performs one bounded (5s) GET through the existing history allowlist.
-Concurrent requests are coalesced; terminal completion refreshes every missing
-result, and replay reconciliation reuses its history response. This does not reserve the submission
-slot or block typing, cancellation or fresh work. Errors appear as safe codes
-inside the entry; collapse/expand explicitly retries. Session/chat generation,
-request identity and exact target widgets fence replies after clear, switching,
-trimming or exit. No automatic POST, tool execution or approval is added.
+A live completion of an identified entry performs one bounded (5s) GET through
+the existing history allowlist. Concurrent requests are coalesced. While the
+run is active, a result not stored yet is read once more after 1 s, and
+terminal completion re-reads every entry still waiting; only then is it
+reported missing. This does not reserve the submission slot or block typing,
+cancellation or fresh work. A tool entry (and everything after it) stays in the
+live area until its reads finish, then is printed once with the output tail or
+a safe error code; there is no expansion or manual retry.
+Session/chat generation, request identity and exact target entries fence
+replies after switching or exit. No automatic POST, tool execution or approval
+is added.
 
 Only uniquely matched call IDs fill outputs; conflicting/reused IDs remain
 ambiguous. An unidentified run summary points to reopening stored session
@@ -275,12 +270,10 @@ POSTs, cancellation, stale callbacks, long gaps, and old request replay refusal.
 restart identity/options, no automatic replay, lease contention (including a
 separate process), failed file/directory syncs, stale acknowledgements, clock
 and TTL refusal, endpoint binding, bounded/unsafe/malformed files, and fail-closed
-UI behavior. `tests/test_history_replay.py` covers checkpoint progress and
-identity, genuine repeated replies, ambiguous overlap, terminal-record/stream
-completion, replay/gaps across reconnect, stale callbacks, failed refreshes,
-draft retention, `/clear`, local recording and bounded long-history rendering.
+UI behavior. `tests/test_history_replay.py` covers message identity, labelled
+replay overlap, replay/gaps across reconnect and bounded long-history output.
 `tests/test_pending_view.py` checks read-only recovery, model/history display,
-explicit/deferred retry, stale/error/clear paths and no replayed approvals;
+explicit/deferred retry, stale/error paths and no replayed approvals;
 `tests/test_submission_leases.py` checks unowned failure/conflict cleanup and
 retention of owned or post-replacement ambiguous requests.
 All runtime responses are synthetic. Actual Mac SSH/inference/approval behavior

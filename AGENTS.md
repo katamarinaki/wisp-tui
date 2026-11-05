@@ -45,10 +45,16 @@ reattachment. Do not expand this into a general-purpose Pi replacement.
   `ansi_color=True` in `AppBase.__init__` (`app_base.py`) work together to emit SGR 49. Changing any of these
   (or re-enabling the ANSI→truecolor filter) paints a hardcoded background.
   Verify with a pty capture that no other `48;...` SGR is emitted.
-  Sole owner-approved exception: user prompt blocks (`#chat > .user`) are
-  filled with muted dark teal `#005f5f` (xterm-256 #23, `48;5;23`) with fixed
-  light-grey text. Palette cyan was rejected as too bright. Don't change the
-  shade or extend fills to other elements without asking.
+  Sole owner-approved exception: user prompt blocks (`USER_STYLE` in
+  `src/wisp_tui/scrollback.py`) are filled with muted dark teal (xterm-256
+  #23, `48;5;23`) with fixed light-grey text. Palette cyan was rejected as too
+  bright. Don't change the shade or extend fills to other elements without
+  asking.
+- Finished chat items are printed once into the terminal's own scrollback
+  (`scrollback.py`, printed by `ChangedRowsUpdate` in `terminal.py`); only live
+  items stay in the app. The app runs with `mouse=False` so the terminal keeps
+  native scrolling, selection and copy. Don't reintroduce mouse capture or an
+  in-app transcript scroll without asking.
 - Tests must not use network, sockets or real inference. Use the scripted
   client in `tests/helpers.py`.
 - Error strings shown to the user are safe codes only; never surface raw HTTP

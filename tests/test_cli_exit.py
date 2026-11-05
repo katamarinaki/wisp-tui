@@ -6,6 +6,7 @@ import pytest
 
 from tests.helpers import SID, ScriptedClient
 from wisp_tui import __main__ as cli
+from wisp_tui import scrollback
 from wisp_tui.app import WispTuiApp
 from wisp_tui.config import Config
 
@@ -25,8 +26,9 @@ def test_exit_hint_uses_launcher_name_and_only_an_existing_session(
     monkeypatch.setattr(cli, "load_config", lambda: Config(url=client.url, token=client.token))
     monkeypatch.setattr(cli, "WispClient", lambda *args: client)
 
-    def run(app: WispTuiApp, *, inline: bool, inline_no_clear: bool) -> None:
-        assert inline and not inline_no_clear
+    def run(app: WispTuiApp, *, inline: bool, inline_no_clear: bool, mouse: bool) -> None:
+        # The terminal keeps the mouse: native scrolling, selection and copy.
+        assert inline and not inline_no_clear and not mouse
         assert not capsys.readouterr().out, "hint printed before terminal restoration"
         app.session_id = session_id
 
@@ -42,18 +44,23 @@ def test_exit_hint_uses_launcher_name_and_only_an_existing_session(
 def test_exit_transcript_is_printed_in_order_without_empty_items(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    cli.print_transcript(
+    scrollback.print_transcript(
         [
             ("user", "check disk\nplease"),
             ("assistant", "\n\n"),
             ("assistant", "Let me look."),
-            ("tool", "tool bash → ok 0.3s"),
+            ("tool-call-ok", "$ df -h\n/ 40%\nbash · ok · 0.3s"),
             ("assistant", "Disk is **fine**.\n"),
         ]
     )
-    assert capsys.readouterr().out == (
-        "› check disk\n› please\n\nLet me look.\n\ntool bash → ok 0.3s\n\nDisk is **fine**.\n\n"
-    )
+    # Padded rows (the filled prompt block) end in spaces; compare the text.
+    lines = [line.rstrip() for line in capsys.readouterr().out.split("\n")]
+    assert lines == [
+        *("", "  check disk", "  please", "", ""),
+        *(" Let me look.", ""),
+        *(" ▌ $ df -h", " ▌ / 40%", " ▌ bash · ok · 0.3s", ""),
+        *(" Disk is fine.", "", ""),
+    ]
 
 
 @pytest.mark.parametrize("session_id", ["not-a-session", "bad\x1b[31m\ncommand"])

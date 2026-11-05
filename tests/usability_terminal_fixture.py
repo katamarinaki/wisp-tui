@@ -104,7 +104,7 @@ class UsabilityFixture(WispTuiApp):
         view = self._stream_view
         assert view is not None
         self._finalize_run("run.completed", {})
-        await eventually(lambda: view.widget.source == self.expected)
+        await eventually(lambda: view.rendered == self.expected)
         assert self.query_one(PromptInput).value == "keep this draft"
         self.exit()
 
@@ -118,7 +118,7 @@ def main() -> None:
             sessions=SessionStore(Path(state) / "sessions"),
             submissions=SubmissionStore(client.url, Path(state)),
         )
-        app.run(inline=True)
+        app.run(inline=True, mouse=False)
         assert all(method == "GET" for method, _, _ in client.calls)
         print(
             "USABILITY_RESULT="

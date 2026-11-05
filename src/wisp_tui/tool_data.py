@@ -76,5 +76,4 @@ class ToolHistoryInfo:
     input_text: str | None
     output_text: str
     status: str = ""
-    pruned: bool = False
     summary: str = ""

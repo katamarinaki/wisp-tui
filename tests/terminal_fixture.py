@@ -6,9 +6,6 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from textual.widgets import Markdown
-from textual.widgets._markdown import MarkdownBlock, MarkdownTable
-
 from tests.helpers import RID, SID, ScriptedClient
 from tests.test_app import eventually
 from wisp_tui import __main__ as cli
@@ -30,14 +27,8 @@ class TerminalFixture(WispTuiApp):
     async def exercise(self) -> None:
         # Each step waits until the previous state has reached the terminal.
         self.show_transcript()
-        answer = self.query_one("#chat > Markdown", Markdown)
-        await eventually(
-            lambda: (
-                bool(answer.query(MarkdownTable))
-                and all(block.is_mounted for block in answer.query(MarkdownBlock))
-            )
-        )
-        await answer.wait_for_refresh()
+        # Finished items reach the terminal with the next frame (scrollback).
+        await eventually(lambda: not self._scrollback and not self._sync_queued)
         await self.screen.wait_for_refresh()
         self.finish_work()
         await self.screen.wait_for_refresh()

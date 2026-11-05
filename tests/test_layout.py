@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
-from textual.containers import VerticalScroll
-from textual.widgets import Markdown
 
 from tests.test_app import eventually, make_app
+from wisp_tui.app import WispTuiApp
+from wisp_tui.chat_view import ChatItem
 from wisp_tui.editor import PromptInput as Input
 from wisp_tui.history import ChatMessage
+from wisp_tui.scrollback import render_ansi
+
+
+def printed_lines(items: list[tuple[str, str]], width: int) -> list[str]:
+    """Uncolored scrollback rows; unstyled trailing padding is not printed."""
+    return render_ansi(items, width, None).split("\r\n")
 
 
 @pytest.mark.parametrize("width", [40, 100])
@@ -23,14 +31,8 @@ async def test_chat_and_editor_share_a_compact_gutter(
         await pilot.pause()
 
         editor = app.query_one("#input", Input)
-        user, follow_up = app.query("#chat > .user")
-        answer = app.query_one("#chat > Markdown")
-        paragraph = answer.query_one("MarkdownParagraph")
-        assert editor.content_region.x == paragraph.content_region.x == 1
-        assert user.region.x == 0
-        assert user.region.width == width
-        assert user.content_region.x == 2
-        assert editor.content_region.width == answer.content_region.width == width - 2
+        assert editor.content_region.x == 1
+        assert editor.content_region.width == width - 2
         assert editor.styles.padding == (0, 0, 0, 0)
         assert editor.styles.border_top[0] == editor.styles.border_bottom[0] == "solid"
         assert editor.region.height == 3
@@ -40,148 +42,96 @@ async def test_chat_and_editor_share_a_compact_gutter(
         )
         assert app.query_one("#bottom").region.height == 3 + metadata_height
         assert editor.region.y == app.query_one("#bottom").region.y
-        # Exactly one blank row around the answer text.
-        assert paragraph.region.y == user.region.bottom + 1
-        assert follow_up.region.y == paragraph.region.bottom + 1
+        # Everything finished went to scrollback; the live area is empty.
+        assert not app.query_one("#chat").children
+        lines = printed_lines(app.transcript(), width)
+        # Prompt blocks span the width with a 2-column inset; answers start at
+        # column 1, like the editor text, with exactly one blank row around them.
+        assert lines[:9] == [
+            *("", "  A short question", "", ""),
+            *(" A short answer.", ""),
+            *("", "  A follow-up", ""),
+        ]
 
 
 @pytest.mark.parametrize("width", [40, 100])
-async def test_prompt_box_wraps_literal_text_and_resizes(
+async def test_prompt_box_wraps_literal_text_and_keeps_its_fill(
     monkeypatch: pytest.MonkeyPatch, width: int
 ) -> None:
-    app, _ = make_app([], monkeypatch)
-    async with app.run_test(size=(width, 30)) as pilot:
-        prompt = "[bold]Keep these brackets[/bold]\n" + "A long task description. " * 8
-        app._add_message(ChatMessage("user", prompt))
-        user = app.query_one("#chat > .user")
-        await eventually(lambda: user.region.width == width and user.content_region.height > 2)
-
-        assert str(user.render()) == prompt
-        # Muted dark teal fill with fixed light text (exact xterm-256 colors).
-        assert user.styles.background.rgb == (0, 95, 95)
-        assert user.styles.color.rgb == (218, 218, 218)
-        assert user.rich_style.bgcolor is not None
-        assert user.rich_style.bgcolor.get_truecolor().hex == "#005f5f"
-        assert all(border[0] in ("", "none") for border in user.styles.border)
-        assert user.styles.padding == (1, 2, 1, 2)
-        assert user.content_region.width == width - 4
-        assert user.region.height == user.content_region.height + 2
-        assert user.content_region.height > 2
-
-        old_height = user.region.height
-        await pilot.resize_terminal(30, 30)
-        await eventually(lambda: user.region.width == 30 and user.region.height > old_height)
-        assert user.region.x == 0
-        assert user.region.width == 30
-        assert user.content_region.width == 26
-        assert user.region.height > old_height
-        assert str(user.render()) == prompt
+    prompt = "[bold]Keep these brackets[/bold]\n" + "A long task description. " * 8
+    for size in (width, 30):
+        lines = printed_lines([("user", prompt)], size)[:-2]
+        assert lines[0] == lines[-1] == ""
+        joined = " ".join(line.strip() for line in lines)
+        assert joined.strip().startswith("[bold]Keep these brackets[/bold] A long task")
+        assert len(lines) > 4
+        assert all(line.startswith("  ") and len(line) <= size - 2 for line in lines[1:-1])
+    # Muted dark teal fill (xterm-256 #23) with fixed light text, full width.
+    styled = render_ansi([("user", prompt)], width, "256")
+    rows = re.sub(r"\x1b\[[0-9;]*m", "", styled).split("\r\n")[:-2]
+    assert all(len(row) == width for row in rows)
+    codes = re.findall(r"\x1b\[([0-9;]*)m", styled)
+    filled = [code for code in codes if code != "0"]
+    # Rich quantizes #dadada to a 250-255 grey in 256-color mode.
+    assert filled and all(re.search(r"48;5;23\b", code) for code in filled)
+    assert all(re.search(r"38;5;25[0-5]\b", code) for code in filled)
 
 
-@pytest.mark.parametrize("width", [40, 100])
-async def test_full_width_prompts_keep_scrolling_without_a_visible_scrollbar(
-    monkeypatch: pytest.MonkeyPatch, width: int
-) -> None:
-    app, _ = make_app([], monkeypatch)
-    async with app.run_test(size=(width, 20)):
-        for index in range(12):
-            app._add_message(ChatMessage("user", f"Prompt {index}"))
-            app._add_message(ChatMessage("assistant", "A short answer."))
-        chat = app.query_one("#chat", VerticalScroll)
-        await eventually(
-            lambda: (
-                chat.max_scroll_y > 0
-                and all(prompt.region.width == width for prompt in app.query("#chat > .user"))
-            )
-        )
-        assert chat.max_scroll_y > 0
-        assert chat.scrollbar_size_vertical == chat.scrollbar_size_horizontal == 0
-        assert chat.scrollable_content_region.width == width
-        assert chat.virtual_size.width == width
-        for prompt in app.query("#chat > .user"):
-            assert prompt.region.x == 0
-            assert prompt.region.width == width
-        chat.scroll_home(animate=False)
-        await eventually(lambda: chat.scroll_y == 0)
-        chat.scroll_end(animate=False)
-        await eventually(lambda: chat.scroll_y == chat.max_scroll_y)
+@pytest.mark.parametrize("colors", ["256", "truecolor"])
+def test_answers_use_terminal_foreground_without_fills(colors: str) -> None:
+    answer = (
+        "# Server status\n\nReadable **answer** with `inline code`.\n\n"
+        "- First item\n- Second item\n\n"
+        "```text\nplain code\n```\n\n"
+        "| Key | Value |\n|---|---|\n| state | ready |"
+    )
+    styled = render_ansi([("assistant", answer)], 100, colors)
+    codes = [code.split(";") for code in re.findall(r"\x1b\[([0-9;]*)m", styled)]
+    # No painted background and no fixed foreground colors: default + bold/dim.
+    assert all(part in ("0", "1", "2", "49", "39") for code in codes for part in code), codes
+    lines = [line.rstrip() for line in printed_lines([("assistant", answer)], 100)]
+    assert lines[0] == " Server status"
+    assert " Readable answer with inline code." in lines
+    assert " plain code" in lines
 
 
-@pytest.mark.parametrize("theme", ["textual-dark", "textual-light"])
-async def test_answers_use_terminal_foreground_without_nested_spacing(
-    monkeypatch: pytest.MonkeyPatch, theme: str
-) -> None:
-    app, _ = make_app([], monkeypatch)
-    app.theme = theme
-    async with app.run_test(size=(100, 35)) as pilot:
-        app._add_message(
-            ChatMessage(
-                "assistant",
-                (
-                    "# Server status\n\nReadable **answer** with `inline code`.\n\n"
-                    "- First item\n- Second item\n\n"
-                    "```text\nplain code\n```\n\n"
-                    "| Key | Value |\n|---|---|\n| state | ready |"
-                ),
-            )
-        )
-        await pilot.pause()
-
-        for widget in app.query(
-            "#chat Markdown, #chat MarkdownBlock, #chat MarkdownBullet, "
-            "#chat MarkdownTableContent > .header"
-        ):
-            assert widget.styles.color.ansi == -1, type(widget).__name__
-            assert widget.rich_style.color is not None
-            assert widget.rich_style.color.is_default
-            assert not widget.rich_style.dim
-
-        heading = app.query_one("MarkdownH1")
-        assert heading.styles.content_align == ("left", "middle")
-        assert heading.region.x == 1
-        assert heading.styles.margin == (0, 0, 1, 0)
-        paragraph = app.query_one("Markdown > MarkdownParagraph")
-        inline_color = paragraph.get_component_rich_style("code_inline").color
-        assert inline_color is not None and inline_color.is_default
-        for nested in app.query("#chat Markdown Label, #chat MarkdownTableCellContents"):
-            assert nested.styles.margin == (0, 0, 0, 0)
-        fence = app.query_one("MarkdownFence")
-        assert fence.region.height == 1
-        assert fence.query_one("Label").content_region.x == 1
-
-
-async def test_streamed_and_saved_answers_stay_aligned_after_resize(
+async def test_streamed_answer_keeps_the_printed_layout_after_resize(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test(size=(100, 30)) as pilot:
         text = "An answer long enough to wrap across several lines in a narrow terminal."
-        app._add_message(ChatMessage("assistant", text))
-        view = app._begin_stream(text[:10])
+        view = app._stream_view = app._begin_stream(text[:10])
         view.set_text(text)
-        await app.workers.wait_for_complete()
+        view.flush()
         streamed = view.widget
-        assert streamed.source == text
+        assert isinstance(streamed, ChatItem) and streamed.text == text
         await pilot.resize_terminal(40, 30)
-        saved = app.query_one("#chat > Markdown", Markdown)
+        expected = len(printed_lines([("assistant", text)], 40)) - 2
 
-        def reflowed() -> bool:
-            saved_text = saved.query("MarkdownParagraph")
-            streamed_text = streamed.query("MarkdownParagraph")
-            return (
-                saved.content_region.width == streamed.content_region.width == 38
-                and saved.region.height == streamed.region.height
-                and bool(saved_text)
-                and bool(streamed_text)
-                and saved_text.first().region.height > 1
-                and streamed_text.first().region.y == saved_text.first().region.bottom + 1
-            )
+        await eventually(lambda: streamed.region.width == 40 and streamed.region.height > 1)
+        # The live answer renders exactly as it will be printed to scrollback.
+        assert streamed.region.x == 0
+        assert streamed.region.height == expected
 
-        await eventually(reflowed)
-        assert saved.content_region.x == streamed.content_region.x == 1
-        assert saved.content_region.width == streamed.content_region.width == 38
-        assert saved.region.height == streamed.region.height
-        saved_text = saved.query_one("MarkdownParagraph").region
-        streamed_text = streamed.query_one("MarkdownParagraph").region
-        assert saved_text.height > 1
-        assert streamed_text.y == saved_text.bottom + 1
+
+async def test_resize_reprints_the_newest_printed_items_at_the_new_width(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(WispTuiApp, "REPRINT_ITEMS", 2)
+    app, _ = make_app([], monkeypatch)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await eventually(lambda: "ready" in app._status_text)
+        for index in range(3):
+            app._show_line(f"item {index} " + "word " * 12)
+        await eventually(lambda: not app._sync_queued)
+        hidden = app._printed_total - 2
+        await pilot.resize_terminal(40, 30)
+        await pilot.pause()
+        output = app._take_scrollback()
+        assert output.startswith("\x1b[H\x1b[2J\x1b[3J")
+        rows = re.sub(r"\x1b\[[0-9;]*m", "", output.removeprefix("\x1b[H\x1b[2J\x1b[3J"))
+        assert f"↑ {hidden} earlier item" in rows
+        assert "item 0" not in rows and "item 1" in rows and "item 2" in rows
+        assert all(len(row) <= 40 for row in rows.split("\r\n"))
+        assert app._take_scrollback() == ""

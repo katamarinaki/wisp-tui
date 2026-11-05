@@ -6,6 +6,7 @@ from collections import deque
 
 import pytest
 from textual import events
+from textual.widgets import Static
 from textual.widgets.text_area import Selection
 
 from tests.helpers import SID, RequestGate
@@ -114,11 +115,13 @@ async def test_single_line_command_requires_enter_and_still_works(
     async with app.run_test() as pilot:
         editor = app.query_one("#input", PromptInput)
         app._add_message(ChatMessage("assistant", "Keep until explicit send"))
-        editor.post_message(events.Paste("/clear"))
-        await eventually(lambda: editor.value == "/clear")
+        editor.post_message(events.Paste("/help"))
+        await eventually(lambda: editor.value == "/help")
+        await pilot.pause()
         assert "Keep until explicit send" in chat_text(app)
+        assert "chat with the local Wisp runtime" not in chat_text(app)
         await pilot.press("enter")
-        await eventually(lambda: chat_text(app) == "")
+        await eventually(lambda: "chat with the local Wisp runtime" in chat_text(app))
         assert editor.value == ""
         await app.workers.wait_for_complete()
         assert not any(method == "POST" for method, _, _ in client.calls)
@@ -199,7 +202,6 @@ async def test_editor_grows_wraps_caps_scrolls_and_shrinks(
         await pilot.pause()
         assert editor.region.height == 8
         assert editor.scroll_y > 0
-        assert app.query_one("#chat").region.height > 0
         await pilot.press("ctrl+home")
         await pilot.pause()
         assert editor.cursor_location == (0, 0)
@@ -276,3 +278,29 @@ async def test_approval_modal_does_not_send_underlying_editor_or_lose_draft(
         assert editor.value == "keep\nmy draft"
         await app.workers.wait_for_complete()
         assert not any(method == "POST" for method, _, _ in client.calls)
+
+
+async def test_slash_lists_matching_commands_and_tab_or_right_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _ = make_app([], monkeypatch)
+    async with app.run_test() as pilot:
+        await eventually(lambda: "ready" in app._status_text)
+        editor = app.query_one("#input", PromptInput)
+        hints = app.query_one("#command-hints", Static)
+
+        def shown() -> str:
+            return str(hints.render()) if hints.display else ""
+
+        await pilot.press("/", "r", "e")
+        listed = shown()
+        assert all(name in listed for name in ("/resume", "/retry", "/reconnect"))
+        assert "/help" not in listed
+        await pilot.press("tab")
+        assert editor.value == "/resume"
+        await pilot.press("space")
+        assert shown() == "" and editor.suggestion == ""
+        await pilot.press(*["backspace"] * 7, "h", "e", "right")
+        assert editor.value == "/help"
+        await pilot.press("ctrl+j", "/", "h")
+        assert editor.suggestion == "" and shown() == ""

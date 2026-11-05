@@ -121,7 +121,7 @@ class SubmissionLayer(RunLayer):
         self.session_title = safe_text(session.get("title"), 80) or "(untitled)"
         self.title = f"Wisp — {self.session_title}"
         self._selection_updated(session, pending.session_id)
-        # /clear cancels history restoration, but metadata is still useful.
+        # A newer view cancels history restoration, but metadata is still useful.
         if self._chat_epoch != epoch:
             return
         hidden = max(0, len(messages) - self.MAX_CHAT_ITEMS)
@@ -161,9 +161,6 @@ class SubmissionLayer(RunLayer):
             self._submit_pending()
 
     def _start_submission(self, draft: str) -> None:
-        if self._history_refresh_token is not None:
-            self._show_line("History refresh in progress — your draft is kept.")
-            return
         if self._pending_state_error:
             self._show_line(
                 "Pending-request state must be recovered first (/retry). Your draft is kept."

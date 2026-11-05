@@ -15,11 +15,11 @@ from typing import ClassVar
 from textual.app import ComposeResult
 from textual.binding import BindingType
 from textual.containers import Container, Horizontal
-from textual.widgets import Markdown, Static
+from textual.widgets import Static
 
 from .app_base import FRESH_STATUS
 from .app_sessions import SessionLayer
-from .chat_view import ChatScroll, ResumeFollow
+from .chat_view import ChatItem, ChatScroll
 from .client import ClientError
 from .editor import PromptInput
 from .help_text import HELP_TEXT
@@ -39,14 +39,13 @@ class WispTuiApp(SessionLayer):
         ("f1", "help", "Help"),
         ("f2", "sessions", "Sessions"),
         ("f3", "model", "Model"),
-        ("f4", "resume_follow", "Resume follow"),
         ("ctrl+c", "cancel", "Cancel/exit"),
     ]
 
     def compose(self) -> ComposeResult:
         yield ChatScroll(id="chat")
         with Container(id="bottom"):
-            yield ResumeFollow()
+            yield Static("", id="command-hints", markup=False)
             yield self._prompt_input
             with Horizontal(id="location-row"):
                 yield Static("", id="location", markup=False)
@@ -112,7 +111,7 @@ class WispTuiApp(SessionLayer):
             event.input.value = ""
             self._handle_command(text)
             return
-        if self._session_change_in_progress or self._history_refresh_token is not None:
+        if self._session_change_in_progress:
             self._show_line("Session/history load in progress — your draft is kept.")
             return
         if self.session_id is None:
@@ -148,8 +147,7 @@ class WispTuiApp(SessionLayer):
         self._show_help()
 
     def _show_help(self) -> None:
-        self._mount_chat(Markdown(HELP_TEXT, classes="system"))
-        self._scroll_down()
+        self._mount_chat(ChatItem("assistant", HELP_TEXT))
 
     def _handle_command(self, text: str) -> None:
         parts = text.split(maxsplit=1)
@@ -171,11 +169,9 @@ class WispTuiApp(SessionLayer):
             self._submit_pending()
         elif command == "/reconnect":
             self._start_follow()
-        elif command == "/clear":
-            self._reset_chat()
         elif command == "/status":
             self._status_command()
-        elif command == "/quit":
+        elif command in ("/exit", "/quit"):
             self.exit()
         else:
             self._show_line(f"unknown command {command} — /help lists them")
@@ -196,7 +192,6 @@ class WispTuiApp(SessionLayer):
             f"active run: {self.active_run or 'none'}",
             f"submission: {submission}",
             f"recovery view: {'loading' if self._recovery_view_token is not None else 'none'}",
-            f"history refresh: {'loading' if self._history_refresh_token is not None else 'none'}",
             f"max turns: {self.config.max_turns}",
             *self._metadata_lines(),
             "Wisp working directory: unavailable (not the client launch directory)",
@@ -207,6 +202,9 @@ class WispTuiApp(SessionLayer):
             self._show_line(line, "tool")
 
     def on_unmount(self) -> None:
+        # The exit transcript prints the stream widget's text, not the batch target.
+        if self._stream_view is not None:
+            self._stream_view.flush()
         self._tool_history_token = None
         self._tool_history_targets = ()
         self._tool_history_again = False
@@ -218,7 +216,6 @@ class WispTuiApp(SessionLayer):
         self._recovery_view_token = None
         self._retry_after_recovery = False
         self._pending_view_history = None
-        self._history_refresh_token = None
         self._reattached_checkpoint = None
         if self._activity_timer is not None:
             self._activity_timer.stop()

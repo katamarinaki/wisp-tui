@@ -4,96 +4,12 @@ Screen { background: transparent; color: ansi_default; }
    default foreground: a bright line above and below the app. */
 Screen:inline { border-top: none; border-bottom: none; }
 ApprovalModal, SessionPicker, ModelPicker { background: transparent; }
-#chat { padding: 0; scrollbar-size: 0 0; }
-#chat > Static { margin: 0 1 1 1; }
-/* Every Markdown block already ends with a 1-row bottom margin, which
-   provides the gap after an answer. Avoid structural pseudo-classes
-   (first/last/nth child) here: they make Textual restyle the whole
-   answer on each streamed block (see test_rendering). */
-#chat > Markdown { margin: 0 1; }
-#chat Markdown { padding: 0; color: ansi_default; }
-#chat MarkdownBlock { background: transparent; color: ansi_default; }
-#chat MarkdownHeader {
-    content-align: left middle;
-    text-style: bold;
-    margin: 0 0 1 0;
-}
-#chat MarkdownBullet, #chat MarkdownTableContent > .header { color: ansi_default; }
-#chat MarkdownFence { margin: 1 0; }
-#chat MarkdownFence > Label { padding: 0; }
-#chat MarkdownBlock > .code_inline {
-    background: transparent;
-    color: ansi_default;
-    text-style: bold;
-}
-/* Deliberate, owner-requested exception to the unpainted background:
-   prompt blocks only use a muted dark teal (palette cyan was too bright).
-   #005f5f is exactly xterm-256 entry 23, so 256-color and truecolor
-   terminals show the same shade; the fixed light-grey text keeps contrast
-   on light and dark themes. Everything else stays transparent. */
-#chat > .user {
-    width: 100%;
-    margin: 0 0 1 0;
-    border: none;
-    background: #005f5f;
-    color: #dadada;
-    text-style: bold;
-    padding: 1 2;
-}
-.system, .tool { color: ansi_default; text-style: dim; }
-.error { color: $error; }
-#chat > ToolCallView {
-    height: auto;
-    margin: 0 1 1 1;
-    padding: 0 0 0 1;
-    border: none;
-    border-left: outer ansi_bright_black;
-    background: transparent;
-    background-tint: transparent;
-    color: ansi_default;
-}
-#chat ToolCallView > Contents { padding: 0; background: transparent; }
-#chat ToolCallView CollapsibleTitle,
-#chat ToolCallView CollapsibleTitle:hover,
-#chat ToolCallView CollapsibleTitle:focus {
-    padding: 0;
-    max-width: 100%;
-    background: transparent;
-    background-tint: transparent;
-    color: ansi_default;
-    text-style: dim;
-}
-#chat ToolCallView CollapsibleTitle:focus { text-style: dim underline; }
-#chat > ToolCallView.-ok { border-left: outer ansi_cyan; }
-#chat > ToolCallView.-failed { border-left: outer ansi_red; }
-#chat ToolCallView.-ok CollapsibleTitle { color: ansi_cyan; text-style: none; }
-#chat ToolCallView.-failed CollapsibleTitle { color: ansi_red; text-style: none; }
-#chat ToolCallView.-ok CollapsibleTitle:focus,
-#chat ToolCallView.-failed CollapsibleTitle:focus { text-style: underline; }
-#chat ToolCallView > .tool-tail {
-    display: none;
-    height: auto;
-    background: transparent;
-    color: ansi_default;
-    text-style: dim;
-    text-wrap: nowrap;
-    text-overflow: ellipsis;
-}
-#chat ToolCallView.-collapsed.-has-tail > .tool-tail { display: block; }
-#chat ToolCallView > .tool-stats {
-    height: auto; background: transparent; color: ansi_default; text-style: dim;
-}
-#chat ToolCallView.-ok > .tool-stats { color: ansi_cyan; }
-#chat ToolCallView.-failed > .tool-stats { color: ansi_red; }
-#chat .tool-detail-scroll {
-    height: auto;
-    max-height: 16;
-    padding: 0 0 0 2;
-    background: transparent;
-    scrollbar-size: 0 0;
-}
-#chat .tool-details {
-    height: auto; background: transparent; color: ansi_default; text-style: dim;
+/* Only live items: finished ones are printed to the terminal's scrollback.
+   Items render themselves (scrollback.render_item), including the
+   owner-approved teal prompt fill (48;5;23); nothing else is painted. */
+#chat { height: auto; max-height: 70vh; padding: 0; scrollbar-size: 0 0; }
+#chat > * {
+    height: auto; margin: 0 0 1 0; background: transparent; color: ansi_default;
 }
 #bottom { dock: bottom; height: auto; padding: 0 1; }
 #input {
@@ -111,9 +27,10 @@ ApprovalModal, SessionPicker, ModelPicker { background: transparent; }
     padding: 0;
 }
 #input:focus { background-tint: transparent; }
-#resume-follow {
-    display: none; height: 1; background: transparent; color: ansi_default;
-    text-style: underline;
+#input .text-area--suggestion { color: ansi_default; text-style: dim; }
+#command-hints {
+    display: none; height: auto; background: transparent; color: ansi_default;
+    text-style: dim;
 }
 #status, #session-info, #thinking-info, #usage-info, #location, #session-id {
     height: 1;
