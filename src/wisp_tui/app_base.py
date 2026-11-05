@@ -204,7 +204,11 @@ class AppBase(App[None]):
     def _display(self, screen: Screen[Any], renderable: RenderableType | None) -> None:
         if isinstance(renderable, InlineUpdate):
             renderable = ChangedRowsUpdate(
-                renderable, self._inline_renderer, self.size.width, self._take_scrollback
+                renderable,
+                self._inline_renderer,
+                self.size.width,
+                self.size.height,
+                self._take_scrollback,
             )
         super()._display(screen, renderable)
 
