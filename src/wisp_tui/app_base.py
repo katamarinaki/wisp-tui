@@ -16,7 +16,6 @@ from typing import Any, NamedTuple
 
 from rich.console import RenderableType
 from textual import events
-from textual._compositor import InlineUpdate
 from textual.app import App
 from textual.screen import Screen
 from textual.timer import Timer
@@ -34,7 +33,7 @@ from .screens import ApprovalModal
 from .scrollback import render_ansi
 from .sessions import SessionStore
 from .submissions import PendingSubmission, SubmissionStore
-from .terminal import ChangedRowsUpdate, InlineRenderer
+from .terminal import ChangedRowsUpdate, InlineRenderer, InlineUpdate
 from .terminal_status import TabStatus, tab_status_sequence
 from .text import display_path, metadata_text, model_label, safe_text
 from .tool_view import ToolCallView
@@ -52,6 +51,13 @@ class ApprovalPrompt(NamedTuple):
     prompt_id: str
     tool_name: str
     args: Any
+
+
+class ReleaseCheck(NamedTuple):
+    """The checkout to ask its origin for newer release tags, and the update command."""
+
+    root: Path
+    update_command: str
 
 
 @dataclass(frozen=True)
@@ -80,6 +86,7 @@ class AppBase(App[None]):
         startup: Startup | None = None,
         sessions: SessionStore | None = None,
         submissions: SubmissionStore | None = None,
+        release_check: ReleaseCheck | None = None,
     ) -> None:
         # ansi_color=True disables the ANSI→truecolor filter, so
         # `background: ansi_default` reaches the terminal as SGR 49
@@ -91,6 +98,8 @@ class AppBase(App[None]):
         self.client = client
         self.config = config
         self.startup = startup or Startup()
+        # None in tests: the only non-loopback request, made at startup.
+        self._release_check = release_check
         self._welcome = Welcome(id="welcome")
         self._welcome.display = self.startup.mode == "new"
         self.sessions = sessions or SessionStore()

@@ -218,18 +218,18 @@ class RunLayer(ComposerLayer):
             return
         if prompt_id in self._approvals_sending | self._approvals_answered:
             return
-        # Record exactly what the owner was shown when deciding.
         tool, args_text = (modal.tool_name, modal.args_text) if modal is not None else ("?", "")
-        self._record_locally(
-            {
-                "type": "approval",
-                "runId": run_id,
-                "promptId": prompt_id,
-                "tool": safe_text(tool, 200),
-                "args": args_text,
-                "decision": decision,
-            }
-        )
+        entry = {
+            "type": "approval",
+            "runId": run_id,
+            "promptId": prompt_id,
+            "tool": safe_text(tool, 200),
+            "decision": decision,
+        }
+        # Arguments often carry commands, paths or file contents: opt-in only.
+        if self.config.log_approval_args:
+            entry["args"] = args_text
+        self._record_locally(entry)
         self.queued_approvals = deque(
             queued for queued in self.queued_approvals if queued.prompt_id != prompt_id
         )

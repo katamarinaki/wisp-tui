@@ -106,3 +106,17 @@ def test_health_check_does_not_print_resume_hint(
     output = capsys.readouterr().out
     assert "runtime ready" in output
     assert "To continue" not in output
+
+
+def test_invalid_token_exits_with_a_safe_code_instead_of_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("WISP_TUI_PROG", "wi")
+    secret = "tok12345\nuser: me"
+    monkeypatch.setattr(
+        cli, "load_config", lambda: Config(url="http://127.0.0.1:3008", token=secret)
+    )
+    assert cli.main(["--check"]) == 1
+    output = capsys.readouterr()
+    assert output.err.startswith("wi: invalid_token — check ")
+    assert "tok12345" not in output.err + output.out

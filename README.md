@@ -3,8 +3,9 @@
 A terminal chat client for the [Wisp runtime](https://docs.usewisp.io/runtime).
 
 Run `wi` on the machine that runs Wisp, at its keyboard or over SSH, and chat
-with your agent. wisp-tui connects to the runtime's local API on `127.0.0.1`
-and nothing else.
+with your agent. wisp-tui connects to the runtime's local API on `127.0.0.1`.
+At startup it also checks the checkout's Git `origin` for new release tags.
+It makes no other requests. See [Security](SECURITY.md).
 
 ```
 terminal  ──▶ wisp-tui ──▶ Wisp runtime (127.0.0.1) ──▶ its model
@@ -35,6 +36,10 @@ git clone https://github.com/katamarinaki/wisp-tui
 cd wisp-tui
 scripts/install    # venv with hash-checked wheels, links ~/.local/bin/wi
 ```
+
+On first run the installer also pins the release signing keys, which
+`wi update` checks. Compare the fingerprints it prints with the ones in
+[Security](SECURITY.md). Checking signatures needs Git 2.34 or newer.
 
 Keep the checkout. The `wi` launcher links into it. If the installer asks you
 to add `~/.local/bin` to your `PATH`, run:
@@ -106,7 +111,7 @@ delete `~/.config/wisp-tui/config.json` and run `wi setup` again.
 wi                # new session
 wi -c             # continue the last session
 wi -r [ID]        # pick a saved session, or resume one by ID prefix
-wi update         # show new commits on main, switch after you confirm
+wi update         # verify the newest signed release, switch after you confirm
 ```
 
 Inside the app: **Enter** sends, **Ctrl+J** adds a newline, **F1** lists keys,
@@ -118,6 +123,20 @@ in any shell, and the conversation stays there after you quit.
 
 Wisp stores your sessions. wisp-tui keeps a private log under
 `~/.local/state/wisp-tui/` so `-c` and `-r` know which ones you used.
+
+When a newer release exists, a line under the editor says so. `wi update`
+installs it only if the release tag carries a valid signature from the pinned
+key.
+
+### Optional settings
+
+Add these keys to `~/.config/wisp-tui/config.json` by hand:
+
+| Key | Effect |
+|---|---|
+| `token_command` | Replaces `token`. A command as a list, run without a shell, that prints the token. Example: `["pass", "show", "wisp/run-token"]` |
+| `session_retention_days` | Deletes local session logs older than this many days at startup. Unset keeps them. |
+| `log_approval_args` | `true` also logs approval arguments, which can contain commands, paths and file contents. Off by default. |
 
 ## Development
 

@@ -2,12 +2,18 @@
 
 The app is a thin, private client: your messages go to the Wisp runtime on
 loopback, and its answers are rendered locally. No other model or service is
-in the path. Worker threads perform all network I/O and marshal results into
-the UI thread via ``call_from_thread``.
+in the path. At startup Git may ask the checkout's origin for release tags.
+Worker threads perform all network I/O and marshal results into the UI thread
+via ``call_from_thread``.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import os
+import signal
+import subprocess
 import time
 from pathlib import Path
 from typing import ClassVar
@@ -17,7 +23,8 @@ from textual.binding import BindingType
 from textual.containers import Container, Horizontal
 from textual.widgets import Static
 
-from .app_base import FRESH_STATUS
+from . import __version__
+from .app_base import FRESH_STATUS, ReleaseCheck
 from .app_sessions import SessionLayer
 from .chat_view import ChatItem, ChatScroll
 from .client import ClientError
@@ -25,6 +32,7 @@ from .editor import PromptInput
 from .help_text import HELP_TEXT
 from .sessions import UUID_RE
 from .text import safe_text, title_from
+from .update import RELEASE_QUERY, newer_release, release_query_env
 
 
 class WispTuiApp(SessionLayer):
@@ -57,6 +65,7 @@ class WispTuiApp(SessionLayer):
                     yield Static("", id="session-info", markup=False)
                     yield Static("", id="thinking-info", markup=False)
             yield Static("", id="status", markup=False)
+            yield Static("", id="release-notice", markup=False)
 
     def on_mount(self) -> None:
         self._activity_timer = self.set_interval(0.1, self._tick_activity, pause=True)
@@ -66,6 +75,37 @@ class WispTuiApp(SessionLayer):
         self._restore_composer()
         self.query_one("#input", PromptInput).focus()
         self._run_threaded(self._bootstrap_worker)
+        if self._release_check is not None:
+            self.run_worker(self._check_release(self._release_check), exit_on_error=False)
+
+    async def _check_release(self, check: ReleaseCheck) -> None:
+        # A subprocess, not a thread worker: exit must never wait on the network.
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *RELEASE_QUERY,
+                cwd=check.root,
+                env=release_query_env(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError:
+            return
+        try:
+            output, _ = await asyncio.wait_for(process.communicate(), 15.0)
+        except TimeoutError:
+            return
+        finally:
+            if process.returncode is None:
+                # Its own session: this also stops ssh or https helpers Git started.
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+        tag = newer_release(output.decode("utf-8", "replace"), __version__)
+        if process.returncode == 0 and tag and self._prompt_input.is_attached:
+            notice = self.query_one("#release-notice", Static)
+            notice.update(f"wisp-tui {tag} is available · run {check.update_command}")
+            notice.display = True
 
     def _bootstrap_worker(self) -> None:
         try:

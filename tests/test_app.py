@@ -205,6 +205,9 @@ async def test_refused_rule_decision_offers_only_approve_or_deny(
         await pilot.press("enter")
         await approval_armed(app)
         await pilot.press("p")
+        await eventually(lambda: isinstance(app.screen, ApprovalModal) and app.screen.pending_rule)
+        await approval_armed(app)
+        await pilot.press("p")
         # The next prompt's dialog opens (still offering rules) before the 403.
         await eventually(
             lambda: (

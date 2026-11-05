@@ -1,7 +1,8 @@
 #!/bin/sh
 # Install from this checkout: project venv with hash-checked wheels, plus a
 # launcher link in ~/.local/bin (default name `wi`). Safe to rerun. Python runs
-# with -I so modules in the current directory are never imported.
+# with -I so modules in the current directory are never imported. On first run
+# it pins release-signers, the SSH keys whose tag signatures `update` accepts.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 NAME=${1:-wi}
@@ -9,6 +10,8 @@ PYTHON=${PYTHON:-python3}
 BIN="$HOME/.local/bin"
 LINK="$BIN/$NAME"
 TARGET="$ROOT/scripts/wisp-tui"
+SIGNERS="$ROOT/release-signers"
+PINNED="$HOME/.config/wisp-tui/release-signers"
 
 case $NAME in
     wisp | -* | .* | *[!A-Za-z0-9._-]*)
@@ -33,6 +36,28 @@ fi
     -r "$ROOT/requirements.txt"
 mkdir -p "$BIN"
 [ -L "$LINK" ] || ln -s "$TARGET" "$LINK"
+
+# Pinned once: a later checkout can never swap the keys that verify updates.
+if [ -e "$PINNED" ]; then
+    :
+elif [ -f "$SIGNERS" ]; then
+    if ! grep -qv '^[[:space:]]*\(#\|$\)' "$SIGNERS"; then
+        echo "install: release-signers lists no key" >&2
+        exit 1
+    fi
+    mkdir -p "$HOME/.config"
+    (umask 077 && mkdir -p "$HOME/.config/wisp-tui")
+    STAGING="$PINNED.tmp.$$"
+    trap 'rm -f "$STAGING"' EXIT
+    (umask 077 && cp "$SIGNERS" "$STAGING")
+    mv "$STAGING" "$PINNED"
+    trap - EXIT
+    echo "install: pinned these release signing keys; compare them with SECURITY.md:"
+    awk '{ for (i = 1; i < NF; i++) if ($i ~ /^(ssh-|ecdsa-|sk-)/) { print $i, $(i + 1); break } }' \
+        "$PINNED" | ssh-keygen -lf - || true
+else
+    echo "install: no release-signers file, so no key pinned; $NAME update stays off"
+fi
 
 case ":$PATH:" in
     *":$BIN:"*) ;;

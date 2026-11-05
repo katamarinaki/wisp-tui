@@ -14,7 +14,12 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from rich.console import Console
+
+# The only import of Textual internals; AppBase._display reaches it through
+# this module. Re-check both when Textual changes (MAINTAINING.md).
 from textual._compositor import InlineUpdate
+
+__all__ = ["ChangedRowsUpdate", "InlineRenderer", "InlineUpdate"]
 
 
 class InlineRenderer:

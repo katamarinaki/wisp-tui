@@ -5,6 +5,9 @@ live inside the (group-readable) project tree. Expected layout::
 
     ~/.config/wisp-tui/config.json   {"url": "http://127.0.0.1:3008", "token": "...", ...}
 
+Instead of ``token``, ``token_command`` may name an argv list (run without a
+shell) that prints the token, e.g. a password manager lookup.
+
 State (saved sessions, composer draft/history, the pending-submission journal
 and its lock) lives under ~/.local/state/wisp-tui/.
 """
@@ -14,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -66,6 +70,27 @@ class Config:
     token: str
     max_turns: int = 40
     event_timeout: float = 600.0
+    log_approval_args: bool = False
+    session_retention_days: int | None = None
+
+
+def _token_from_command(command: object) -> str:
+    if (
+        not isinstance(command, list)
+        or not 1 <= len(command) <= 32
+        or not all(isinstance(arg, str) and arg and "\0" not in arg for arg in command)
+    ):
+        raise ConfigError("invalid_token_command")
+    try:
+        # stdin and stderr stay on the terminal so the command can prompt.
+        result = subprocess.run(command, stdout=subprocess.PIPE, timeout=120, check=False)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        raise ConfigError("token_command_failed") from None
+    if result.returncode != 0:
+        raise ConfigError("token_command_failed")
+    # Like `pass show`, the secret is the first line; any later lines are metadata.
+    lines = result.stdout.decode("utf-8", "replace").strip().splitlines()
+    return lines[0].strip() if lines else ""
 
 
 def load_config(path: Path = CONFIG_PATH) -> Config:
@@ -73,7 +98,10 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     data = read_private_json(path, MAX_CONFIG_BYTES)
     url = data.get("url")
     token = data.get("token")
-    if not isinstance(url, str) or not isinstance(token, str):
+    command = data.get("token_command")
+    if command is not None and token is not None:
+        raise ConfigError("token_and_token_command_conflict")
+    if not isinstance(url, str) or (command is None and not isinstance(token, str)):
         raise ConfigError("url_and_token_required")
     max_turns = data.get("max_turns", 40)
     if not isinstance(max_turns, int) or not 1 <= max_turns <= 200:
@@ -81,4 +109,21 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     event_timeout = data.get("event_timeout", 600.0)
     if not isinstance(event_timeout, (int, float)) or not 10.0 <= float(event_timeout) <= 7200.0:
         raise ConfigError("invalid_event_timeout")
-    return Config(url=url, token=token, max_turns=max_turns, event_timeout=float(event_timeout))
+    log_args = data.get("log_approval_args", False)
+    if not isinstance(log_args, bool):
+        raise ConfigError("invalid_log_approval_args")
+    retention = data.get("session_retention_days")
+    if retention is not None and (
+        not isinstance(retention, int) or isinstance(retention, bool) or not 1 <= retention <= 36500
+    ):
+        raise ConfigError("invalid_session_retention_days")
+    # Last, so a typo elsewhere never triggers a password prompt first.
+    secret = token if isinstance(token, str) else _token_from_command(command)
+    return Config(
+        url=url,
+        token=secret,
+        max_turns=max_turns,
+        event_timeout=float(event_timeout),
+        log_approval_args=log_args,
+        session_retention_days=retention,
+    )

@@ -52,6 +52,10 @@ ApprovalModal, SessionPicker, ModelPicker { background: transparent; }
 #session-info { text-align: right; }
 #usage-info { color: ansi_bright_cyan; }
 #status { height: auto; max-height: 2; display: none; }
+#release-notice {
+    display: none; height: 1; background: transparent; color: ansi_default;
+    text-style: dim;
+}
 #bottom.narrow #summary { layout: vertical; }
 #bottom.narrow #session-info { text-align: left; }
 #approval-dialog {

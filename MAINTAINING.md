@@ -37,6 +37,63 @@
 - `scripts/install` rebuilds the venv from the lock files. It also repairs a
   venv without pip, such as one uv created.
 
+## Releasing
+
+A release is an SSH-signed `vX.Y.Z` tag. `wi update` refuses anything else.
+
+1. On `develop`, bump the version in both `pyproject.toml` and
+   `src/wisp_tui/__init__.py`, then merge `develop` into `main`.
+2. When CI passes on `main`, the release-draft workflow drafts `vX.Y.Z` for
+   that commit, with the commit subjects since the last release as notes.
+   Each later push to `main` redrafts it and discards edits to the notes,
+   until the tag exists.
+3. Sign the tag for the draft's commit with the Secure Enclave key, confirm
+   with Touch ID, and push it:
+
+   ```sh
+   git fetch origin main
+   SSH_AUTH_SOCK=<Secretive agent socket> git -c gpg.format=ssh \
+       -c user.signingkey="key::<Secure Enclave public key>" \
+       tag -s vX.Y.Z -m "wisp-tui vX.Y.Z" <commit from the draft>
+   git push origin vX.Y.Z
+   ```
+
+   With the backup key, use `-c user.signingkey=<path to the backup key>`
+   instead and drop `SSH_AUTH_SOCK`.
+
+4. Edit the notes if needed, then publish the draft. Push the signed tag
+   first: publishing without it makes GitHub create an unsigned tag, which
+   `wi update` rejects until you replace it. Running `wi` shows the new
+   release on its next start.
+
+### Signing keys
+
+`release-signers` lists the public keys whose signatures `wi update` accepts,
+in Git's allowed-signers format. Users pin it at install time, so changing it
+later means every user deletes `~/.config/wisp-tui/release-signers` and reruns
+`scripts/install`. List both keys from the start, so losing the Mac doesn't
+force that.
+
+1. **Main key.** In the Secretive app, create a key that requires
+   authentication. It lives in the Secure Enclave, asks for Touch ID on every
+   use, and can't be exported or backed up.
+2. **Backup key.** Create it away from daily use, with a strong passphrase,
+   and keep it offline. A hardware key works too: `ssh-keygen -t ed25519-sk`.
+
+   ```sh
+   ssh-keygen -t ed25519 -C "wisp-tui release backup" -f wisp-tui-release-backup
+   ```
+
+3. **Write `release-signers`** with one line per public key, then commit it:
+
+   ```
+   wisp-tui-release namespaces="git" ecdsa-sha2-nistp256 AAAA…
+   wisp-tui-release namespaces="git" ssh-ed25519 AAAA…
+   ```
+
+4. **Publish the fingerprints** in [Security](SECURITY.md). Get them with
+   `ssh-keygen -lf <public key file>`.
+
 ## Upgrading dependencies
 
 `requirements.txt` pins the runtime packages to exact versions, and
@@ -62,3 +119,7 @@ Textual has changed before. To upgrade:
    - `test_layout.py`: gutters and spacing. In 8.2, setting `margin-bottom`
      alone resets the other margins.
 3. Launch `wisp-tui` over SSH and look at a long answer and a prompt.
+
+`src/wisp_tui/terminal.py` is the only module that imports Textual internals
+(`textual._compositor.InlineUpdate`), and `AppBase._display` overrides a
+private Textual method. Check both against the new Textual source first.
