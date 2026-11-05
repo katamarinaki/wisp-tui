@@ -6,12 +6,13 @@
   or Desktop session.
 - Safe multiline paste needs your terminal's **bracketed paste**, which Textual
   turns on. Without it, a pasted carriage return looks identical to pressing
-  Enter, and no timing heuristic can tell them apart. Mac/SSH acceptance
-  testing is pending. Draft recovery and prompt recall cover input you typed
-  in this TUI. Prompts you sent from other clients don't appear in recall.
-- Scripted responses cover recovery in the tests. The owner has not run a
-  funded end-to-end SSH task. Discovery covers v1 runs, and the runtime's
-  default run listing leaves out internal and Desktop-origin runs.
+  Enter, and no timing heuristic can tell them apart. Draft recovery and
+  prompt recall cover input you typed in this TUI. Prompts you sent from other
+  clients don't appear in recall.
+- Scripted responses cover recovery in the tests, and the owner has run the
+  end-to-end SSH workflow (see the live-acceptance note in
+  [Runtime contract](RUNTIME_CONTRACT.md)). The runtime's
+  default run listing still leaves out internal and Desktop-origin runs.
 - A disconnect doesn't cancel a task. Check the run before you assume it
   stopped.
 - When a reattached run overlaps saved history in an ambiguous way, you see

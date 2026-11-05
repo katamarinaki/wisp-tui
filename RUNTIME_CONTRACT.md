@@ -1,4 +1,4 @@
-# Runtime contract used by the MVP
+# Runtime contract used by wisp-tui
 
 This is a narrow implementation note, not a new API or permission model.
 It records the relevant shapes from locally cached Wisp documentation and the
@@ -99,7 +99,7 @@ read also supplies the saved checkpoint baseline for later replay presentation.
 - Listing is newest first. Prefer an executing/parked run over newer queued
   ones; otherwise attach to the oldest queued item. Refuse an incomplete page
   or multiple executing records rather than silently enabling fresh input.
-- Default listing origin is `v1`. This MVP discovers runs through this interface,
+- Default listing origin is `v1`. wisp-tui discovers runs through this interface,
   not every internal/desktop-origin run. No query/route allowlist expansion was
   made for other origins.
 
@@ -157,10 +157,12 @@ printed below the earlier blocks, so both versions stay visible. Whether the
 runtime's final text can differ from its deltas this way is part of the live
 acceptance test.
 
-The live acceptance test must establish message-ID stability, how the final
-run output relates to multi-message checkpoints, checkpoint commit timing, and
-whether the runtime exposes a reliable run/checkpoint association. Until then,
-ambiguous overlap is intentionally visible rather than silently discarded.
+The 2026-11-05 acceptance run established live↔stored tool-call ID identity
+and checkpoint commit timing (the final checkpoint can land just after
+`run.completed`; the client retries around this). Message-ID stability across
+multi-message checkpoints and a reliable run/checkpoint association remain
+unverified, so ambiguous overlap is intentionally visible rather than silently
+discarded.
 
 ## Tool detail contract — installed 0.1.8
 
@@ -200,8 +202,10 @@ is used only when no live `ok` was seen.
 
 A live completion of an identified entry performs one bounded (5s) GET through
 the existing history allowlist. Concurrent requests are coalesced. While the
-run is active, a result not stored yet is read once more after 1 s, and
-terminal completion re-reads every entry still waiting; only then is it
+run is active, a result not stored yet is read once more after 1 s, and a miss
+is never final while the run is live. Terminal completion re-reads every entry
+still waiting, and bounded post-run retries (1 s, 3 s, 6 s) cover a final
+checkpoint that commits just after `run.completed`; only then is a result
 reported missing. This does not reserve the submission slot or block typing,
 cancellation or fresh work. A tool entry (and everything after it) stays in the
 live area until its reads finish, then is printed once with the output tail or
@@ -276,5 +280,14 @@ replay overlap, replay/gaps across reconnect and bounded long-history output.
 explicit/deferred retry, stale/error paths and no replayed approvals;
 `tests/test_submission_leases.py` checks unowned failure/conflict cleanup and
 retention of owned or post-replacement ambiguous requests.
-All runtime responses are synthetic. Actual Mac SSH/inference/approval behavior
-is still an owner-approved acceptance step in [Road to MVP](ROAD_TO_MVP.md).
+All runtime responses are synthetic. The 2026-11-05 owner acceptance run
+additionally exercised the live Mac SSH workflow against runtime 0.1.8
+(apiVersion 2) with Textual 8.2.8: launch, multiline submission, streamed
+text/tool progress, a live approval, cancellation, disconnect/reconnect
+recovery, a cross-client parked approval, and exit restoration. The **deny**
+decision was not exercisable live (the runtime's permission rules auto-decide
+the tested action classes, so no prompt was available to deny); it shares the
+approve path and is covered by the offline regression tests.
+`scripts/tool_ids.py` is the read-only diagnostic that verified live↔stored
+tool-call ID identity; run it with the project venv (`--list`, a session ID,
+or `--watch` to follow the next live run).
