@@ -68,10 +68,9 @@ can't be copied off the device. A second, offline key exists as a backup.
 `scripts/install` pins both from `release-signers` and prints their
 fingerprints, which must match these:
 
-<!-- Owner: replace with the output of `ssh-keygen -lf` for each key. -->
 ```
-SHA256:…  (Secure Enclave, Touch ID)
-SHA256:…  (offline backup)
+SHA256:yOROC4wVOJXSOET1wOEshBXTOhDF/PHOk8/UGHWEOYk  (Secure Enclave, Touch ID)
+SHA256:WPeBe71A97rM26FqMnzys3I37O6GbTlnlJXQoITp7CA  (offline backup)
 ```
 
 To trust new keys, delete `~/.config/wisp-tui/release-signers` and rerun

@@ -52,14 +52,14 @@ A release is an SSH-signed `vX.Y.Z` tag. `wi update` refuses anything else.
 
    ```sh
    git fetch origin main
-   SSH_AUTH_SOCK=<Secretive agent socket> git -c gpg.format=ssh \
-       -c user.signingkey="key::<Secure Enclave public key>" \
+   SSH_SK_PROVIDER=/usr/lib/ssh-keychain.dylib git -c gpg.format=ssh \
+       -c user.signingkey=~/.ssh/wisp-tui-release/id_ecdsa_sk_rk \
        tag -s vX.Y.Z -m "wisp-tui vX.Y.Z" <commit from the draft>
    git push origin vX.Y.Z
    ```
 
-   With the backup key, use `-c user.signingkey=<path to the backup key>`
-   instead and drop `SSH_AUTH_SOCK`.
+   With the backup key, set `user.signingkey` to the backup key file and drop
+   `SSH_SK_PROVIDER`.
 
 4. Edit the notes if needed, then publish the draft. Push the signed tag
    first: publishing without it makes GitHub create an unsigned tag, which
@@ -74,9 +74,16 @@ later means every user deletes `~/.config/wisp-tui/release-signers` and reruns
 `scripts/install`. List both keys from the start, so losing the Mac doesn't
 force that.
 
-1. **Main key.** In the Secretive app, create a key that requires
-   authentication. It lives in the Secure Enclave, asks for Touch ID on every
-   use, and can't be exported or backed up.
+1. **Main key.** Create it in the Secure Enclave with macOS's own tools
+   (macOS 26 or newer). It needs Touch ID for every signature and can't be
+   exported or backed up. The second command writes `id_ecdsa_sk_rk`, which is
+   only a handle to the enclave key, and its `.pub` file.
+
+   ```sh
+   sc_auth create-ctk-identity -l wisp-tui-release -k p-256-ne -t bio
+   mkdir -p ~/.ssh/wisp-tui-release && cd ~/.ssh/wisp-tui-release
+   ssh-keygen -w /usr/lib/ssh-keychain.dylib -K -N ""
+   ```
 2. **Backup key.** Create it away from daily use, with a strong passphrase,
    and keep it offline. A hardware key works too: `ssh-keygen -t ed25519-sk`.
 
@@ -87,7 +94,7 @@ force that.
 3. **Write `release-signers`** with one line per public key, then commit it:
 
    ```
-   wisp-tui-release namespaces="git" ecdsa-sha2-nistp256 AAAA…
+   wisp-tui-release namespaces="git" sk-ecdsa-sha2-nistp256@openssh.com AAAA…
    wisp-tui-release namespaces="git" ssh-ed25519 AAAA…
    ```
 
