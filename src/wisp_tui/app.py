@@ -43,6 +43,7 @@ class WispTuiApp(SessionLayer):
     ]
 
     def compose(self) -> ComposeResult:
+        yield self._welcome
         yield ChatScroll(id="chat")
         with Container(id="bottom"):
             yield Static("", id="command-hints", markup=False)
@@ -202,6 +203,7 @@ class WispTuiApp(SessionLayer):
             self._show_line(line, "tool")
 
     def on_unmount(self) -> None:
+        self._clear_tab_status()
         # The exit transcript prints the stream widget's text, not the batch target.
         if self._stream_view is not None:
             self._stream_view.flush()

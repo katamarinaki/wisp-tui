@@ -4,6 +4,10 @@ Screen { background: transparent; color: ansi_default; }
    default foreground: a bright line above and below the app. */
 Screen:inline { border-top: none; border-bottom: none; }
 ApprovalModal, SessionPicker, ModelPicker { background: transparent; }
+#welcome {
+    height: auto; max-height: 60vh; margin: 1;
+    background: transparent; color: ansi_default;
+}
 /* Only live items: finished ones are printed to the terminal's scrollback.
    Items render themselves (scrollback.render_item), including the
    owner-approved teal prompt fill (48;5;23); nothing else is painted. */

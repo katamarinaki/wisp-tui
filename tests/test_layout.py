@@ -7,6 +7,7 @@ import re
 import pytest
 
 from tests.test_app import eventually, make_app
+from wisp_tui import __version__
 from wisp_tui.app import WispTuiApp
 from wisp_tui.chat_view import ChatItem
 from wisp_tui.editor import PromptInput as Input
@@ -17,6 +18,33 @@ from wisp_tui.scrollback import render_ansi
 def printed_lines(items: list[tuple[str, str]], width: int) -> list[str]:
     """Uncolored scrollback rows; unstyled trailing padding is not printed."""
     return render_ansi(items, width, None).split("\r\n")
+
+
+@pytest.mark.parametrize("width,height", [(100, 30), (40, 24), (40, 18)])
+async def test_welcome_reflows_and_leaves_the_conversation(
+    monkeypatch: pytest.MonkeyPatch, width: int, height: int
+) -> None:
+    app, _ = make_app([], monkeypatch)
+    async with app.run_test(size=(width, height)) as pilot:
+        await eventually(lambda: "ready" in app._status_text)
+        for columns, rows in ((width, height), (100, 30), (40, 24)):
+            await pilot.resize_terminal(columns, rows)
+            await pilot.pause()
+            welcome = app.query_one("#welcome")
+            rendered = "\n".join(welcome.render_line(y).text for y in range(welcome.size.height))
+            assert welcome.display
+            assert f"wisp-tui v{__version__}" in rendered
+            assert "▟█▙▟███▙" in rendered
+            assert welcome.region.bottom <= app.query_one("#input").region.y
+            assert app.screen.max_scroll_y == 0
+            assert welcome.styles.background.a == 0
+        assert app.transcript() == []
+        app._show_line("A conversation item")
+        assert not app.query_one("#welcome").display
+        app._start_fresh("")
+        assert app.query_one("#welcome").display
+        app._session_loaded({"id": "example-session"}, [], "", announce_empty=False)
+        assert not app.query_one("#welcome").display
 
 
 @pytest.mark.parametrize("width", [40, 100])

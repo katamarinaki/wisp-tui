@@ -35,12 +35,14 @@ from .scrollback import render_ansi
 from .sessions import SessionStore
 from .submissions import PendingSubmission, SubmissionStore
 from .terminal import ChangedRowsUpdate, InlineRenderer
+from .terminal_status import TabStatus, tab_status_sequence
 from .text import display_path, metadata_text, model_label, safe_text
 from .tool_view import ToolCallView
+from .welcome import Welcome
 
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
-FRESH_STATUS = "ready · new session — your first message starts it (/resume, F2)"
+FRESH_STATUS = "ready · new session"
 
 
 class ApprovalPrompt(NamedTuple):
@@ -89,6 +91,8 @@ class AppBase(App[None]):
         self.client = client
         self.config = config
         self.startup = startup or Startup()
+        self._welcome = Welcome(id="welcome")
+        self._welcome.display = self.startup.mode == "new"
         self.sessions = sessions or SessionStore()
         self.submissions = submissions or SubmissionStore(client.url)
         self.composer = ComposerStore(client.url, self.submissions.root)
@@ -155,6 +159,8 @@ class AppBase(App[None]):
         self._tool_history_again = False
         self._tool_history_post_run_reads = 0
         self._status_text = "connecting…"
+        self._tab_status: TabStatus | None = None
+        self._tab_status_closed = False
         self._activity_frame = 0
         self._prompt_input = PromptInput(commands=tuple(name for name, _, _ in COMMANDS))
         self._activity_timer: Timer | None = None
@@ -190,7 +196,7 @@ class AppBase(App[None]):
             return
         status = self.query_one("#status", Static)
         status.update(self._status_text)
-        status.display = bool(self._status_text)
+        status.display = bool(self._status_text) and self._status_text != FRESH_STATUS
         self._render_activity()
 
     def on_resize(self, event: events.Resize) -> None:
@@ -229,6 +235,47 @@ class AppBase(App[None]):
             return prefix
         return prefix + render_ansi(items, self.size.width, self.console.color_system)
 
+    def _update_tab_status(self, status: TabStatus | None) -> None:
+        if self._tab_status_closed or status == self._tab_status:
+            return
+        self._tab_status = status
+        driver = self._driver
+        if driver is None or driver.is_headless:
+            return
+        # Do not gate on TERM_PROGRAM: SSH need not forward the Mac's environment.
+        # Unsupported terminals ignore this OSC; it neither moves the cursor nor
+        # paints the terminal. Use Textual's writer, never redirected stdout.
+        try:
+            driver.write(tab_status_sequence(status))
+            driver.flush()
+        except (OSError, ValueError):
+            pass  # A closed terminal must not prevent local shutdown/recovery.
+
+    def _clear_tab_status(self) -> None:
+        self._update_tab_status(None)
+        self._tab_status_closed = True
+
+    def _idle_tab_status(self) -> TabStatus:
+        if self._session_change_in_progress:
+            return TabStatus.WORKING
+        if self._pending_state_error or self._pending_submission is not None:
+            return TabStatus.ATTENTION
+        if self._status_text == "connecting…":
+            return TabStatus.CONNECTING
+        if self._status_text.startswith(
+            (
+                "runtime unreachable:",
+                "runtime_not_ready",
+                "error:",
+                "run failed",
+                "session not found",
+            )
+        ):
+            return TabStatus.ERROR
+        if self._status_text == "run cancelled":
+            return TabStatus.CANCELLED
+        return TabStatus.IDLE
+
     def _render_activity(self) -> None:
         editor = self._prompt_input
         # A queued tick may arrive after the screen's children are unmounted.
@@ -238,18 +285,24 @@ class AppBase(App[None]):
             return
         busy = self._submitting or self.active_run is not None
         if not busy:
+            self._update_tab_status(self._idle_tab_status())
             editor.border_title = ""
             self._activity_frame = 0
             if self._activity_timer is not None:
                 self._activity_timer.pause()
             return
         label = "Working"
+        tab_status = TabStatus.WORKING
         if self._disconnected:
             label = "Reconnecting"
+            tab_status = TabStatus.RECONNECTING
         elif self._cancel_requested:
             label = "Cancelling"
+            tab_status = TabStatus.CANCELLING
         elif self._approval_modal is not None or self._status_text.startswith("run parked"):
             label = "Waiting for approval"
+            tab_status = TabStatus.WAITING
+        self._update_tab_status(tab_status)
         editor.border_title = f" {SPINNER_FRAMES[self._activity_frame]} {label} "
         if self._activity_timer is not None:
             self._activity_timer.resume()
@@ -272,23 +325,32 @@ class AppBase(App[None]):
         ]
 
     def _render_metadata(self) -> None:
+        if self.session_id is not None:
+            self._welcome.display = False
+        self.query_one("#session-id").display = self.session_id is not None
         session = self.session_id[:8] if self.session_id else "new"
         self.query_one("#location", Static).update(metadata_text(self._launch_dir, 1000))
         self.query_one("#session-id", Static).update(f" · session {session}")
         mode = metadata_text(self._model_selection.get("mode"))
         model = metadata_text(self._model_selection.get("model"))
         label = (
-            f"model: {model or 'not reported'}"
-            if mode == "model"
-            else (f"mode: {mode} (auto)" if mode and mode != "model" else "model: runtime default")
+            f"model: {model}"
+            if model
+            else (f"mode: {mode} (auto)" if mode and mode != "model" else "")
         )
-        self.query_one("#session-info", Static).update(label)
+        model_info = self.query_one("#session-info", Static)
+        model_info.update(label)
+        model_info.display = bool(label)
         thinking = self._model_selection.get("thinking")
         thinking_info = self.query_one("#thinking-info", Static)
+        separator = " · " if label else ""
         thinking_info.update(
-            f" · thinking: {'on' if thinking else 'off'}" if isinstance(thinking, bool) else ""
+            f"{separator}thinking: {'on' if thinking else 'off'}"
+            if isinstance(thinking, bool)
+            else ""
         )
         thinking_info.display = isinstance(thinking, bool)
+        self.query_one("#selection-summary").display = bool(label) or thinking_info.display
         usage = self.query_one("#usage-info", Static)
         # These are exact counts from the last finished run, never context use.
         compact = (
@@ -297,8 +359,8 @@ class AppBase(App[None]):
             .replace("total: ", "Σ")
             .replace(", ", " ")
         )
-        usage.update(f"last run {compact}" if compact else "")
-        usage.display = bool(compact)
+        fallback = "T: 0" if self.session_id is None else "T: unavailable"
+        usage.update(f"last run {compact}" if compact else fallback)
 
     def _selection_updated(self, session: dict[str, Any], session_id: str) -> None:
         if self.session_id != session_id:

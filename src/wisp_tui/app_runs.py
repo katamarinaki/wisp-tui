@@ -204,6 +204,7 @@ class RunLayer(ComposerLayer):
         self.push_screen(
             modal, lambda decision: self._approval_answered(run_id, prompt_id, decision)
         )
+        self._render_activity()
 
     def _approval_answered(self, run_id: str, prompt_id: str, decision: str | None) -> None:
         if decision is None or self.active_run != run_id:

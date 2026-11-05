@@ -21,6 +21,8 @@ import pytest
 
 from tests.editor_terminal_fixture import PASTE, PROMPT
 from tests.helpers import SID
+from wisp_tui import __version__
+from wisp_tui.terminal_status import TabStatus, tab_status_sequence
 
 
 def capture_terminal(
@@ -104,10 +106,32 @@ def capture_terminal(
 def test_inline_terminal_keeps_default_background(width: int) -> None:
     capture = capture_terminal("tests.terminal_fixture", width)
     startup = capture.split(b"Show the server status", 1)[0]
-    assert re.search(rb"(?:\r?\n){20,}", startup), "startup did not reserve the terminal height"
+    # The first frame now includes the welcome, so reserved rows aren't all blank.
+    first_frame = startup.split(b"\x1b[6n", 1)[0]
+    assert first_frame.count(b"\n") >= 29, "startup did not reserve the terminal height"
+    assert b"session new" not in startup
+    assert b"model: runtime default" not in startup
+    assert b"your first message starts it" not in startup
+    assert b"T: 0" in startup
+    assert f"wisp-tui v{__version__}".encode() in startup
+    assert "▟█▙▟███▙".encode() in startup
+    assert b"/help commands" not in startup
     hint = f"To continue: wi --resume {SID}".encode()
     assert capture.rstrip().endswith(hint), "resume hint missing after terminal exit"
     assert capture.count(hint) == 1, "resume hint printed more than once"
+    statuses = re.findall(rb"\x1b\]21337;[^\x1b]*\x1b\\", capture)
+    assert statuses == [
+        tab_status_sequence(status).encode()
+        for status in (
+            TabStatus.CONNECTING,
+            TabStatus.IDLE,
+            TabStatus.WORKING,
+            TabStatus.WAITING,
+            TabStatus.IDLE,
+            None,
+        )
+    ]
+    assert capture.index(statuses[-1]) < capture.index(hint)
     assert capture.rfind(b"\x1b[?25h") < capture.index(hint), (
         "resume hint printed before the cursor was restored"
     )
