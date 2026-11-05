@@ -12,7 +12,6 @@ from wisp_tui import __main__ as cli
 from wisp_tui.app import WispTuiApp
 from wisp_tui.config import Config
 from wisp_tui.history import ChatMessage
-from wisp_tui.screens import ApprovalModal
 from wisp_tui.sessions import SessionStore
 from wisp_tui.submissions import SubmissionStore
 
@@ -32,11 +31,14 @@ class TerminalFixture(WispTuiApp):
         # Finished items reach the terminal with the next frame (scrollback).
         await eventually(lambda: not self._scrollback and not self._sync_queued)
         await self.screen.wait_for_refresh()
-        self.finish_work()
+        self._sync_confirmations(
+            [{"id": "prompt-1", "toolName": "scripted_tool", "args": {"target": "example"}}]
+        )
+        await eventually(lambda: self._approval_modal is not None)
         await self.screen.wait_for_refresh()
-        modal = ApprovalModal("scripted_tool", {"target": "example"})
-        await self.push_screen(modal)
-        await modal.wait_for_refresh()
+        self.finish_work()
+        await eventually(lambda: self.screen is self._screen_stack[0])
+        await self.screen.wait_for_refresh()
         self.exit()
 
     def show_transcript(self) -> None:

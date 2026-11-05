@@ -14,6 +14,8 @@ from textual.widgets import ListItem, ListView, Static
 from .text import metadata_text, pretty_args
 
 APPROVAL_ARGS_LIMIT = 200_000
+# Rule decisions outlive the run, so they take a second, re-armed key press.
+RULE_DECISIONS = {"allow_project": ("p", "this project"), "allow_global": ("g", "every project")}
 
 
 class ApprovalModal(ModalScreen[str | None]):
@@ -43,6 +45,7 @@ class ApprovalModal(ModalScreen[str | None]):
         self.allow_rules = allow_rules
         self.armed = False
         self._arm_timer: Timer | None = None
+        self.pending_rule: str | None = None
         args_text = pretty_args(args, APPROVAL_ARGS_LIMIT + 1)
         # A decision must never cover arguments the owner could not read.
         self.reviewable = len(args_text) <= APPROVAL_ARGS_LIMIT
@@ -64,16 +67,29 @@ class ApprovalModal(ModalScreen[str | None]):
                 if self.note:
                     yield Static(self.note, id="approval-note", markup=False)
                 yield Static(self.args_text, id="approval-args", markup=False)
-            rules = " · p allow for project · g allow globally" if self.allow_rules else ""
-            hint = (
-                f"↑↓/PgUp/PgDn scroll · y approve · n/Esc deny{rules}"
-                if self.reviewable
-                else ("↑↓/PgUp/PgDn scroll · n/Esc deny (arguments too large to approve)")
+            yield Static(self._hint(), id="approval-hint", markup=False)
+
+    def _hint(self) -> str:
+        if not self.reviewable:
+            return "↑↓/PgUp/PgDn scroll · n/Esc deny (arguments too large to approve)"
+        if self.pending_rule is not None:
+            key, scope = RULE_DECISIONS[self.pending_rule]
+            return (
+                f"Wisp will save a rule that allows {metadata_text(self.tool_name, 80)} "
+                f"in {scope}, for future runs too. {key} again to confirm · "
+                "y approve once · n/Esc deny"
             )
-            yield Static(hint, id="approval-hint", markup=False)
+        rules = " · p allow for project · g allow globally" if self.allow_rules else ""
+        return f"↑↓/PgUp/PgDn scroll · y approve · n/Esc deny{rules}"
 
     def on_mount(self) -> None:
         self.query_one("#approval-details", VerticalScroll).focus()
+        self._start_arming()
+
+    def _start_arming(self) -> None:
+        self.armed = False
+        if self._arm_timer is not None:
+            self._arm_timer.stop()
         self._arm_timer = self.set_timer(self.ARM_DELAY, self._arm)
 
     def _arm(self) -> None:
@@ -86,8 +102,14 @@ class ApprovalModal(ModalScreen[str | None]):
             return
         if decision != "deny" and not self.reviewable:
             return
-        if decision in ("allow_project", "allow_global") and not self.allow_rules:
-            return
+        if decision in RULE_DECISIONS:
+            if not self.allow_rules:
+                return
+            if self.pending_rule != decision:
+                self.pending_rule = decision
+                self.query_one("#approval-hint", Static).update(self._hint())
+                self._start_arming()
+                return
         self.dismiss(decision)
 
     def action_deny_now(self) -> None:

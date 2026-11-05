@@ -6,24 +6,16 @@ OpenAPI document inspected during development. No live runtime requests or
 inference were used to establish these notes. Recheck against the installed
 release before the owner-run live acceptance test.
 
-## Evidence
+## Compatibility
 
-- `/tmp/wisp-adapter-contract.md`: approvals, idempotency, cancellation, errors.
-  SHA-256: `70f53b05b56b93219ee14cd3928ab6907e6b03f2f839f94b82564c0ef7448cf6`
-- `/tmp/wisp-reference.md`: event replay, gaps, late runs, retention defaults.
-  SHA-256: `ea7ff6f55e46a9c8e84d0bd4794a9eeff729a650fac1e0d8949c0d00516c395d`
-- `/tmp/wisp-openapi.json`: run listing, records, event and confirmation schemas.
-  SHA-256: `0a922d80df32dc0e9c3fc1d16bd19b4bbdc67e02ee5a8fd19d41ca12997711ee`
+| Runtime | API version | Basis | Result |
+|---|---|---|---|
+| 0.1.8 | 2 | Cached docs and OpenAPI, a static inspection of the installed executable, and the 2026-11-05 live acceptance run | Supported |
 
-- Owner-provided static inspection report for installed runtime **0.1.8**,
-  received 2026-11-03; SHA-256:
-  `4534fcb8412410fa5861af3ef3f1c1aa00263891cc2ced8aa17a84cb80d41e5e`.
-  It inspected the executable's embedded JavaScript without requests, inference
-  or real conversation inspection. No runtime Git commit was recoverable.
-
-These temporary files are not required to run the client or tests. Their hashes
-identify the evidence inspected; they do not prove the currently running release
-matches it. The durable summary and synthetic regression fixtures live here.
+Earlier notes cited temporary files by hash. Those files are gone, so the
+hashes can't be checked. This document and the synthetic regression fixtures
+are the durable record. After testing a new runtime release, add a row and
+note what changed below.
 
 ## Submission and retry
 

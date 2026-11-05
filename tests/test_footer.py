@@ -22,25 +22,46 @@ def footer(app: WispTuiApp, name: str) -> str:
     return text_of(app.query_one(f"#{name}", Static))
 
 
+@pytest.mark.parametrize("width", [40, 100])
 async def test_fresh_footer_and_full_status_explain_unavailable_data(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, width: int
 ) -> None:
     launch = tmp_path / "project[/]"
     launch.mkdir(parents=True)
     monkeypatch.chdir(launch)
     app, client = make_app([], monkeypatch)
-    async with app.run_test():
+    async with app.run_test(size=(width, 24)) as pilot:
         await eventually(lambda: "ready" in app._status_text)
+        await pilot.pause()
+        assert not app.query_one("#status").display
+        assert app.query_one("#location-row").display
+        assert not app.query_one("#session-id").display
+        assert app.query_one("#summary").display
+        assert app.query_one("#bottom").region.height == 5
         assert "session new" in footer(app, "session-id")
-        assert footer(app, "session-info") == "model: runtime default"
+        assert not app.query_one("#selection-summary").display
+        assert not app.query_one("#session-info").display
         assert not app.query_one("#thinking-info").display
-        assert footer(app, "usage-info") == ""
-        assert not app.query_one("#usage-info").display
+        assert footer(app, "usage-info") == "T: 0"
+        assert app.query_one("#usage-info").display
         assert footer(app, "location") == str(launch)
         # A later chdir must not relabel the original launch directory.
         monkeypatch.chdir(tmp_path)
         app._render_metadata()
         assert str(launch) in footer(app, "location")
+        # Known selection details do not depend on having a session ID.
+        app._model_selection = {"model": "example-model", "thinking": False}
+        app._render_metadata()
+        assert app.query_one("#selection-summary").display
+        assert footer(app, "session-info") == "model: example-model"
+        assert footer(app, "thinking-info") == " · thinking: off"
+        assert footer(app, "usage-info") == "T: 0"
+        app._model_selection = {"thinking": True}
+        app._render_metadata()
+        assert not app.query_one("#session-info").display
+        assert footer(app, "thinking-info") == "thinking: on"
+        app._model_selection = {}
+        app._render_metadata()
         app._handle_command("/status")
         await eventually(lambda: "not live" in chat_text(app))
         assert str(launch) in chat_text(app)
@@ -50,6 +71,8 @@ async def test_fresh_footer_and_full_status_explain_unavailable_data(
         assert "Wisp working directory: unavailable" in chat_text(app)
         assert "not live" in chat_text(app)
         assert client.calls == [("GET", "/v1/health", None)]
+        app._set_status("runtime unreachable: runtime_timeout")
+        assert app.query_one("#status").display
 
 
 @pytest.mark.parametrize(
@@ -58,8 +81,8 @@ async def test_fresh_footer_and_full_status_explain_unavailable_data(
         ({"mode": "model", "model": "model[/]x", "thinking": True}, "model: model[/]x", "on"),
         ({"mode": "balanced", "thinking": False}, "mode: balanced (auto)", "off"),
         ({"mode": "advanced"}, "mode: advanced (auto)", "unavailable"),
-        ({"mode": "model", "thinking": "false"}, "model: not reported", "unavailable"),
-        ({}, "model: runtime default", "unavailable"),
+        ({"mode": "model", "thinking": "false"}, "", "unavailable"),
+        ({}, "", "unavailable"),
     ],
 )
 async def test_selection_stays_visible_through_run_status_changes(
@@ -69,8 +92,11 @@ async def test_selection_stays_visible_through_run_status_changes(
     async with app.run_test():
         await eventually(lambda: "ready" in app._status_text)
         app._session_loaded({"id": SID, "effectiveSelection": selection}, [], "")
+        assert app.query_one("#location-row").display
+        assert app.query_one("#summary").display
         expected = footer(app, "session-info")
-        assert model in expected
+        assert model == expected
+        assert app.query_one("#session-info").display == bool(model)
         if thinking == "unavailable":
             assert not app.query_one("#thinking-info").display
         else:
@@ -184,13 +210,17 @@ async def test_session_change_and_new_clear_usage_and_model_metadata(
         app._session_loaded(session, [], "")
         assert "↑100" in footer(app, "usage-info")
         app._session_loaded({"id": OTHER_SID}, [], "")
-        assert footer(app, "usage-info") == ""
-        assert not app.query_one("#usage-info").display
+        assert footer(app, "usage-info") == "T: unavailable"
+        assert app.query_one("#usage-info").display
         assert "balanced" not in footer(app, "session-info")
         app._start_fresh("")
+        assert not app.query_one("#status").display
+        assert app.query_one("#location-row").display
+        assert not app.query_one("#session-id").display
+        assert app.query_one("#summary").display
         assert "session new" in footer(app, "session-id")
-        assert footer(app, "usage-info") == ""
-        assert not app.query_one("#usage-info").display
+        assert footer(app, "usage-info") == "T: 0"
+        assert app.query_one("#usage-info").display
         assert not app.query_one("#thinking-info").display
 
 
@@ -207,8 +237,8 @@ async def test_missing_usage_does_not_show_previous_run_tokens(
         app._begin_run(RID)
         assert "↑100" in footer(app, "usage-info")  # last finished run, not live
         app._finalize_run(kind, {})
-        assert footer(app, "usage-info") == ""
-        assert not app.query_one("#usage-info").display
+        assert footer(app, "usage-info") == "T: unavailable"
+        assert app.query_one("#usage-info").display
 
 
 @pytest.mark.parametrize(

@@ -1,0 +1,5 @@
+# SSH keys whose signatures on vX.Y.Z tags `wi update` accepts (MAINTAINING.md).
+# Secure Enclave key, Touch ID on every signature:
+wisp-tui-release namespaces="git" sk-ecdsa-sha2-nistp256@openssh.com AAAAInNrLWVjZHNhLXNoYTItbmlzdHAyNTZAb3BlbnNzaC5jb20AAAAIbmlzdHAyNTYAAABBBKr/WZVqwzkrTV2XNz0ratKNId06J0uZnlZdv+rk47Th6T6k9ycRalarSGXHv+RU0w4G8Y90NeqsvdfYI6YMbD4AAAAEc3NoOg==
+# Offline backup key:
+wisp-tui-release namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINqTAqMLzPyCJNiNgODrL/K0uKTXQ/gNZjNRv9Aa2SsV

@@ -12,11 +12,16 @@ from wisp_tui.app import WispTuiApp
 from wisp_tui.app_base import SPINNER_FRAMES
 from wisp_tui.client import ClientError
 from wisp_tui.editor import PromptInput as Input
+from wisp_tui.terminal_status import TabStatus, tab_status_sequence
 
 
 def spinner(app: WispTuiApp) -> str:
     """The activity label lives in the input's top rule, as its border title."""
     return str(app.query_one("#input", Input).border_title).strip()
+
+
+def tab_status(app: WispTuiApp) -> TabStatus | None:
+    return app._tab_status
 
 
 @pytest.mark.parametrize("width", [40, 100])
@@ -28,9 +33,11 @@ async def test_working_animates_in_input_rule_and_disappears_on_completion(
         await eventually(lambda: "ready" in app._status_text)
         editor = app.query_one("#input", Input)
         assert spinner(app) == ""
+        assert tab_status(app) == TabStatus.IDLE
         app.session_id = SID
         app._begin_run(RID)
         await eventually(lambda: spinner(app).endswith(" Working"))
+        assert tab_status(app) == TabStatus.WORKING
         first = spinner(app)
         await eventually(lambda: spinner(app) != first)
         assert spinner(app)[0] in SPINNER_FRAMES
@@ -46,6 +53,7 @@ async def test_working_animates_in_input_rule_and_disappears_on_completion(
         await eventually(lambda: "Final answer" in chat_text(app))
         assert spinner(app) == ""
         assert app._status_text == ""
+        assert tab_status(app) == TabStatus.IDLE
         assert not any("Working" in text_of(w) for w in app.query("#chat > Static"))
         assert client.calls == [("GET", "/v1/health", None)]
 
@@ -62,6 +70,7 @@ async def test_spinner_stops_on_every_terminal_outcome(
         assert spinner(app)
         app._finalize_run(kind, {})
         assert not spinner(app)
+        assert tab_status(app) == (TabStatus.ERROR if kind == "run.failed" else TabStatus.CANCELLED)
 
 
 async def test_spinner_covers_submission_and_stops_after_ambiguous_failure(
@@ -82,11 +91,13 @@ async def test_spinner_covers_submission_and_stops_after_ambiguous_failure(
             await pilot.press("enter")
             await eventually(gate.entered.is_set)
             assert spinner(app).endswith(" Working")
+            assert tab_status(app) == TabStatus.WORKING
         finally:
             gate.release.set()
         await eventually(lambda: "submission error" in app._status_text)
         assert not spinner(app)
         assert app._pending_submission is not None
+        assert tab_status(app) == TabStatus.ATTENTION
 
 
 async def test_waiting_disconnected_and_cancelling_are_not_labelled_working(
@@ -99,9 +110,54 @@ async def test_waiting_disconnected_and_cancelling_are_not_labelled_working(
         app._begin_run(RID)
         app._handle_event({"kind": "run.parked"})
         assert spinner(app).endswith(" Waiting for approval")
+        assert tab_status(app) == TabStatus.WAITING
         app._stream_failed("runtime_timeout")
         assert spinner(app).endswith(" Reconnecting")
+        assert tab_status(app) == TabStatus.RECONNECTING
         app._disconnected = False
         app._cancel_requested = True
         app._render_activity()
         assert spinner(app).endswith(" Cancelling")  # Until runtime confirms it stopped.
+        assert tab_status(app) == TabStatus.CANCELLING
+
+
+async def test_tab_status_writes_only_changes_and_stays_cleared_after_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, client = make_app([], monkeypatch)
+    async with app.run_test():
+        await eventually(lambda: "ready" in app._status_text)
+        driver = app._driver
+        assert driver is not None
+        writes: list[str] = []
+        with monkeypatch.context() as patch:
+            patch.setattr(driver, "write", writes.append)
+            app._set_status("error: example_error")
+            assert tab_status(app) == TabStatus.ERROR
+            assert writes == []  # Headless sessions never emit control sequences.
+            # Exercise the terminal writer synchronously, without running a real
+            # terminal or letting Textual repaint while this stub is installed.
+            patch.setattr(type(driver), "is_headless", property(lambda _: False))
+            app.session_id = SID
+            app._begin_run(RID)
+            for _ in range(20):
+                app._tick_activity()
+            app._clear_tab_status()
+            app._tick_activity()  # A late UI tick must not reinstate the subtitle.
+            app._clear_tab_status()
+        assert writes == [
+            tab_status_sequence(TabStatus.WORKING),
+            tab_status_sequence(None),
+        ]
+        assert client.calls == [("GET", "/v1/health", None)]
+
+
+@pytest.mark.parametrize("status", ["runtime unreachable: runtime_timeout", "runtime_not_ready"])
+async def test_failed_startup_is_not_idle_in_tab(
+    monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    app, _ = make_app([], monkeypatch)
+    async with app.run_test():
+        await eventually(lambda: "ready" in app._status_text)
+        app._set_status(status)
+        assert tab_status(app) == TabStatus.ERROR

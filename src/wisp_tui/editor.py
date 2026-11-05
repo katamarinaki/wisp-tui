@@ -46,7 +46,7 @@ class PromptInput(TextArea):
             id=id,
             soft_wrap=True,
             highlight_cursor_line=False,
-            placeholder="Message Wisp — Enter send · Ctrl+J newline · /help",
+            placeholder="Message Wisp",
         )
         # Explicit non-painting component styles also cover selections and
         # matching brackets; TextArea's default styles can emit filled cells.

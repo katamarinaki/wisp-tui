@@ -16,7 +16,8 @@ reattachment. Do not expand this into a general-purpose Pi replacement.
   or update something do not authorize commits or pushes. A request to commit
   does not authorize pushing. When explicitly requested, commit and push only
   to `develop`; no PRs for routine work. The owner merges `develop` → `main`.
-  Never push to or merge into `main` yourself.
+  Never push to or merge into `main` yourself. Never create, push or publish
+  release tags or GitHub releases: the owner signs releases (MAINTAINING.md).
 - CI (`.github/workflows/ci.yml`) runs pytest + strict mypy on pushes to
   `main`/`develop` and on PRs, on GitHub-hosted runners only. Never use the
   homeserver's self-hosted runner here: fork PRs would execute code on it.

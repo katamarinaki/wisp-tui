@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import stat
 import subprocess
+import time
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -399,8 +401,9 @@ def test_record_paths_are_shown_relative_to_home() -> None:
     assert display_path(Path("/tmp/x.jsonl")) == "/tmp/x.jsonl"
 
 
+@pytest.mark.parametrize("log_args", [False, True])
 async def test_approval_decision_is_recorded_with_what_was_approved(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, log_args: bool
 ) -> None:
     events = [
         {
@@ -414,6 +417,7 @@ async def test_approval_decision_is_recorded_with_what_was_approved(
         {"seq": 3, "kind": "run.completed", "outcome": {"output": {"text": "restarted"}}},
     ]
     app, _ = make_app(events, monkeypatch)
+    app.config = dataclasses.replace(app.config, log_approval_args=log_args)
     async with app.run_test() as pilot:
         await eventually(lambda: "new session" in app._status_text)
         app.query_one("#input", Input).value = "restart jellyfin"
@@ -427,7 +431,28 @@ async def test_approval_decision_is_recorded_with_what_was_approved(
     assert len(approvals) == 1
     assert approvals[0]["tool"] == "restart_service"
     assert approvals[0]["decision"] == "approve"
-    assert json.loads(approvals[0]["args"]) == {"name": "jellyfin"}
+    # Arguments are logged only with log_approval_args.
+    if log_args:
+        assert json.loads(approvals[0]["args"]) == {"name": "jellyfin"}
+    else:
+        assert "args" not in approvals[0]
+
+
+def test_prune_deletes_only_old_session_files(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    old, recent = SID, "22222222-2222-4222-8222-222222222222"
+    assert store.record(old, {"role": "user", "text": "old"}) == ""
+    assert store.record(recent, {"role": "user", "text": "recent"}) == ""
+    unrelated = tmp_path / "sessions" / "notes.txt"
+    unrelated.write_text("not a session file")
+    stale = time.time() - 31 * 86400
+    for path in (store.path_for(old), unrelated):
+        assert path is not None
+        os.utime(path, (stale, stale))
+    store.prune(30)
+    assert store.path_for(old) is None
+    assert store.path_for(recent) is not None
+    assert unrelated.exists()
 
 
 async def test_record_failure_is_reported_once(

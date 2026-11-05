@@ -14,10 +14,12 @@ the UI: failures return a safe code instead.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import stat
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -123,6 +125,14 @@ class SessionStore:
             return ""
         finally:
             os.close(fd)
+
+    def prune(self, days: int) -> None:
+        """Delete owner-checked session files untouched for ``days``. Never raises."""
+        cutoff = time.time() - days * 86400
+        for path, _, mtime in self._files():
+            if mtime < cutoff:
+                with contextlib.suppress(OSError):
+                    path.unlink()
 
     # -- reading ----------------------------------------------------------------
 

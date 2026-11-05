@@ -25,6 +25,7 @@ class ChatLayer(AppBase):
 
     def _mount_chat(self, widget: ChatEntry, before: ChatEntry | None = None) -> None:
         """Queue an item in display order; finished items go to scrollback."""
+        self._welcome.display = False
         if before is not None and before in self._chat_items:
             self._chat_items.insert(self._chat_items.index(before), widget)
         else:

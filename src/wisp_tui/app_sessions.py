@@ -32,10 +32,12 @@ class SessionLayer(SubmissionLayer):
             self._show_line("A run is active — /cancel before changing sessions or models.")
             return False
         self._session_change_in_progress = True
+        self._render_activity()
         return True
 
     def _release_session_change(self) -> None:
         self._session_change_in_progress = False
+        self._render_activity()
 
     def _open_session(self, session_id: str) -> None:
         if not UUID_RE.fullmatch(session_id):
@@ -168,6 +170,7 @@ class SessionLayer(SubmissionLayer):
         self.title = "wisp-tui"
         self._next_session_title = title
         self._reset_chat()
+        self._welcome.display = True
         self._set_status(FRESH_STATUS)
 
     def action_resume(self, query: str = "") -> None:
@@ -231,6 +234,8 @@ class SessionLayer(SubmissionLayer):
     def _picker_answered(self, session_id: str | None) -> None:
         if session_id and UUID_RE.fullmatch(session_id):
             self._open_session(session_id)
+        elif self.session_id is None:
+            self._welcome.display = True
 
     def action_model(self) -> None:
         if self.session_id is None:

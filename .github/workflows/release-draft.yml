@@ -1,0 +1,68 @@
+name: Release draft
+
+# After CI passes on a push to main, (re)draft the GitHub release for the
+# version in pyproject.toml. Publishing stays manual: the owner first pushes an
+# SSH-signed tag for the draft's commit (see MAINTAINING.md), because `wi update`
+# only accepts signed tags. GitHub-hosted runners only, as in ci.yml.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-draft
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    if: >-
+      github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Draft the release for this version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -eu
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          package=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/wisp_tui/__init__.py)
+          if [ "$version" != "$package" ]; then
+            echo "::error::pyproject.toml says $version but __version__ says $package"
+            exit 1
+          fi
+          tag="v$version"
+          state=$(gh release list --limit 200 --json tagName,isDraft \
+            --jq ".[] | select(.tagName == \"$tag\") | if .isDraft then \"draft\" else \"published\" end")
+          if [ "$state" = published ]; then
+            echo "::notice::$tag is already published. Bump the version to draft the next release."
+            exit 0
+          fi
+          # Once the signed tag exists, the release is fixed to its commit.
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            if [ "$state" = draft ]; then
+              echo "::notice::$tag is already tagged. Leaving its draft as is."
+              exit 0
+            fi
+            SHA=$(git rev-parse "$tag^{commit}")
+          fi
+          # Until then, notes are rebuilt on every push to main.
+          [ "$state" != draft ] || gh release delete "$tag" --yes
+          previous=$(git describe --tags --abbrev=0 --match 'v*' "$SHA^" 2>/dev/null || true)
+          git log --no-merges --format='- %s (%h)' ${previous:+"$previous.."}"$SHA" > notes.md
+          gh release create "$tag" --draft --target "$SHA" --title "wisp-tui $tag" \
+            --notes-file notes.md
+          echo "::notice::Drafted $tag at $SHA. Sign and push the tag, then publish."

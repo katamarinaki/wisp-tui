@@ -75,6 +75,8 @@ While a run is active you will see tool calls as they happen. When Wisp needs
 approval for a tool, a dialog appears: **y** approve, **n** deny, **p** allow
 for this project, **g** allow globally, **Esc** deny. Letter keys work once the
 dialog has been shown for half a second, so typing ahead cannot answer it.
+**p** and **g** save a rule for future runs, so they ask again: press the same
+key a second time, after another half second, to confirm.
 Use Up/Down or PageUp/PageDown to scroll long approval details; decision keys
 stay visible. Ctrl+C still cancels work from approvals and pickers; press twice
 to leave. Normal questions consume the Wisp account balance, exactly like

@@ -68,6 +68,9 @@ async def test_long_approval_keeps_keys_visible_and_details_scrollable(
         assert editor.value == "keep\nmy draft"
         await eventually(lambda: modal.armed)
         await pilot.press(key)
+        if key in ("p", "g"):  # a lasting rule needs a second, re-armed press
+            await eventually(lambda: modal.pending_rule == decision and modal.armed)
+            await pilot.press(key)
         await eventually(lambda: decisions == [decision] and editor.has_focus)
         assert editor.value == "keep\nmy draft"
         await app.workers.wait_for_complete()
@@ -162,6 +165,11 @@ async def test_approval_ignores_type_ahead_and_key_repeat(monkeypatch: pytest.Mo
         await eventually(lambda: restarts.count(modal._arm_timer) >= 8)
         assert not decisions and not modal.armed and app.screen is modal
         modal._arm()  # the arming delay elapses with no further key
+        await pilot.press("p")
+        await eventually(lambda: modal.pending_rule == "allow_project" and not modal.armed)
+        await pilot.press("p")  # repeated before the confirmation step re-arms
+        assert not decisions
+        modal._arm()
         await pilot.press("p")
         await eventually(lambda: decisions == ["allow_project"])
         await app.workers.wait_for_complete()
