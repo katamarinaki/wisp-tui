@@ -5,8 +5,7 @@ Terminal chat client for the local Wisp runtime. Python 3.11+, stdlib + textual
 
 ## Scope and plan
 
-Read [Road to MVP](ROAD_TO_MVP.md) before feature work and update its checklist
-as work lands. The only target workflow is Mac → SSH → homeserver → Wisp:
+The only target workflow is Mac → SSH → homeserver → Wisp:
 reliable task submission, progress, explicit approvals, cancellation, and
 reattachment. Do not expand this into a general-purpose Pi replacement.
 

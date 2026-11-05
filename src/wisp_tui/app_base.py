@@ -153,6 +153,7 @@ class AppBase(App[None]):
         self._tool_history_token: object | None = None
         self._tool_history_targets: tuple[ToolCallView, ...] = ()
         self._tool_history_again = False
+        self._tool_history_post_run_reads = 0
         self._status_text = "connecting…"
         self._activity_frame = 0
         self._prompt_input = PromptInput(commands=tuple(name for name, _, _ in COMMANDS))
@@ -203,7 +204,11 @@ class AppBase(App[None]):
     def _display(self, screen: Screen[Any], renderable: RenderableType | None) -> None:
         if isinstance(renderable, InlineUpdate):
             renderable = ChangedRowsUpdate(
-                renderable, self._inline_renderer, self.size.width, self._take_scrollback
+                renderable,
+                self._inline_renderer,
+                self.size.width,
+                self.size.height,
+                self._take_scrollback,
             )
         super()._display(screen, renderable)
 

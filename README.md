@@ -71,6 +71,5 @@ details. Before you bump anything, read
 [Maintaining](MAINTAINING.md#upgrading-dependencies). It also lists the known
 limits.
 
-For MVP status, see [Road to MVP](ROAD_TO_MVP.md). The
-[runtime contract notes](RUNTIME_CONTRACT.md) cover the API the client relies
-on.
+The [runtime contract notes](RUNTIME_CONTRACT.md) cover the API the client
+relies on.

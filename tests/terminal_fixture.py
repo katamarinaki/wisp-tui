@@ -26,6 +26,8 @@ class TerminalFixture(WispTuiApp):
 
     async def exercise(self) -> None:
         # Each step waits until the previous state has reached the terminal.
+        await eventually(lambda: "ready" in self._status_text)
+        await self.screen.wait_for_refresh()
         self.show_transcript()
         # Finished items reach the terminal with the next frame (scrollback).
         await eventually(lambda: not self._scrollback and not self._sync_queued)

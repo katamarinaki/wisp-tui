@@ -103,6 +103,8 @@ def capture_terminal(
 @pytest.mark.parametrize("width", [40, 100])
 def test_inline_terminal_keeps_default_background(width: int) -> None:
     capture = capture_terminal("tests.terminal_fixture", width)
+    startup = capture.split(b"Show the server status", 1)[0]
+    assert re.search(rb"(?:\r?\n){20,}", startup), "startup did not reserve the terminal height"
     hint = f"To continue: wi --resume {SID}".encode()
     assert capture.rstrip().endswith(hint), "resume hint missing after terminal exit"
     assert capture.count(hint) == 1, "resume hint printed more than once"

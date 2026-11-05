@@ -21,6 +21,17 @@ class InlineRenderer:
     def __init__(self) -> None:
         self._rows: tuple[str, ...] = ()
         self._width = 0
+        self._started = False
+
+    def reserve_viewport(self, height: int, frame_height: int) -> str:
+        """Open at the terminal bottom, moving shell output into scrollback."""
+        if self._started:
+            return ""
+        self._started = True
+        # The first frame supplies the remaining rows. Use line feeds so the
+        # shell history survives, without entering the alternate screen. This
+        # belongs before any queued chat, which must stay next to the composer.
+        return "\n" * max(0, height - frame_height)
 
     def invalidate(self) -> None:
         self._rows = ()
@@ -62,21 +73,26 @@ class ChangedRowsUpdate(InlineUpdate):
         update: InlineUpdate,
         renderer: InlineRenderer,
         width: int,
+        height: int,
         take_scrollback: Callable[[], str],
     ) -> None:
         super().__init__(update.strips, clear=update.clear)
         self._update = update
         self._renderer = renderer
         self._width = width
+        self._height = height
         self._take_scrollback = take_scrollback
 
     def render_segments(self, console: Console) -> str:
         # Update the cache (and take scrollback) only when Textual actually
         # serializes a frame, not when App._display skips one.
+        prefix = self._renderer.reserve_viewport(self._height, len(self.strips))
         printed = self._take_scrollback()
         if not printed:
-            return self._renderer.render(self._update, console, self._width)
+            return prefix + self._renderer.render(self._update, console, self._width)
         # From the origin: clear the old frame, print (scrolling the terminal
         # as needed), then draw a full frame at the new origin below.
         self._renderer.invalidate()
-        return "\x1b[J" + printed + self._renderer.render(self._update, console, self._width)
+        return (
+            prefix + "\x1b[J" + printed + self._renderer.render(self._update, console, self._width)
+        )

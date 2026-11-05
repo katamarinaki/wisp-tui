@@ -12,7 +12,7 @@ from rich.style import Style
 from textual._compositor import InlineUpdate
 from textual.strip import Strip
 
-from wisp_tui.terminal import InlineRenderer
+from wisp_tui.terminal import ChangedRowsUpdate, InlineRenderer
 
 
 class Terminal:
@@ -28,6 +28,16 @@ class Terminal:
         self.row = 2
         self.column = 0
         self.scrolls = 0
+        self.scrollback: list[list[str]] = []
+
+    def linefeed(self) -> None:
+        self.row += 1
+        self.column = 0
+        if self.row >= len(self.cells):
+            self.scrollback.append(self.cells.pop(0))
+            self.cells.append([" "] * self.width)
+            self.row -= 1
+            self.scrolls += 1
 
     def write(self, output: str) -> None:
         tokens = re.findall(r"\x1b\[[0-9;]*[A-Za-z]|[^\x1b]", output)
@@ -43,6 +53,11 @@ class Terminal:
                     self.column += value
                 elif code == "D":
                     self.column -= value
+                elif code == "J":
+                    assert token == "\x1b[J"
+                    self.cells[self.row][self.column :] = [" "] * (self.width - self.column)
+                    for row in range(self.row + 1, len(self.cells)):
+                        self.cells[row] = [" "] * self.width
                 else:
                     assert code in ("m", "n"), f"unexpected control: {token!r}"
                 continue
@@ -50,20 +65,13 @@ class Terminal:
                 self.column = 0
                 continue
             if token == "\n":
-                self.row += 1
-                self.column = 0
+                self.linefeed()
                 continue
             width = get_character_cell_size(token)
             if width == 0:
                 continue
             if self.column + width > self.width:
-                self.row += 1
-                self.column = 0
-            if self.row >= len(self.cells):
-                self.cells.pop(0)
-                self.cells.append([" "] * self.width)
-                self.row -= 1
-                self.scrolls += 1
+                self.linefeed()
             self.cells[self.row][self.column] = token
             for offset in range(1, width):
                 self.cells[self.row][self.column + offset] = ""
@@ -72,6 +80,35 @@ class Terminal:
 
 def frame(lines: list[str], width: int, style: Style | None = None) -> InlineUpdate:
     return InlineUpdate([Strip([Segment(line, style)]).adjust_cell_length(width) for line in lines])
+
+
+@pytest.mark.parametrize("width,height", [(40, 18), (100, 30)])
+@pytest.mark.parametrize("history", ["", "Restored answer\r\n"])
+def test_startup_fills_terminal_and_keeps_chat_next_to_composer(
+    width: int, height: int, history: str
+) -> None:
+    console = Console(force_terminal=True, color_system="256", width=width)
+    renderer = InlineRenderer()
+    terminal = Terminal(width, height)
+    terminal.cells[0][:12] = list("Shell output")
+    lines = ["Input rule", "Message Wisp", "Input rule", "Session", "Ready"]
+    initial = ChangedRowsUpdate(frame(lines, width), renderer, width, height, lambda: history)
+    terminal.write(initial.render_segments(console))
+    assert ["".join(row).rstrip() for row in terminal.cells[-5:]] == lines
+    assert "Shell output" in ["".join(row).rstrip() for row in terminal.scrollback]
+    if history:
+        assert "".join(terminal.cells[-6]).rstrip() == "Restored answer"
+    # A later full repaint must not reserve another viewport or insert a gap
+    # between finished chat and the composer.
+    renderer.invalidate()
+    next_frame = ChangedRowsUpdate(
+        frame(lines, width), renderer, width, height, lambda: "New answer\r\n"
+    )
+    previous_scrolls = terminal.scrolls
+    terminal.write(next_frame.render_segments(console))
+    assert terminal.scrolls == previous_scrolls + 1
+    assert "".join(terminal.cells[-6]).rstrip() == "New answer"
+    assert ["".join(row).rstrip() for row in terminal.cells[-5:]] == lines
 
 
 @pytest.mark.parametrize("width", [40, 100])
