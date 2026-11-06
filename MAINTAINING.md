@@ -116,7 +116,8 @@ Textual has changed before. To upgrade:
    reinstall, and run `pytest`, `mypy` and `ruff check`.
 2. Read these results first:
    - `test_terminal.py` (PTY): SGR 49 everywhere except prompt blocks
-     (`48;5;23`), and answers in the default foreground (SGR 39).
+     (`48;5;23`) and tool blocks (`48;5;236`, `48;5;52` when failed), and
+     answers in the default foreground (SGR 39).
    - `test_rendering.py`: runtime text appears as plain text, with no markup.
      Streamed answers match a full render without per-delta updates.
    - The quiet-work PTY fixture: a spinner tick repaints only the composer,

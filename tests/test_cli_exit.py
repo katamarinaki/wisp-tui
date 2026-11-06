@@ -53,12 +53,12 @@ def test_exit_transcript_is_printed_in_order_without_empty_items(
             ("assistant", "Disk is **fine**.\n"),
         ]
     )
-    # Padded rows (the filled prompt block) end in spaces; compare the text.
+    # Padded rows (the filled prompt and tool blocks) end in spaces; compare the text.
     lines = [line.rstrip() for line in capsys.readouterr().out.split("\n")]
     assert lines == [
         *("", "  check disk", "  please", "", ""),
         *(" Let me look.", ""),
-        *(" ▌ $ df -h", " ▌ / 40%", " ▌ bash · ok · 0.3s", ""),
+        *("", "  $ df -h", "  / 40%", "  bash · ok · 0.3s", "", ""),
         *(" Disk is fine.", "", ""),
     ]
 

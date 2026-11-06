@@ -20,7 +20,6 @@ from rich.console import (
 )
 from rich.markdown import CodeBlock, Heading, Markdown
 from rich.padding import Padding
-from rich.segment import Segment
 from rich.style import Style
 from rich.syntax import Syntax
 from rich.table import Table
@@ -42,7 +41,11 @@ THEME = Theme(
 )
 # The owner-approved prompt fill: xterm-256 #23 (48;5;23), as in the app.
 USER_STYLE = Style.parse("bold #dadada on color(23)")
-TOOL_COLORS = {"tool-call-ok": "cyan", "tool-call-failed": "red"}
+# Owner-approved tool fills, like Pi's tool blocks: xterm-256 #236 (48;5;236),
+# #52 (48;5;52) for failures. Fixed foregrounds keep them readable on any theme.
+TOOL_FILLS = {"tool-call-failed": "#dadada on color(52)"}
+TOOL_FILL = "#dadada on color(236)"
+TOOL_ACCENTS = {"tool-call-ok": "#5fd7d7", "tool-call-failed": "bold #ff8787"}
 TOOL_TAIL_ROWS = 5
 
 
@@ -70,23 +73,6 @@ class _AnswerMarkdown(Markdown):
     }
 
 
-class _LeftBar:
-    """A tool entry's ` ▌ ` rule in front of every rendered row."""
-
-    def __init__(self, renderable: RenderableType, style: str) -> None:
-        self.renderable = renderable
-        self.style = Style.parse(style)
-
-    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        width = max(1, options.max_width - 3)
-        for line in console.render_lines(self.renderable, options.update_width(width), pad=False):
-            yield Segment(" ")
-            yield Segment("▌", self.style)
-            yield Segment(" ")
-            yield from line
-            yield Segment.line()
-
-
 class _Tail:
     """The last rows of tool output, wrapped at the current width."""
 
@@ -97,22 +83,22 @@ class _Tail:
         rows = list(self.text.wrap(console, options.max_width))
         hidden = len(rows) - TOOL_TAIL_ROWS
         if hidden > 0:
-            yield Text(f"… ({hidden} earlier line{'s' if hidden != 1 else ''})", style="dim")
+            note = f"… ({hidden} earlier line{'s' if hidden != 1 else ''})"
+            yield Text(note, style="#8a8a8a")
             rows = rows[hidden:]
         yield from rows
 
 
 def _tool_entry(kind: str, text: str) -> RenderableType:
     # Tool entries are one title line, optional output tail, one status line.
-    color = TOOL_COLORS.get(kind)
-    accent = color or "dim"
     lines = text.split("\n")
-    parts: list[RenderableType] = [Text(lines[0], style=accent)]
+    parts: list[RenderableType] = [Text(lines[0], style="bold")]
     if len(lines) > 2:
-        parts.append(_Tail(Text("\n".join(lines[1:-1]), style="dim")))
+        parts.append(_Tail(Text("\n".join(lines[1:-1]), style="#bcbcbc")))
     if len(lines) > 1:
-        parts.append(Text(lines[-1], style=accent))
-    return _LeftBar(Group(*parts), color or "bright_black")
+        parts.append(Text(lines[-1], style=TOOL_ACCENTS.get(kind, "#8a8a8a")))
+    fill = TOOL_FILLS.get(kind, TOOL_FILL)
+    return Padding(Group(*parts), (1, 2), style=fill, expand=True)
 
 
 def render_item(kind: str, text: str) -> RenderableType:

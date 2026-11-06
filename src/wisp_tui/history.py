@@ -58,7 +58,7 @@ def _parse_tool_calls(raw_calls: list[Any]) -> list[ToolCallInfo]:
                 name if len(name) <= 200 else name[:199] + "…",
                 call_id if isinstance(call_id, str) and 0 < len(call_id) <= 200 else "",
                 detail_text(call["args"]) if "args" in call else None,
-                command_summary(call["args"], name) if "args" in call else "",
+                command_summary(call["args"]) if "args" in call else "",
             )
         )
     return calls

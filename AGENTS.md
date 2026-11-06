@@ -52,11 +52,13 @@ change that affects a row. "Like Pi" means that table, not memory of Pi.
   `ansi_color=True` in `AppBase.__init__` (`app_base.py`) work together to emit SGR 49. Changing any of these
   (or re-enabling the ANSI→truecolor filter) paints a hardcoded background.
   Verify with a pty capture that no other `48;...` SGR is emitted.
-  Sole owner-approved exception: user prompt blocks (`USER_STYLE` in
+  Owner-approved exceptions: user prompt blocks (`USER_STYLE` in
   `src/wisp_tui/scrollback.py`) are filled with muted dark teal (xterm-256
-  #23, `48;5;23`) with fixed light-grey text. Palette cyan was rejected as too
-  bright. Don't change the shade or extend fills to other elements without
-  asking.
+  #23, `48;5;23`) with fixed light-grey text (palette cyan was rejected as
+  too bright). Tool entries (`TOOL_FILL`, `TOOL_FILLS`, Pi-style blocks) are
+  filled with dark grey (#236, `48;5;236`), or dark red (#52, `48;5;52`) when
+  failed, also with fixed foregrounds. Don't change the shades or extend fills
+  to other elements without asking.
 - The app runs full screen (alternate screen, `mouse=True`), owner-approved so
   the composer and footer stay pinned while the wheel scrolls the chat
   (`ChatScroll`, anchored to new output until the reader scrolls up). The

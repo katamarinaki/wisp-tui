@@ -6,7 +6,8 @@ ApprovalModal, SessionPicker, ModelPicker { background: transparent; }
     background: transparent; color: ansi_default;
 }
 /* Items render themselves (scrollback.render_item), including the
-   owner-approved teal prompt fill (48;5;23); nothing else is painted. */
+   owner-approved fills: teal prompts (48;5;23) and tool blocks (48;5;236,
+   48;5;52 when failed); nothing else is painted. */
 #chat { height: 1fr; padding: 0; scrollbar-size: 0 0; }
 #chat > * {
     height: auto; margin: 0 0 1 0; background: transparent; color: ansi_default;

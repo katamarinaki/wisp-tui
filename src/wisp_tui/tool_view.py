@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Any
 
@@ -64,7 +65,7 @@ class ToolCallView(Static):
         self.completed = self.completed or completed
         if "args" in event:
             self.input_text = detail_text(event["args"])
-            self.summary = command_summary(event["args"], self.tool_name) or self.summary
+            self.summary = command_summary(event["args"]) or self.summary
         ok = event.get("ok")
         if isinstance(ok, bool):
             self._ok = ok
@@ -93,10 +94,10 @@ class ToolCallView(Static):
         if self.is_run_summary:
             parts.append("run summary")
         self.status_text = " · ".join(parts)
+        # The summary may predate the final name (history vs. live events).
+        summary = self.summary.removeprefix(json.dumps(self.tool_name, ensure_ascii=False))
         self.title = (
-            self.summary
-            if self.summary.startswith("$ ")
-            else f"{self.tool_name} {self.summary}".rstrip()
+            summary if summary.startswith("$ ") else f"{self.tool_name} {summary.strip()}".rstrip()
         )
         if self.output_text is not None:
             # Bounded by detail_text; render_item shows only its last rows.

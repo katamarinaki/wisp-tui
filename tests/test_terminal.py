@@ -176,11 +176,11 @@ def test_terminal_keeps_default_background(width: int) -> None:
     assert b"\x1b[?1049h" in capture and b"\x1b[?1049l" in capture
     sgr = re.findall(rb"\x1b\[([0-9;:]*)m", capture)
     assert any(b"49" in codes.split(b";") for codes in sgr)
-    # The prompt fill is the only painted background (owner-approved).
+    # Only the owner-approved fills: prompts, and tool blocks (ok / failed).
     extended = [codes for codes in sgr if re.search(rb"(?:^|[;:])48(?:[;:]|$)", codes)]
     assert extended, "prompt fill missing"
-    assert all(re.search(rb"(?:^|;)48;5;23(?:;|$)", codes) for codes in extended), (
-        "an extended background other than the prompt fill was emitted"
+    assert all(re.search(rb"(?:^|;)48;5;(?:23|236|52)(?:;|$)", codes) for codes in extended), (
+        "an extended background other than the approved fills was emitted"
     )
 
 
