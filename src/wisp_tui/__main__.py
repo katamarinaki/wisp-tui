@@ -13,7 +13,7 @@ from .app import WispTuiApp
 from .app_base import ReleaseCheck, Startup
 from .client import ClientError, WispClient
 from .config import ConfigError, load_config
-from .scrollback import print_transcript
+from .scrollback import print_footer, print_transcript
 from .sessions import RESUME_QUERY_RE, UUID_RE, SessionStore
 
 
@@ -101,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     # the chat; the shown chat goes to the terminal's scrollback on exit.
     app.run(mouse=True)
     print_transcript(app.transcript())
+    print_footer(app.footer_rows)
     # Print only after Textual restores the terminal, using the final active
     # session (which may differ from the one requested at startup).
     if app.session_id and UUID_RE.fullmatch(app.session_id):

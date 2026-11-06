@@ -23,6 +23,7 @@ from rich.padding import Padding
 from rich.segment import Segment
 from rich.style import Style
 from rich.syntax import Syntax
+from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
@@ -42,6 +43,7 @@ THEME = Theme(
 # The owner-approved prompt fill: xterm-256 #23 (48;5;23), as in the app.
 USER_STYLE = Style.parse("bold #dadada on color(23)")
 TOOL_COLORS = {"tool-call-ok": "cyan", "tool-call-failed": "red"}
+TOOL_TAIL_ROWS = 5
 
 
 class _LeftHeading(Heading):
@@ -85,6 +87,21 @@ class _LeftBar:
             yield Segment.line()
 
 
+class _Tail:
+    """The last rows of tool output, wrapped at the current width."""
+
+    def __init__(self, text: Text) -> None:
+        self.text = text
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        rows = list(self.text.wrap(console, options.max_width))
+        hidden = len(rows) - TOOL_TAIL_ROWS
+        if hidden > 0:
+            yield Text(f"… ({hidden} earlier line{'s' if hidden != 1 else ''})", style="dim")
+            rows = rows[hidden:]
+        yield from rows
+
+
 def _tool_entry(kind: str, text: str) -> RenderableType:
     # Tool entries are one title line, optional output tail, one status line.
     color = TOOL_COLORS.get(kind)
@@ -92,7 +109,7 @@ def _tool_entry(kind: str, text: str) -> RenderableType:
     lines = text.split("\n")
     parts: list[RenderableType] = [Text(lines[0], style=accent)]
     if len(lines) > 2:
-        parts.append(Text("\n".join(lines[1:-1]), style="dim", no_wrap=True, overflow="ellipsis"))
+        parts.append(_Tail(Text("\n".join(lines[1:-1]), style="dim")))
     if len(lines) > 1:
         parts.append(Text(lines[-1], style=accent))
     return _LeftBar(Group(*parts), color or "bright_black")
@@ -174,6 +191,27 @@ def render_ansi(items: list[tuple[str, str]], width: int, color_system: str | No
     with console.capture() as capture:
         _print_items(console, items)
     return _TRAILING_PAD.sub("", capture.get()).replace("\n", "\r\n")
+
+
+def print_footer(rows: list[tuple[str, str]]) -> None:
+    """The empty editor and the footer, as the app last showed them."""
+    if not rows:
+        return
+    console = Console(highlight=False, theme=THEME)
+    rule = Text("─" * max(1, console.width - 2), style="bright_blue")
+    parts: list[RenderableType] = [rule, Text(""), rule]
+    for index, (left, right) in enumerate(rows):
+        # Each row sizes its own columns, as in the app.
+        grid = Table.grid(expand=True)
+        grid.add_column()
+        grid.add_column(justify="right")
+        # Row 1 is the usage line, bright cyan in the app (app.tcss).
+        grid.add_row(Text(left, style="bright_cyan" if index == 1 else ""), Text(right))
+        parts.append(grid)
+    with console.capture() as capture:
+        console.print(Padding(Group(*parts), (0, 1)))
+    sys.stdout.write(_TRAILING_PAD.sub("", capture.get()))
+    sys.stdout.flush()
 
 
 def print_transcript(items: list[tuple[str, str]]) -> None:

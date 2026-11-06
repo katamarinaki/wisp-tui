@@ -72,20 +72,36 @@ def output_text(text: str) -> str:
     return detail_text(shown)
 
 
-def command_summary(args: Any) -> str:
-    """One title line: a shell command verbatim, else compact JSON arguments."""
-    if isinstance(args, dict) and isinstance(args.get("command"), str):
+def command_summary(args: Any, tool_name: str = "") -> str:
+    """One title line: a shell command verbatim, else compact JSON arguments.
+
+    MCP calls wrap their input as {"name", "arguments"}: show the inner
+    arguments, plus the quoted inner name unless it is the tool itself.
+    """
+    prefix = ""
+    if isinstance(args, dict) and set(args) == {"arguments", "name"}:
+        if args["name"] != tool_name:
+            # JSON-quoted, so it can never read as a "$ " shell title.
+            try:
+                prefix = _json_prefix(args["name"], MAX_SUMMARY_CHARS + 1) + " "
+            except (TypeError, ValueError, RecursionError):
+                return ""
+        args = args["arguments"]
+    elif isinstance(args, dict) and isinstance(args.get("command"), str):
         command = args["command"].strip()
         if not command:
             return ""
-        text = "$ " + command[: MAX_SUMMARY_CHARS + 1]
-    else:
-        try:
-            text = _json_prefix(args, MAX_SUMMARY_CHARS + 1)
-        except (TypeError, ValueError, RecursionError):
-            return ""
-        if text in ("{}", "[]", "null", '""'):
-            return ""
+        args = None
+        prefix = "$ " + command[: MAX_SUMMARY_CHARS + 1]
+    try:
+        text = "" if args is None else _json_prefix(args, MAX_SUMMARY_CHARS + 1)
+    except (TypeError, ValueError, RecursionError):
+        return ""
+    if text in ("{}", "[]", "null", '""'):
+        text = ""
+    text = (prefix + text).strip()
+    if not text:
+        return ""
     lines = text.strip().splitlines() or [""]
     line = "".join(char if char.isprintable() else "�" for char in lines[0])
     if len(lines) > 1 or len(line) > MAX_SUMMARY_CHARS:

@@ -167,6 +167,8 @@ class AppBase(App[None]):
         self._tab_status: TabStatus | None = None
         self._tab_status_closed = False
         self._activity_frame = 0
+        # The footer's (left, right) rows, printed again below the chat on exit.
+        self.footer_rows: list[tuple[str, str]] = []
         self._prompt_input = PromptInput(commands=tuple(name for name, _, _ in COMMANDS))
         self._activity_timer: Timer | None = None
         self._cancel_requested = False
@@ -310,7 +312,8 @@ class AppBase(App[None]):
         self.query_one("#session-id").display = self.session_id is not None
         session = self.session_id[:8] if self.session_id else "new"
         self.query_one("#location", Static).update(metadata_text(self._launch_dir, 1000))
-        self.query_one("#session-id", Static).update(f" · session {session}")
+        session_text = f" · session {session}"
+        self.query_one("#session-id", Static).update(session_text)
         mode = metadata_text(self._model_selection.get("mode"))
         model = metadata_text(self._model_selection.get("model"))
         label = (
@@ -324,11 +327,12 @@ class AppBase(App[None]):
         thinking = self._model_selection.get("thinking")
         thinking_info = self.query_one("#thinking-info", Static)
         separator = " · " if label else ""
-        thinking_info.update(
+        thinking_text = (
             f"{separator}thinking: {'on' if thinking else 'off'}"
             if isinstance(thinking, bool)
             else ""
         )
+        thinking_info.update(thinking_text)
         thinking_info.display = isinstance(thinking, bool)
         self.query_one("#selection-summary").display = bool(label) or thinking_info.display
         usage = self.query_one("#usage-info", Static)
@@ -340,7 +344,12 @@ class AppBase(App[None]):
             .replace(", ", " ")
         )
         fallback = "T: 0" if self.session_id is None else "T: unavailable"
-        usage.update(f"last run {compact}" if compact else fallback)
+        usage_text = f"last run {compact}" if compact else fallback
+        usage.update(usage_text)
+        self.footer_rows = [
+            (metadata_text(self._launch_dir, 1000), session_text if self.session_id else ""),
+            (usage_text, label + thinking_text),
+        ]
 
     def _selection_updated(self, session: dict[str, Any], session_id: str) -> None:
         if self.session_id != session_id:

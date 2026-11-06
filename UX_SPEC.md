@@ -25,8 +25,8 @@ under a PTY capture (`tests/test_terminal.py`).
 | 9 | Transcript search (Ctrl+Shift+F). | Not done. |
 | 10 | Jump between prompts (Ctrl+Shift+Up/Down). | Not done. |
 | 11 | Scrollbar revealed on hover. | Not done: scrollbar hidden. |
-| 12 | On exit, prints the complete transcript (setting: resume hint only). | Partial: prints the newest `SHOWN_ITEMS` finished items plus live ones, then the resume hint. |
+| 12 | On exit, prints the complete transcript and leaves the editor and footer below it (setting: resume hint only). | Partial: prints the newest `SHOWN_ITEMS` finished items plus live ones, the empty editor rules and the footer, then the resume hint. |
 | 13 | iTerm2: set Advanced → "Trackpad scrolls fast?" to No for normal trackpad speed. | Applies as-is (same wheel reporting). |
-| 14 | Tool entries (observed): command, decoded output tail with "(N earlier lines, ctrl+o to expand)", wrapped lines, "Took 0.0s", in a filled block. | Partial: shell results show decoded stdout/stderr (plus exit code / timeout) as a 5-line tail with an earlier-lines count. Lines are cut at the width, there is no expand key, and there is no fill (unpainted-background rule). |
+| 14 | Tool entries (observed): command, decoded output tail with "(N earlier lines, ctrl+o to expand)", wrapped lines, "Took 0.0s", in a filled block. | Partial: output wraps and shows its last 5 rows with an earlier-lines count; shell results show decoded stdout/stderr (plus exit code / timeout); MCP titles show only the inner arguments. No expand key, no timing line apart from the status, and no fill (unpainted-background rule). |
 
 When a change affects any row, update its status here in the same change.
