@@ -5,6 +5,10 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+from typing import Any
+
+from rich.console import RenderableType
+from textual.screen import Screen
 
 from tests.helpers import RID, SID, ScriptedClient
 from tests.test_app import eventually
@@ -32,7 +36,6 @@ class TrafficFixture(WispTuiApp):
         def record(data: str) -> None:
             if self.measuring:
                 self.bytes_sent += len(data.encode("utf-8"))
-                self.frames += data.count("\x1b[6n")
                 self.transcript_rewrites += data.count("Unchanged transcript")
             write(data)
 
@@ -51,6 +54,11 @@ class TrafficFixture(WispTuiApp):
         self._begin_run(RID)
         self.run_worker(self.measure())
 
+    def _display(self, screen: Screen[Any], renderable: RenderableType | None) -> None:
+        if self.measuring and renderable is not None:
+            self.frames += 1
+        super()._display(screen, renderable)
+
     def _tick_activity(self) -> None:
         super()._tick_activity()
         if self.measuring:
@@ -59,7 +67,7 @@ class TrafficFixture(WispTuiApp):
     async def measure(self) -> None:
         # Start only once the whole transcript has been painted, and measure a
         # fixed number of spinner ticks rather than a wall-clock window.
-        await eventually(lambda: not self._scrollback and not self._sync_queued)
+        await eventually(lambda: not self._sync_queued)
         await self.screen.wait_for_refresh()
         self.measuring = True
         await eventually(lambda: self.ticks >= self.TICKS)
@@ -78,7 +86,7 @@ def main() -> None:
             sessions=SessionStore(Path(state) / "sessions"),
             submissions=SubmissionStore(client.url, Path(state)),
         )
-        app.run(inline=True, mouse=False)
+        app.run(mouse=True)
         print(
             "TRAFFIC_RESULT="
             + json.dumps(

@@ -134,8 +134,8 @@ still requires runtime guarantees/live acceptance to reason about fully.
 
 When attaching to a known run, the saved checkpoint and streamed replay are
 explicitly separated: the checkpoint is printed first, then the replay below a
-"Current run replay — may overlap the saved checkpoint." label. Printed output
-lives in the terminal's scrollback and is never rewritten, so a successful
+"Current run replay — may overlap the saved checkpoint." label. Finished output
+is never rewritten, so a successful
 terminal outcome no longer triggers a checkpoint re-read to replace the replay
 (the earlier coverage heuristic was removed with the in-app transcript). The
 overlap therefore always stays visible and labelled; nothing is removed because
@@ -273,7 +273,7 @@ explicit/deferred retry, stale/error paths and no replayed approvals;
 `tests/test_submission_leases.py` checks unowned failure/conflict cleanup and
 retention of owned or post-replacement ambiguous requests.
 All runtime responses are synthetic. The 2026-11-05 owner acceptance run
-additionally exercised the live Mac SSH workflow against runtime 0.1.8
+additionally exercised the live SSH workflow against runtime 0.1.8
 (apiVersion 2) with Textual 8.2.8: launch, multiline submission, streamed
 text/tool progress, a live approval, cancellation, disconnect/reconnect
 recovery, a cross-client parked approval, and exit restoration. The **deny**

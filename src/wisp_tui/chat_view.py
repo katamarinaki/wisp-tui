@@ -1,4 +1,4 @@
-"""The live part of the chat: items that are not yet printed to scrollback."""
+"""The chat view: finished items, then live ones that are still changing."""
 
 from __future__ import annotations
 
@@ -15,25 +15,39 @@ from .text import terminal_text
 
 
 class ChatScroll(VerticalScroll):
-    """Holds only live items; finished ones move to the terminal's scrollback."""
+    """Scrolls above the pinned composer; follows new output until scrolled up."""
 
     can_focus = False
 
-    def follow_latest(self) -> None:
-        self.call_after_refresh(self.scroll_end, animate=False, immediate=True, x_axis=False)
+    def on_mount(self) -> None:
+        self.anchor()
 
-    def on_resize(self) -> None:
-        self.follow_latest()
+    def page(self, direction: int) -> None:
+        if direction < 0:
+            self.scroll_page_up(animate=False)
+        elif self.max_scroll_y - self.scroll_y <= self.size.height + 2:
+            # The jump label takes a row from the chat while scrolled up, so a
+            # page up then down falls short of the end; land on it and follow.
+            self.scroll_end(animate=False)
+        else:
+            self.scroll_page_down(animate=False)
+
+
+class JumpToLatest(Static):
+    """Shown while the chat is scrolled up; a click follows new output again."""
+
+    def on_click(self) -> None:
+        self.screen.query_one(ChatScroll).scroll_end(animate=False)
 
 
 class ChatItem(Static):
-    """One text item, drawn exactly as it will be printed to scrollback."""
+    """One text item, drawn exactly as it is printed on exit."""
 
     def __init__(self, kind: str, text: str) -> None:
         super().__init__(markup=False)
         self.kind = kind
         self.text = terminal_text(text)
-        # Leading part of ``text`` already printed to scrollback (streams only).
+        # Leading part of ``text`` already moved to a finished item (streams only).
         self.committed = 0
         self._show()
 

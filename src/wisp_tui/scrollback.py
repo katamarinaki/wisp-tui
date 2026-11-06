@@ -1,7 +1,7 @@
-"""Chat items rendered for the terminal's own scrollback (and the live area).
+"""Chat items rendered for the chat view and for the terminal on exit.
 
-Finished items are printed once above the inline app, so the terminal owns
-scrolling, selection and copying, and the output keeps its look after exit.
+The app draws each item with ``render_item``; on exit the shown chat is printed
+with the same rendering, so it keeps its look in the terminal's scrollback.
 """
 
 from __future__ import annotations
@@ -20,9 +20,9 @@ from rich.console import (
 )
 from rich.markdown import CodeBlock, Heading, Markdown
 from rich.padding import Padding
-from rich.segment import Segment
 from rich.style import Style
 from rich.syntax import Syntax
+from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
@@ -41,7 +41,12 @@ THEME = Theme(
 )
 # The owner-approved prompt fill: xterm-256 #23 (48;5;23), as in the app.
 USER_STYLE = Style.parse("bold #dadada on color(23)")
-TOOL_COLORS = {"tool-call-ok": "cyan", "tool-call-failed": "red"}
+# Owner-approved tool fills, like Pi's tool blocks: xterm-256 #236 (48;5;236),
+# #52 (48;5;52) for failures. Fixed foregrounds keep them readable on any theme.
+TOOL_FILLS = {"tool-call-failed": "#dadada on color(52)"}
+TOOL_FILL = "#dadada on color(236)"
+TOOL_ACCENTS = {"tool-call-ok": "#5fd7d7", "tool-call-failed": "bold #ff8787"}
+TOOL_TAIL_ROWS = 5
 
 
 class _LeftHeading(Heading):
@@ -68,34 +73,32 @@ class _AnswerMarkdown(Markdown):
     }
 
 
-class _LeftBar:
-    """A tool entry's ` ▌ ` rule in front of every rendered row."""
+class _Tail:
+    """The last rows of tool output, wrapped at the current width."""
 
-    def __init__(self, renderable: RenderableType, style: str) -> None:
-        self.renderable = renderable
-        self.style = Style.parse(style)
+    def __init__(self, text: Text) -> None:
+        self.text = text
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        width = max(1, options.max_width - 3)
-        for line in console.render_lines(self.renderable, options.update_width(width), pad=False):
-            yield Segment(" ")
-            yield Segment("▌", self.style)
-            yield Segment(" ")
-            yield from line
-            yield Segment.line()
+        rows = list(self.text.wrap(console, options.max_width))
+        hidden = len(rows) - TOOL_TAIL_ROWS
+        if hidden > 0:
+            note = f"… ({hidden} earlier line{'s' if hidden != 1 else ''})"
+            yield Text(note, style="#8a8a8a")
+            rows = rows[hidden:]
+        yield from rows
 
 
 def _tool_entry(kind: str, text: str) -> RenderableType:
     # Tool entries are one title line, optional output tail, one status line.
-    color = TOOL_COLORS.get(kind)
-    accent = color or "dim"
     lines = text.split("\n")
-    parts: list[RenderableType] = [Text(lines[0], style=accent)]
+    parts: list[RenderableType] = [Text(lines[0], style="bold")]
     if len(lines) > 2:
-        parts.append(Text("\n".join(lines[1:-1]), style="dim", no_wrap=True, overflow="ellipsis"))
+        parts.append(_Tail(Text("\n".join(lines[1:-1]), style="#bcbcbc")))
     if len(lines) > 1:
-        parts.append(Text(lines[-1], style=accent))
-    return _LeftBar(Group(*parts), color or "bright_black")
+        parts.append(Text(lines[-1], style=TOOL_ACCENTS.get(kind, "#8a8a8a")))
+    fill = TOOL_FILLS.get(kind, TOOL_FILL)
+    return Padding(Group(*parts), (1, 2), style=fill, expand=True)
 
 
 def render_item(kind: str, text: str) -> RenderableType:
@@ -174,6 +177,27 @@ def render_ansi(items: list[tuple[str, str]], width: int, color_system: str | No
     with console.capture() as capture:
         _print_items(console, items)
     return _TRAILING_PAD.sub("", capture.get()).replace("\n", "\r\n")
+
+
+def print_footer(rows: list[tuple[str, str]]) -> None:
+    """The empty editor and the footer, as the app last showed them."""
+    if not rows:
+        return
+    console = Console(highlight=False, theme=THEME)
+    rule = Text("─" * max(1, console.width - 2), style="bright_blue")
+    parts: list[RenderableType] = [rule, Text(""), rule]
+    for index, (left, right) in enumerate(rows):
+        # Each row sizes its own columns, as in the app.
+        grid = Table.grid(expand=True)
+        grid.add_column()
+        grid.add_column(justify="right")
+        # Row 1 is the usage line, bright cyan in the app (app.tcss).
+        grid.add_row(Text(left, style="bright_cyan" if index == 1 else ""), Text(right))
+        parts.append(grid)
+    with console.capture() as capture:
+        console.print(Padding(Group(*parts), (0, 1)))
+    sys.stdout.write(_TRAILING_PAD.sub("", capture.get()))
+    sys.stdout.flush()
 
 
 def print_transcript(items: list[tuple[str, str]]) -> None:

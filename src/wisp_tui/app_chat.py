@@ -1,4 +1,4 @@
-"""Chat transcript: live items, printing finished ones to scrollback, tool entries."""
+"""Chat transcript: live items, finished items above them, tool entries."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from .chat_view import ChatItem, ChatScroll, StreamView
 from .client import ClientError, safe_code
 from .history import ChatMessage, HistoryError, parse_history, tool_history_results
 from .text import safe_text
-from .tool_data import detail_text
+from .tool_data import output_text
 from .tool_view import ToolCallView
 
 ChatEntry = ChatItem | ToolCallView
@@ -19,12 +19,23 @@ ChatEntry = ChatItem | ToolCallView
 TOOL_HISTORY_POST_RUN_DELAYS = (1.0, 3.0, 6.0)
 
 
+def hidden_note(hidden: int) -> str:
+    return (
+        f"\u2191 {hidden} earlier item{'s' if hidden != 1 else ''} not shown "
+        "\u2014 Wisp keeps the full session history."
+    )
+
+
 class ChatLayer(AppBase):
-    def _scroll_down(self) -> None:
-        self.query_one("#chat", ChatScroll).follow_latest()
+    def action_chat_page(self, direction: int) -> None:
+        self.query_one("#chat", ChatScroll).page(direction)
+
+    def _update_jump_latest(self) -> None:
+        chat = self.query_one("#chat", ChatScroll)
+        self.query_one("#jump-latest").display = chat.scroll_y < chat.max_scroll_y
 
     def _mount_chat(self, widget: ChatEntry, before: ChatEntry | None = None) -> None:
-        """Queue an item in display order; finished items go to scrollback."""
+        """Queue an item in display order; finished items move above live ones."""
         self._welcome.display = False
         if before is not None and before in self._chat_items:
             self._chat_items.insert(self._chat_items.index(before), widget)
@@ -36,7 +47,7 @@ class ChatLayer(AppBase):
         if not self._sync_queued:
             self._sync_queued = True
             # Deferred, so a batch (e.g. a history load) completes its tool
-            # entries before they are printed.
+            # entries before they are finished.
             self.call_later(self._sync_chat)
 
     def _settled(self, item: ChatEntry) -> bool:
@@ -49,9 +60,9 @@ class ChatLayer(AppBase):
         return item.entry() if isinstance(item, ToolCallView) else (item.kind, item.remaining())
 
     def _sync_chat(self, force: bool = False) -> None:
-        """Print the finished leading items to scrollback; mount the rest live.
+        """Show the finished leading items as finished; mount the rest live.
 
-        Items print strictly in order, so a running tool holds back later text.
+        Items finish strictly in order, so a running tool holds back later text.
         """
         self._sync_queued = False
         while self._chat_items:
@@ -73,22 +84,37 @@ class ChatLayer(AppBase):
                 if item.parent is None:
                     if previous is not None:
                         chat.mount(item, after=previous)
-                    elif chat.children:
-                        chat.mount(item, before=chat.children[0])
                     else:
-                        chat.mount(item)
+                        # Finished items stay above; join any live ones below them.
+                        live = next((i for i in self._chat_items if i.parent is chat), None)
+                        if live is not None:
+                            chat.mount(item, before=live)
+                        else:
+                            chat.mount(item)
                 previous = item
-            chat.follow_latest()
 
     def _commit(self, entry: tuple[str, str]) -> None:
         if not entry[1].strip():
             return
-        self._scrollback.append(entry)
+        if len(self._printed) == self.SHOWN_ITEMS:
+            self._dropped += 1
         self._printed.append(entry)
-        self._printed_total += 1
-        if self._prompt_input.is_attached:
-            # The next inline frame prints it above the app (AppBase._display).
-            self.screen.refresh()
+        for chat in self.query("#chat").results(ChatScroll):
+            widget = ChatItem(*entry)
+            live = next((item for item in self._chat_items if item.parent is chat), None)
+            if live is not None:
+                chat.mount(widget, before=live)
+            else:
+                chat.mount(widget)
+            self._finished.append(widget)
+            while len(self._finished) > self.SHOWN_ITEMS:
+                self._finished.popleft().remove()
+            if self._dropped:
+                if self._dropped_note is None:
+                    self._dropped_note = ChatItem("system", hidden_note(self._dropped))
+                    chat.mount(self._dropped_note, before=0)
+                else:
+                    self._dropped_note.set_text(hidden_note(self._dropped))
 
     def _reset_chat(self, hidden: int = 0) -> None:
         """Start a fresh view below everything shown; optionally note hidden items."""
@@ -105,14 +131,12 @@ class ChatLayer(AppBase):
         self._tool_history_again = False
         self._tool_history_post_run_reads = 0
         if hidden:
-            self._show_line(
-                f"\u2191 {hidden} earlier item{'s' if hidden != 1 else ''} not shown "
-                "\u2014 Wisp keeps the full session history."
-            )
+            self._show_line(hidden_note(hidden))
 
     def transcript(self) -> list[tuple[str, str]]:
-        """(kind, text) not yet printed to scrollback, in display order."""
-        return [*self._scrollback, *(self._entry(item) for item in self._chat_items)]
+        """(kind, text) of the shown finished and live items, in display order."""
+        dropped = [("system", hidden_note(self._dropped))] if self._dropped else []
+        return [*dropped, *self._printed, *(self._entry(item) for item in self._chat_items)]
 
     def _show_line(self, text: str, cls: str = "system") -> None:
         self._mount_chat(ChatItem(cls, safe_text(text)))
@@ -192,7 +216,7 @@ class ChatLayer(AppBase):
                 completed=True,
                 historical=True,
             )
-            view.apply_history(output_text=detail_text(message.text), status=message.tool_status)
+            view.apply_history(output_text=output_text(message.text), status=message.tool_status)
         else:
             if message.role == "user":
                 self._tool_calls.clear()

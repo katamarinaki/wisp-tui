@@ -13,7 +13,7 @@ from .app import WispTuiApp
 from .app_base import ReleaseCheck, Startup
 from .client import ClientError, WispClient
 from .config import ConfigError, load_config
-from .scrollback import print_transcript
+from .scrollback import print_footer, print_transcript
 from .sessions import RESUME_QUERY_RE, UUID_RE, SessionStore
 
 
@@ -97,11 +97,11 @@ def main(argv: list[str] | None = None) -> int:
         SessionStore().prune(config.session_retention_days)
     release_check = ReleaseCheck(Path(__file__).resolve().parents[2], f"{parser.prog} update")
     app = WispTuiApp(client, config, startup, release_check=release_check)
-    # Finished items are already in scrollback; clear the inline area on exit
-    # and print what was still live. The mouse stays the terminal's (scroll,
-    # select, copy), like Pi.
-    app.run(inline=True, inline_no_clear=False, mouse=False)
+    # Full screen keeps the composer and footer pinned while the wheel scrolls
+    # the chat; the shown chat goes to the terminal's scrollback on exit.
+    app.run(mouse=True)
     print_transcript(app.transcript())
+    print_footer(app.footer_rows)
     # Print only after Textual restores the terminal, using the final active
     # session (which may differ from the one requested at startup).
     if app.session_id and UUID_RE.fullmatch(app.session_id):

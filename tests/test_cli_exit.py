@@ -26,9 +26,9 @@ def test_exit_hint_uses_launcher_name_and_only_an_existing_session(
     monkeypatch.setattr(cli, "load_config", lambda: Config(url=client.url, token=client.token))
     monkeypatch.setattr(cli, "WispClient", lambda *args: client)
 
-    def run(app: WispTuiApp, *, inline: bool, inline_no_clear: bool, mouse: bool) -> None:
-        # The terminal keeps the mouse: native scrolling, selection and copy.
-        assert inline and not inline_no_clear and not mouse
+    def run(app: WispTuiApp, *, mouse: bool) -> None:
+        # Full screen: the wheel scrolls the chat under the pinned composer.
+        assert mouse
         assert not capsys.readouterr().out, "hint printed before terminal restoration"
         app.session_id = session_id
 
@@ -53,12 +53,12 @@ def test_exit_transcript_is_printed_in_order_without_empty_items(
             ("assistant", "Disk is **fine**.\n"),
         ]
     )
-    # Padded rows (the filled prompt block) end in spaces; compare the text.
+    # Padded rows (the filled prompt and tool blocks) end in spaces; compare the text.
     lines = [line.rstrip() for line in capsys.readouterr().out.split("\n")]
     assert lines == [
         *("", "  check disk", "  please", "", ""),
         *(" Let me look.", ""),
-        *(" ▌ $ df -h", " ▌ / 40%", " ▌ bash · ok · 0.3s", ""),
+        *("", "  $ df -h", "  / 40%", "  bash · ok · 0.3s", "", ""),
         *(" Disk is fine.", "", ""),
     ]
 

@@ -28,8 +28,7 @@ class TerminalFixture(WispTuiApp):
         await eventually(lambda: "ready" in self._status_text)
         await self.screen.wait_for_refresh()
         self.show_transcript()
-        # Finished items reach the terminal with the next frame (scrollback).
-        await eventually(lambda: not self._scrollback and not self._sync_queued)
+        await eventually(lambda: not self._sync_queued)
         await self.screen.wait_for_refresh()
         self._sync_confirmations(
             [{"id": "prompt-1", "toolName": "scripted_tool", "args": {"target": "example"}}]
