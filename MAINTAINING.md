@@ -119,14 +119,8 @@ Textual has changed before. To upgrade:
      (`48;5;23`), and answers in the default foreground (SGR 39).
    - `test_rendering.py`: runtime text appears as plain text, with no markup.
      Streamed answers match a full render without per-delta updates.
-   - `test_terminal_updates.py` and the quiet-work PTY fixture: the adapter
-     relies on Textual's `InlineUpdate`/`App._display` cursor contract.
-     Changed-row updates must return to the inline origin without scrolling,
-     and resize or height changes must use full updates.
+   - The quiet-work PTY fixture: a spinner tick repaints only the composer,
+     never the chat.
    - `test_layout.py`: gutters and spacing. In 8.2, setting `margin-bottom`
      alone resets the other margins.
 3. Launch `wisp-tui` over SSH and look at a long answer and a prompt.
-
-`src/wisp_tui/terminal.py` is the only module that imports Textual internals
-(`textual._compositor.InlineUpdate`), and `AppBase._display` overrides a
-private Textual method. Check both against the new Textual source first.

@@ -1,7 +1,7 @@
-"""Chat items rendered for the terminal's own scrollback (and the live area).
+"""Chat items rendered for the chat view and for the terminal on exit.
 
-Finished items are printed once above the inline app, so the terminal owns
-scrolling, selection and copying, and the output keeps its look after exit.
+The app draws each item with ``render_item``; on exit the shown chat is printed
+with the same rendering, so it keeps its look in the terminal's scrollback.
 """
 
 from __future__ import annotations

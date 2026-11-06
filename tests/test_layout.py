@@ -8,7 +8,6 @@ import pytest
 
 from tests.test_app import eventually, make_app
 from wisp_tui import __version__
-from wisp_tui.app import WispTuiApp
 from wisp_tui.chat_view import ChatItem
 from wisp_tui.editor import PromptInput as Input
 from wisp_tui.history import ChatMessage
@@ -70,8 +69,8 @@ async def test_chat_and_editor_share_a_compact_gutter(
         )
         assert app.query_one("#bottom").region.height == 3 + metadata_height
         assert editor.region.y == app.query_one("#bottom").region.y
-        # Everything finished went to scrollback; the live area is empty.
-        assert not app.query_one("#chat").children
+        # Everything is finished; nothing is live.
+        assert not app._chat_items
         lines = printed_lines(app.transcript(), width)
         # Prompt blocks span the width with a 2-column inset; answers start at
         # column 1, like the editor text, with exactly one blank row around them.
@@ -141,25 +140,3 @@ async def test_streamed_answer_keeps_the_printed_layout_after_resize(
         # The live answer renders exactly as it will be printed to scrollback.
         assert streamed.region.x == 0
         assert streamed.region.height == expected
-
-
-async def test_resize_reprints_the_newest_printed_items_at_the_new_width(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(WispTuiApp, "REPRINT_ITEMS", 2)
-    app, _ = make_app([], monkeypatch)
-    async with app.run_test(size=(100, 30)) as pilot:
-        await eventually(lambda: "ready" in app._status_text)
-        for index in range(3):
-            app._show_line(f"item {index} " + "word " * 12)
-        await eventually(lambda: not app._sync_queued)
-        hidden = app._printed_total - 2
-        await pilot.resize_terminal(40, 30)
-        await pilot.pause()
-        output = app._take_scrollback()
-        assert output.startswith("\x1b[H\x1b[2J\x1b[3J")
-        rows = re.sub(r"\x1b\[[0-9;]*m", "", output.removeprefix("\x1b[H\x1b[2J\x1b[3J"))
-        assert f"↑ {hidden} earlier item" in rows
-        assert "item 0" not in rows and "item 1" in rows and "item 2" in rows
-        assert all(len(row) <= 40 for row in rows.split("\r\n"))
-        assert app._take_scrollback() == ""

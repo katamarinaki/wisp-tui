@@ -42,4 +42,4 @@ async def test_long_history_prints_only_the_tail(monkeypatch: pytest.MonkeyPatch
         items = [text for _, text in app.transcript()]
         assert items[0].startswith("\u2191 495 earlier items")
         assert items[1:] == [f"h{index}" for index in range(495, 500)]
-        assert not app.query_one("#chat").children, "history stayed in the live area"
+        assert not app._chat_items, "history stayed in the live area"

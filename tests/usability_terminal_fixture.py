@@ -118,7 +118,7 @@ def main() -> None:
             sessions=SessionStore(Path(state) / "sessions"),
             submissions=SubmissionStore(client.url, Path(state)),
         )
-        app.run(inline=True, mouse=False)
+        app.run(mouse=True)
         assert all(method == "GET" for method, _, _ in client.calls)
         print(
             "USABILITY_RESULT="

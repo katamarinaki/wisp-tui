@@ -26,7 +26,7 @@ from textual.widgets import Static
 from . import __version__
 from .app_base import FRESH_STATUS, ReleaseCheck
 from .app_sessions import SessionLayer
-from .chat_view import ChatItem, ChatScroll
+from .chat_view import ChatItem, ChatScroll, JumpToLatest
 from .client import ClientError
 from .editor import PromptInput
 from .help_text import HELP_TEXT
@@ -53,8 +53,12 @@ class WispTuiApp(SessionLayer):
     def compose(self) -> ComposeResult:
         yield self._welcome
         yield ChatScroll(id="chat")
+        # Above the docked bottom, so showing them shortens the chat instead of
+        # moving the composer and footer.
+        yield JumpToLatest("\u2193 Jump to latest message", id="jump-latest", markup=False)
+        yield Static("", id="status", markup=False)
+        yield Static("", id="command-hints", markup=False)
         with Container(id="bottom"):
-            yield Static("", id="command-hints", markup=False)
             yield self._prompt_input
             with Horizontal(id="location-row"):
                 yield Static("", id="location", markup=False)
@@ -64,7 +68,6 @@ class WispTuiApp(SessionLayer):
                 with Horizontal(id="selection-summary"):
                     yield Static("", id="session-info", markup=False)
                     yield Static("", id="thinking-info", markup=False)
-            yield Static("", id="status", markup=False)
             yield Static("", id="release-notice", markup=False)
 
     def on_mount(self) -> None:
@@ -74,6 +77,7 @@ class WispTuiApp(SessionLayer):
         self._restore_pending()
         self._restore_composer()
         self.query_one("#input", PromptInput).focus()
+        self.watch(self.query_one("#chat"), "scroll_y", self._update_jump_latest)
         self._run_threaded(self._bootstrap_worker)
         if self._release_check is not None:
             self.run_worker(self._check_release(self._release_check), exit_on_error=False)

@@ -97,10 +97,9 @@ def main(argv: list[str] | None = None) -> int:
         SessionStore().prune(config.session_retention_days)
     release_check = ReleaseCheck(Path(__file__).resolve().parents[2], f"{parser.prog} update")
     app = WispTuiApp(client, config, startup, release_check=release_check)
-    # Finished items are already in scrollback; clear the inline area on exit
-    # and print what was still live. The mouse stays the terminal's (scroll,
-    # select, copy), like Pi.
-    app.run(inline=True, inline_no_clear=False, mouse=False)
+    # Full screen keeps the composer and footer pinned while the wheel scrolls
+    # the chat; the shown chat goes to the terminal's scrollback on exit.
+    app.run(mouse=True)
     print_transcript(app.transcript())
     # Print only after Textual restores the terminal, using the final active
     # session (which may differ from the one requested at startup).

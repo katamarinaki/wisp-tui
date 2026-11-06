@@ -26,6 +26,12 @@ reattachment. Do not expand this into a general-purpose Pi replacement.
   tests and docs: no real IPs/hostnames/usernames or private ops notes. Use
   documentation addresses (e.g. `192.0.2.10`, `100.64.0.1`) in tests.
 
+## UX target
+
+Terminal behavior follows Pi's fullscreen mode; `UX_SPEC.md` lists each Pi
+behavior and its status here. Read it before UI work and update it with any
+change that affects a row. "Like Pi" means that table, not memory of Pi.
+
 ## Rules
 
 - **Never** put credentials, tokens or the config contents in code, tests,
@@ -51,11 +57,13 @@ reattachment. Do not expand this into a general-purpose Pi replacement.
   #23, `48;5;23`) with fixed light-grey text. Palette cyan was rejected as too
   bright. Don't change the shade or extend fills to other elements without
   asking.
-- Finished chat items are printed once into the terminal's own scrollback
-  (`scrollback.py`, printed by `ChangedRowsUpdate` in `terminal.py`); only live
-  items stay in the app. The app runs with `mouse=False` so the terminal keeps
-  native scrolling, selection and copy. Don't reintroduce mouse capture or an
-  in-app transcript scroll without asking.
+- The app runs full screen (alternate screen, `mouse=True`), owner-approved so
+  the composer and footer stay pinned while the wheel scrolls the chat
+  (`ChatScroll`, anchored to new output until the reader scrolls up). The
+  chat keeps the newest `SHOWN_ITEMS` finished items and prints them to the
+  terminal on exit. `ALLOW_SELECT = False`: Textual's selection would paint a
+  background; terminal selection works with Option/Shift-drag. Don't go back
+  to inline mode or native scrollback without asking.
 - Tests must not use network, sockets or real inference. Use the scripted
   client in `tests/helpers.py`.
 - Error strings shown to the user are safe codes only; never surface raw HTTP

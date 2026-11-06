@@ -14,10 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from rich.console import RenderableType
 from textual import events
 from textual.app import App
-from textual.screen import Screen
 from textual.timer import Timer
 from textual.widgets import Static
 
@@ -30,10 +28,8 @@ from .help_text import COMMANDS
 from .history import ChatMessage
 from .runs import RunFollower
 from .screens import ApprovalModal
-from .scrollback import render_ansi
 from .sessions import SessionStore
 from .submissions import PendingSubmission, SubmissionStore
-from .terminal import ChangedRowsUpdate, InlineRenderer, InlineUpdate
 from .terminal_status import TabStatus, tab_status_sequence
 from .text import display_path, metadata_text, model_label, safe_text
 from .tool_view import ToolCallView
@@ -73,11 +69,11 @@ class AppBase(App[None]):
     # A loaded history prints only its newest items (several screens' worth);
     # Wisp keeps the full session history server-side.
     MAX_CHAT_ITEMS = 60
-    # Textual writes this many blank rows above the inline app and moves back up
-    # over them on exit, which would overwrite the last line printed to scrollback.
-    INLINE_PADDING = 0
-    # Printed items kept to redraw scrollback at a new width after a resize.
-    REPRINT_ITEMS = 200
+    # Finished items kept in the chat view (and printed again on exit).
+    SHOWN_ITEMS = 200
+    # Textual's own selection paints a background and needs Ctrl+C; the
+    # terminal's selection (Option/Shift-drag) still works with the mouse on.
+    ALLOW_SELECT = False
 
     def __init__(  # noqa: PLR0915 - one place declares every layer's state
         self,
@@ -94,7 +90,6 @@ class AppBase(App[None]):
         # hardcoded theme color. The app then renders on the terminal's own
         # background, matching the user's terminal exactly.
         super().__init__(ansi_color=True)
-        self._inline_renderer = InlineRenderer()
         self.client = client
         self.config = config
         self.startup = startup or Startup()
@@ -153,13 +148,14 @@ class AppBase(App[None]):
         self._stream_view: StreamView | None = None
         self._reattached_checkpoint: list[ChatMessage] | None = None
         self._chat_epoch = 0
-        # Live (not yet printed) items, in display order.
+        # Live (not yet finished) items, in display order.
         self._chat_items: deque[ChatItem | ToolCallView] = deque()
-        # Finished items waiting for the next inline frame to print them.
-        self._scrollback: list[tuple[str, str]] = []
-        self._printed: deque[tuple[str, str]] = deque(maxlen=self.REPRINT_ITEMS)
-        self._printed_total = 0
-        self._reprint = False
+        # Finished items, oldest first, and the widgets that show them.
+        self._printed: deque[tuple[str, str]] = deque(maxlen=self.SHOWN_ITEMS)
+        self._finished: deque[ChatItem] = deque()
+        # Finished items dropped past SHOWN_ITEMS, and the note that counts them.
+        self._dropped = 0
+        self._dropped_note: ChatItem | None = None
         self._sync_queued = False
         self._tool_calls: dict[str, ToolCallView] = {}
         self._saw_live_tool_events = False
@@ -209,40 +205,7 @@ class AppBase(App[None]):
         self._render_activity()
 
     def on_resize(self, event: events.Resize) -> None:
-        # The inline driver clears the terminal on resize, even if its final
-        # dimensions happen to match the previous ones.
-        self._inline_renderer.invalidate()
-        # That clear also erased the visible part of the printed chat.
-        self._reprint = bool(self._printed)
         self.query_one("#bottom").set_class(event.size.width < 80, "narrow")
-
-    def _display(self, screen: Screen[Any], renderable: RenderableType | None) -> None:
-        if isinstance(renderable, InlineUpdate):
-            renderable = ChangedRowsUpdate(
-                renderable,
-                self._inline_renderer,
-                self.size.width,
-                self.size.height,
-                self._take_scrollback,
-            )
-        super()._display(screen, renderable)
-
-    def _take_scrollback(self) -> str:
-        items, self._scrollback = self._scrollback, []
-        prefix = ""
-        if self._reprint:
-            # Like Pi/Claude Code: redraw the printed chat at the new width
-            # instead of leaving it half erased and wrapped at the old one.
-            self._reprint = False
-            prefix = "\x1b[H\x1b[2J\x1b[3J"
-            items = list(self._printed)
-            hidden = self._printed_total - len(items)
-            if hidden:
-                note = f"\u2191 {hidden} earlier item{'s' if hidden != 1 else ''} not reprinted"
-                items.insert(0, ("system", note))
-        if not items:
-            return prefix
-        return prefix + render_ansi(items, self.size.width, self.console.color_system)
 
     def _update_tab_status(self, status: TabStatus | None) -> None:
         if self._tab_status_closed or status == self._tab_status:

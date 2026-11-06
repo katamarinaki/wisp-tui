@@ -134,8 +134,8 @@ still requires runtime guarantees/live acceptance to reason about fully.
 
 When attaching to a known run, the saved checkpoint and streamed replay are
 explicitly separated: the checkpoint is printed first, then the replay below a
-"Current run replay — may overlap the saved checkpoint." label. Printed output
-lives in the terminal's scrollback and is never rewritten, so a successful
+"Current run replay — may overlap the saved checkpoint." label. Finished output
+is never rewritten, so a successful
 terminal outcome no longer triggers a checkpoint re-read to replace the replay
 (the earlier coverage heuristic was removed with the in-app transcript). The
 overlap therefore always stays visible and labelled; nothing is removed because

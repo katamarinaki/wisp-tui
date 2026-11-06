@@ -228,8 +228,8 @@ async def test_streaming_prints_finished_blocks_and_matches_full_render(
         view = app._stream_view
         await eventually(lambda: view.rendered == expected)
         await pilot.pause()
-        # Complete blocks already went to scrollback; only the last one is live.
-        assert len([kind for kind, _ in app._scrollback if kind == "assistant"]) > 1
+        # Complete blocks are already finished; only the last one is live.
+        assert len([kind for kind, _ in app._printed if kind == "assistant"]) > 1
         assert view.widget.remaining() == "Done [/] ok."
         app._finalize_run("run.completed", {})
         await pilot.pause()
