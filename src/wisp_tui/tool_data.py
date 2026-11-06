@@ -42,6 +42,36 @@ def detail_text(value: Any) -> str:
     return bounded or "(empty)"
 
 
+# Wisp's shell tool result: {"exitCode", "stdout", "stderr", "timedOut"}.
+_SHELL_RESULT_KEYS = frozenset(("exitCode", "stdout", "stderr", "timedOut"))
+MAX_DECODE_CHARS = 1024 * 1024
+
+
+def output_text(text: str) -> str:
+    """Tool output for display; a shell result shows its streams, not the JSON."""
+    shown = text
+    if text.startswith("{") and len(text) <= MAX_DECODE_CHARS:
+        try:
+            value = json.loads(text)
+        except (ValueError, RecursionError):
+            value = None
+        if (
+            isinstance(value, dict)
+            and "stdout" in value
+            and set(value) <= _SHELL_RESULT_KEYS
+            and all(isinstance(value.get(key, ""), str) for key in ("stdout", "stderr"))
+        ):
+            code = value.get("exitCode")
+            notes = []
+            if isinstance(code, int) and not isinstance(code, bool) and code != 0:
+                notes.append(f"exit code {code}")
+            if value.get("timedOut") is True:
+                notes.append("timed out")
+            streams = (value["stdout"], value.get("stderr", ""), " · ".join(notes))
+            shown = "\n".join(part.rstrip("\n") for part in streams if part.strip())
+    return detail_text(shown)
+
+
 def command_summary(args: Any) -> str:
     """One title line: a shell command verbatim, else compact JSON arguments."""
     if isinstance(args, dict) and isinstance(args.get("command"), str):

@@ -9,7 +9,7 @@ from .chat_view import ChatItem, ChatScroll, StreamView
 from .client import ClientError, safe_code
 from .history import ChatMessage, HistoryError, parse_history, tool_history_results
 from .text import safe_text
-from .tool_data import detail_text
+from .tool_data import output_text
 from .tool_view import ToolCallView
 
 ChatEntry = ChatItem | ToolCallView
@@ -216,7 +216,7 @@ class ChatLayer(AppBase):
                 completed=True,
                 historical=True,
             )
-            view.apply_history(output_text=detail_text(message.text), status=message.tool_status)
+            view.apply_history(output_text=output_text(message.text), status=message.tool_status)
         else:
             if message.role == "user":
                 self._tool_calls.clear()

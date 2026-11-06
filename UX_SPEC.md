@@ -27,5 +27,6 @@ under a PTY capture (`tests/test_terminal.py`).
 | 11 | Scrollbar revealed on hover. | Not done: scrollbar hidden. |
 | 12 | On exit, prints the complete transcript (setting: resume hint only). | Partial: prints the newest `SHOWN_ITEMS` finished items plus live ones, then the resume hint. |
 | 13 | iTerm2: set Advanced → "Trackpad scrolls fast?" to No for normal trackpad speed. | Applies as-is (same wheel reporting). |
+| 14 | Tool entries (observed): command, decoded output tail with "(N earlier lines, ctrl+o to expand)", wrapped lines, "Took 0.0s", in a filled block. | Partial: shell results show decoded stdout/stderr (plus exit code / timeout) as a 5-line tail with an earlier-lines count. Lines are cut at the width, there is no expand key, and there is no fill (unpainted-background rule). |
 
 When a change affects any row, update its status here in the same change.
