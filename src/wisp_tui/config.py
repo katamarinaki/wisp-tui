@@ -72,6 +72,15 @@ class Config:
     event_timeout: float = 600.0
     log_approval_args: bool = False
     session_retention_days: int | None = None
+    accent_color: str = "bright_blue"
+
+
+# The terminal's own 16 palette colors, so the accent follows its theme.
+ACCENT_COLORS = frozenset(
+    prefix + name
+    for prefix in ("", "bright_")
+    for name in ("black", "red", "green", "yellow", "blue", "magenta", "cyan", "white")
+)
 
 
 def _token_from_command(command: object) -> str:
@@ -117,6 +126,9 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         not isinstance(retention, int) or isinstance(retention, bool) or not 1 <= retention <= 36500
     ):
         raise ConfigError("invalid_session_retention_days")
+    accent = data.get("accent_color", "bright_blue")
+    if not isinstance(accent, str) or accent not in ACCENT_COLORS:
+        raise ConfigError("invalid_accent_color")
     # Last, so a typo elsewhere never triggers a password prompt first.
     secret = token if isinstance(token, str) else _token_from_command(command)
     return Config(
@@ -126,4 +138,5 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         event_timeout=float(event_timeout),
         log_approval_args=log_args,
         session_retention_days=retention,
+        accent_color=accent,
     )

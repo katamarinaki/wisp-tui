@@ -101,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     # the chat; the shown chat goes to the terminal's scrollback on exit.
     app.run(mouse=True)
     print_transcript(app.transcript())
-    print_footer(app.footer_rows)
+    print_footer(app.footer_rows, config.accent_color)
     # Print only after Textual restores the terminal, using the final active
     # session (which may differ from the one requested at startup).
     if app.session_id and UUID_RE.fullmatch(app.session_id):

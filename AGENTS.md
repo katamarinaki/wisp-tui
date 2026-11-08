@@ -64,7 +64,8 @@ change that affects a row. "Like Pi" means that table, not memory of Pi.
   (`ChatScroll`, anchored to new output until the reader scrolls up). The
   chat keeps the newest `SHOWN_ITEMS` finished items and prints them to the
   terminal on exit. `ALLOW_SELECT = False`: Textual's selection would paint a
-  background; terminal selection works with Option/Shift-drag. Don't go back
+  background. Instead `ChatScroll` selects like Pi: drag marks cells in
+  reverse video (no background SGR) and release copies them. Don't go back
   to inline mode or native scrollback without asking.
 - Tests must not use network, sockets or real inference. Use the scripted
   client in `tests/helpers.py`.

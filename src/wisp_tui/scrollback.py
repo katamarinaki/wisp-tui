@@ -179,12 +179,12 @@ def render_ansi(items: list[tuple[str, str]], width: int, color_system: str | No
     return _TRAILING_PAD.sub("", capture.get()).replace("\n", "\r\n")
 
 
-def print_footer(rows: list[tuple[str, str]]) -> None:
+def print_footer(rows: list[tuple[str, str]], accent: str) -> None:
     """The empty editor and the footer, as the app last showed them."""
     if not rows:
         return
     console = Console(highlight=False, theme=THEME)
-    rule = Text("─" * max(1, console.width - 2), style="bright_blue")
+    rule = Text("─" * max(1, console.width - 2), style=accent)
     parts: list[RenderableType] = [rule, Text(""), rule]
     for index, (left, right) in enumerate(rows):
         # Each row sizes its own columns, as in the app.

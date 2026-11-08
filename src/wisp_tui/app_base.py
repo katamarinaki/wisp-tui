@@ -89,6 +89,8 @@ class AppBase(App[None]):
         # ("terminal default background") instead of being rewritten to a
         # hardcoded theme color. The app then renders on the terminal's own
         # background, matching the user's terminal exactly.
+        # Read by get_theme_variable_defaults, which App.__init__ calls.
+        self._accent = config.accent_color
         super().__init__(ansi_color=True)
         self.client = client
         self.config = config
@@ -171,8 +173,12 @@ class AppBase(App[None]):
         self.footer_rows: list[tuple[str, str]] = []
         self._prompt_input = PromptInput(commands=tuple(name for name, _, _ in COMMANDS))
         self._activity_timer: Timer | None = None
+        self._flash_timer: Timer | None = None
         self._cancel_requested = False
         self._last_ctrl_c = -10.0
+
+    def get_theme_variable_defaults(self) -> dict[str, str]:
+        return {"wisp-accent": f"ansi_{self._accent}"}
 
     def _run_threaded(
         self,

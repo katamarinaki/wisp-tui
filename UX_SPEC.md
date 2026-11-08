@@ -21,7 +21,7 @@ under a PTY capture (`tests/test_terminal.py`).
 | 5 | Ctrl+Home/Ctrl+End jump to the top/bottom; Ctrl+End resumes following. | Not done: wisp-tui uses these keys for editor start/end. Owner decision. |
 | 6 | Clickable "Jump to latest message" label while scrolled up. | Done: a row above the status line instead of an overlay on the last transcript row. |
 | 7 | Working indicator embedded in the editor border. | Done. |
-| 8 | Drag to select, auto-copy via OSC 52, highlighted selection. | Not done: `ALLOW_SELECT = False`, because the highlight paints a background (AGENTS.md rule). Terminal selection works with Option/Shift-drag. Owner decision. |
+| 8 | Drag to select, auto-copy (native clipboard locally, OSC 52 over SSH), highlighted selection, "Copied!" flash. | Partial: chat only, reverse-video highlight, copy on release (`pbcopy` on a local Mac, else OSC 52), a reverse-video "Copied!" flash at the top right (1 s; "Copy failed" 5 s); a click clears it, and so does trimming the oldest items. No auto-scroll past the chat's edge, no double/triple-click word/line selection. |
 | 9 | Transcript search (Ctrl+Shift+F). | Not done. |
 | 10 | Jump between prompts (Ctrl+Shift+Up/Down). | Not done. |
 | 11 | Scrollbar revealed on hover. | Not done: scrollbar hidden. |

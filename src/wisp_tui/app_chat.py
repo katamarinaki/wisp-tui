@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import base64
+import os
+import subprocess
+import sys
 from typing import Any
+
+from rich.text import Text
+from textual.widgets import Static
 
 from .app_base import AppBase
 from .chat_view import ChatItem, ChatScroll, StreamView
@@ -26,9 +33,54 @@ def hidden_note(hidden: int) -> str:
     )
 
 
+def _pbcopy(text: str) -> bool:
+    try:
+        done = subprocess.run(["pbcopy"], input=text.encode(), timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
 class ChatLayer(AppBase):
     def action_chat_page(self, direction: int) -> None:
         self.query_one("#chat", ChatScroll).page(direction)
+
+    def on_chat_scroll_selected(self, message: ChatScroll.Selected) -> None:
+        """Like Pi: the native clipboard locally, OSC 52 over SSH."""
+        text = message.text
+        if sys.platform == "darwin" and not os.environ.get("SSH_CONNECTION"):
+            # Terminal.app ignores OSC 52 and iTerm2 blocks it by default.
+            copied: list[bool] = []
+            self._run_threaded(
+                lambda: copied.append(_pbcopy(text)),
+                group="clipboard",
+                on_done=lambda: self._flash_copied(copied == [True]),
+            )
+            return
+        # Pi's limit; terminals drop or mangle longer OSC 52 payloads.
+        if len(base64.b64encode(text.encode())) > 100_000:
+            self._flash_copied(False)
+            return
+        self.copy_to_clipboard(text)
+        self._flash_copied(True)
+
+    def _flash_copied(self, copied: bool) -> None:
+        # Pi's durations: a short confirmation, a longer error.
+        self._flash("Copied!" if copied else "Copy failed", 1.0 if copied else 5.0)
+
+    def _flash(self, message: str, seconds: float) -> None:
+        """A transient reverse-video note at the top right, apart from the status."""
+        if self._flash_timer is not None:
+            self._flash_timer.stop()
+        for flash in self.query("#flash").results(Static):
+            flash.update(Text(f" {message} ", style="reverse"))
+            flash.display = True
+        self._flash_timer = self.set_timer(seconds, self._hide_flash)
+
+    def _hide_flash(self) -> None:
+        self._flash_timer = None
+        for flash in self.query("#flash").results(Static):
+            flash.display = False
 
     def _update_jump_latest(self) -> None:
         chat = self.query_one("#chat", ChatScroll)
@@ -109,6 +161,8 @@ class ChatLayer(AppBase):
             self._finished.append(widget)
             while len(self._finished) > self.SHOWN_ITEMS:
                 self._finished.popleft().remove()
+                # Later rows move up; the selection would mark other text.
+                chat.clear_selection()
             if self._dropped:
                 if self._dropped_note is None:
                     self._dropped_note = ChatItem("system", hidden_note(self._dropped))

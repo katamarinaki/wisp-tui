@@ -6,13 +6,12 @@ import json
 import math
 from typing import Any
 
-from textual.widgets import Static
-
+from .chat_view import SelectableStatic
 from .scrollback import render_item
 from .tool_data import command_summary, detail_text
 
 
-class ToolCallView(Static):
+class ToolCallView(SelectableStatic):
     """One tool entry; missing fields remain distinct from empty/false values."""
 
     def __init__(self, event: dict[str, Any], *, completed: bool, historical: bool = False) -> None:

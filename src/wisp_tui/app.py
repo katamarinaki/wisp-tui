@@ -69,6 +69,7 @@ class WispTuiApp(SessionLayer):
                     yield Static("", id="session-info", markup=False)
                     yield Static("", id="thinking-info", markup=False)
             yield Static("", id="release-notice", markup=False)
+        yield Static("", id="flash", markup=False)
 
     def on_mount(self) -> None:
         self._activity_timer = self.set_interval(0.1, self._tick_activity, pause=True)

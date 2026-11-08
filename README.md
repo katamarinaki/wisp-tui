@@ -119,9 +119,10 @@ Inside the app: **Enter** sends, **Ctrl+J** adds a newline, **F1** lists keys,
 `/sessions`, `/model`, `/cancel`, `/retry`, `/reconnect`, `/status`, `/exit`
 (or `/quit`); typing `/` lists them and Tab completes. The app runs full screen:
 the mouse wheel or PageUp/PageDown scrolls the chat while the editor and footer
-stay put. To select and copy, hold Option (iTerm2) or Shift (most other
-terminals) while dragging. On quit, the conversation is printed to the
-terminal's scrollback.
+stay put. Drag over the chat to select text; releasing the mouse copies it,
+through `pbcopy` on a local Mac and through your terminal (OSC 52) otherwise,
+for example over SSH. On quit, the conversation is printed to the terminal's
+scrollback.
 
 Wisp stores your sessions. wisp-tui keeps a private log under
 `~/.local/state/wisp-tui/` so `-c` and `-r` know which ones you used.
@@ -139,6 +140,7 @@ Add these keys to `~/.config/wisp-tui/config.json` by hand:
 | `token_command` | Replaces `token`. A command as a list, run without a shell, that prints the token. Example: `["pass", "show", "wisp/run-token"]` |
 | `session_retention_days` | Deletes local session logs older than this many days at startup. Unset keeps them. |
 | `log_approval_args` | `true` also logs approval arguments, which can contain commands, paths and file contents. Off by default. |
+| `accent_color` | Color of the editor rules and the "Jump to latest message" label: one of the terminal's 16 colors, `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, or a `bright_` variant such as `bright_magenta`. Default `bright_blue`. |
 
 ## Development
 
