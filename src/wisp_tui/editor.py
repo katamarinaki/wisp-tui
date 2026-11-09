@@ -28,6 +28,9 @@ class PromptInput(TextArea):
         Binding("ctrl+end", "document_end", show=False),
         Binding("ctrl+p", "history_previous", show=False),
         Binding("ctrl+n", "history_next", show=False),
+        # Like Pi's fullscreen mode: paging scrolls the chat, not the editor.
+        Binding("pageup", "app.chat_page(-1)", show=False),
+        Binding("pagedown", "app.chat_page(1)", show=False),
         # TextArea normally copies here; Wi reserves Ctrl+C for cancel/exit.
         Binding("ctrl+c", "app.cancel", show=False),
     ]

@@ -5,7 +5,8 @@ Terminal chat client for the local Wisp runtime. Python 3.11+, stdlib + textual
 
 ## Scope and plan
 
-The only target workflow is Mac → SSH → homeserver → Wisp:
+The only target workflow is a terminal, local or over SSH, on the machine
+that runs Wisp:
 reliable task submission, progress, explicit approvals, cancellation, and
 reattachment. Do not expand this into a general-purpose Pi replacement.
 
@@ -19,11 +20,17 @@ reattachment. Do not expand this into a general-purpose Pi replacement.
   Never push to or merge into `main` yourself. Never create, push or publish
   release tags or GitHub releases: the owner signs releases (MAINTAINING.md).
 - CI (`.github/workflows/ci.yml`) runs pytest + strict mypy on pushes to
-  `main`/`develop` and on PRs, on GitHub-hosted runners only. Never use the
-  homeserver's self-hosted runner here: fork PRs would execute code on it.
+  `main`/`develop` and on PRs, on GitHub-hosted runners only. Never use a
+  self-hosted runner here: fork PRs would execute code on it.
 - Because the repo is public, keep infrastructure identifiers out of code,
   tests and docs: no real IPs/hostnames/usernames or private ops notes. Use
   documentation addresses (e.g. `192.0.2.10`, `100.64.0.1`) in tests.
+
+## UX target
+
+Terminal behavior follows Pi's fullscreen mode; `UX_SPEC.md` lists each Pi
+behavior and its status here. Read it before UI work and update it with any
+change that affects a row. "Like Pi" means that table, not memory of Pi.
 
 ## Rules
 
@@ -45,16 +52,21 @@ reattachment. Do not expand this into a general-purpose Pi replacement.
   `ansi_color=True` in `AppBase.__init__` (`app_base.py`) work together to emit SGR 49. Changing any of these
   (or re-enabling the ANSI→truecolor filter) paints a hardcoded background.
   Verify with a pty capture that no other `48;...` SGR is emitted.
-  Sole owner-approved exception: user prompt blocks (`USER_STYLE` in
+  Owner-approved exceptions: user prompt blocks (`USER_STYLE` in
   `src/wisp_tui/scrollback.py`) are filled with muted dark teal (xterm-256
-  #23, `48;5;23`) with fixed light-grey text. Palette cyan was rejected as too
-  bright. Don't change the shade or extend fills to other elements without
-  asking.
-- Finished chat items are printed once into the terminal's own scrollback
-  (`scrollback.py`, printed by `ChangedRowsUpdate` in `terminal.py`); only live
-  items stay in the app. The app runs with `mouse=False` so the terminal keeps
-  native scrolling, selection and copy. Don't reintroduce mouse capture or an
-  in-app transcript scroll without asking.
+  #23, `48;5;23`) with fixed light-grey text (palette cyan was rejected as
+  too bright). Tool entries (`TOOL_FILL`, `TOOL_FILLS`, Pi-style blocks) are
+  filled with dark grey (#236, `48;5;236`), or dark red (#52, `48;5;52`) when
+  failed, also with fixed foregrounds. Don't change the shades or extend fills
+  to other elements without asking.
+- The app runs full screen (alternate screen, `mouse=True`), owner-approved so
+  the composer and footer stay pinned while the wheel scrolls the chat
+  (`ChatScroll`, anchored to new output until the reader scrolls up). The
+  chat keeps the newest `SHOWN_ITEMS` finished items and prints them to the
+  terminal on exit. `ALLOW_SELECT = False`: Textual's selection would paint a
+  background. Instead `ChatScroll` selects like Pi: drag marks cells in
+  reverse video (no background SGR) and release copies them. Don't go back
+  to inline mode or native scrollback without asking.
 - Tests must not use network, sockets or real inference. Use the scripted
   client in `tests/helpers.py`.
 - Error strings shown to the user are safe codes only; never surface raw HTTP

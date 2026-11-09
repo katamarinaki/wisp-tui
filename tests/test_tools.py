@@ -188,13 +188,14 @@ async def test_history_status_is_distinct_from_the_registry_success_flag(
 def test_history_preserves_json_strings_and_structured_content_blocks() -> None:
     payload = tool_history("one", '{"items":["sample"]}')
     matched, _ = tool_history_results(parse_history(payload))
-    assert matched["one"].output_text == '{"items":["sample"]}'
+    # JSON results are shown as literal ``path: value`` lines.
+    assert matched["one"].output_text == 'items: ["sample"]'
     payload[0]["values"]["messages"][-1]["content"] = [
         {"type": "text", "text": "literal [/]"},
         {"type": "custom", "value": 0},
     ]
     matched, _ = tool_history_results(parse_history(payload))
-    assert '"value": 0' in matched["one"].output_text
+    assert "1.value: 0" in matched["one"].output_text
     assert "literal [/]" in matched["one"].output_text
 
 

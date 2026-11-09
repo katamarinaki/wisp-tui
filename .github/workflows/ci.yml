@@ -1,7 +1,7 @@
 name: CI
 
-# Public repo: runs on GitHub-hosted runners only. Never point this at the
-# homeserver's self-hosted runner — fork PRs would execute code there.
+# Public repo: runs on GitHub-hosted runners only. Never point this at a
+# self-hosted runner — fork PRs would execute code there.
 on:
   push:
     branches: [main, develop]

@@ -103,12 +103,9 @@ def capture_terminal(
 
 
 @pytest.mark.parametrize("width", [40, 100])
-def test_inline_terminal_keeps_default_background(width: int) -> None:
+def test_terminal_keeps_default_background(width: int) -> None:
     capture = capture_terminal("tests.terminal_fixture", width)
     startup = capture.split(b"Show the server status", 1)[0]
-    # The first frame now includes the welcome, so reserved rows aren't all blank.
-    first_frame = startup.split(b"\x1b[6n", 1)[0]
-    assert first_frame.count(b"\n") >= 29, "startup did not reserve the terminal height"
     assert b"session new" not in startup
     assert b"model: runtime default" not in startup
     assert b"your first message starts it" not in startup
@@ -164,7 +161,7 @@ def test_inline_terminal_keeps_default_background(width: int) -> None:
     assert "↑3".encode() in capture
     assert b"~/example" in capture, "launch directory missing from the footer"
     assert "▔".encode() not in capture and "▁".encode() not in capture, (
-        "inline screen drew its tall top/bottom border"
+        "screen drew a tall top/bottom border"
     )
     borders = re.findall(rb"\x1b\[([0-9;:]*)m(?:" + "─".encode() + rb"){10,}", capture)
     assert any(b"94" in codes.split(b";") for codes in borders), (
@@ -175,14 +172,15 @@ def test_inline_terminal_keeps_default_background(width: int) -> None:
         "footer text was dimmed"
     )
     assert b"Wisp asks for approval" in capture
-    assert b"\x1b[?1049h" not in capture, "alternate screen was enabled"
+    # Full screen pins the composer; the shell screen comes back on exit.
+    assert b"\x1b[?1049h" in capture and b"\x1b[?1049l" in capture
     sgr = re.findall(rb"\x1b\[([0-9;:]*)m", capture)
     assert any(b"49" in codes.split(b";") for codes in sgr)
-    # The prompt fill is the only painted background (owner-approved).
+    # Only the owner-approved fills: prompts, and tool blocks (ok / failed).
     extended = [codes for codes in sgr if re.search(rb"(?:^|[;:])48(?:[;:]|$)", codes)]
     assert extended, "prompt fill missing"
-    assert all(re.search(rb"(?:^|;)48;5;23(?:;|$)", codes) for codes in extended), (
-        "an extended background other than the prompt fill was emitted"
+    assert all(re.search(rb"(?:^|;)48;5;(?:23|236|52)(?:;|$)", codes) for codes in extended), (
+        "an extended background other than the approved fills was emitted"
     )
 
 
@@ -226,15 +224,17 @@ def test_busy_spinner_does_not_retransmit_the_unchanged_chat(width: int) -> None
     # At most one repaint per spinner tick (plus one in flight when counting stops).
     assert 1 <= result["frames"] <= result["ticks"] + 1, "spinner repaint rate is unbounded"
     assert result["transcript_rewrites"] == 0, "idle spinner retransmitted the chat"
-    assert result["bytes"] < 550 * result["frames"], "quiet spinner frames flooded the terminal"
-    assert b"\x1b[?1049h" not in capture, "alternate screen was enabled"
+    # A spinner frame repaints only the composer's three rows.
+    assert result["bytes"] < 3 * 400 * result["frames"], "quiet spinner frames flooded the terminal"
+    # Full screen pins the composer; the shell screen comes back on exit.
+    assert b"\x1b[?1049h" in capture and b"\x1b[?1049l" in capture
     sgr = re.findall(rb"\x1b\[([0-9;:]*)m", capture)
     assert not any(re.search(rb"(?:^|[;:])48(?:[;:]|$)", codes) for codes in sgr), (
         "quiet-work repaint painted a background"
     )
 
 
-def test_long_stream_resize_and_modal_keys_in_a_real_inline_terminal() -> None:
+def test_long_stream_resize_and_modal_keys_in_a_real_terminal() -> None:
     capture = capture_terminal(
         "tests.usability_terminal_fixture",
         100,
@@ -252,7 +252,8 @@ def test_long_stream_resize_and_modal_keys_in_a_real_inline_terminal() -> None:
     assert result["approval"] == "deny"
     assert result["characters"] > 12000
     assert result["draft"] == "keep this draft"
-    assert b"\x1b[?1049h" not in capture, "alternate screen was enabled"
+    # Full screen pins the composer; the shell screen comes back on exit.
+    assert b"\x1b[?1049h" in capture and b"\x1b[?1049l" in capture
     sgr = re.findall(rb"\x1b\[([0-9;:]*)m", capture)
     assert not any(re.search(rb"(?:^|[;:])48(?:[;:]|$)", codes) for codes in sgr), (
         "stream, picker or approval painted a background"

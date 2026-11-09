@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Any
 
-from textual.widgets import Static
-
+from .chat_view import SelectableStatic
 from .scrollback import render_item
 from .tool_data import command_summary, detail_text
 
-TAIL_LINES = 5
 
-
-class ToolCallView(Static):
+class ToolCallView(SelectableStatic):
     """One tool entry; missing fields remain distinct from empty/false values."""
 
     def __init__(self, event: dict[str, Any], *, completed: bool, historical: bool = False) -> None:
@@ -95,17 +93,14 @@ class ToolCallView(Static):
         if self.is_run_summary:
             parts.append("run summary")
         self.status_text = " · ".join(parts)
+        # The summary may predate the final name (history vs. live events).
+        summary = self.summary.removeprefix(json.dumps(self.tool_name, ensure_ascii=False))
         self.title = (
-            self.summary
-            if self.summary.startswith("$ ")
-            else f"{self.tool_name} {self.summary}".rstrip()
+            summary if summary.startswith("$ ") else f"{self.tool_name} {summary.strip()}".rstrip()
         )
         if self.output_text is not None:
-            lines = self.output_text.rstrip("\n").split("\n")
-            tail = lines[-TAIL_LINES:]
-            if len(lines) > TAIL_LINES:
-                tail.insert(0, f"… ({len(lines) - TAIL_LINES} earlier lines)")
-            self.tail_text = "\n".join(tail)
+            # Bounded by detail_text; render_item shows only its last rows.
+            self.tail_text = self.output_text.rstrip("\n")
         self.update(render_item(*self.entry()))
 
     def apply_history(

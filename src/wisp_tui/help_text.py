@@ -64,10 +64,10 @@ setting and last finished run's reported tokens visible (↑ input, ↓ output,
 Tokens update when a run finishes, not live; context occupancy is unavailable.
 The launch directory belongs to this client, not Wisp's tools.
 
-Finished output is printed into the terminal's own scrollback, like any
-command's output: scroll, select and copy it with the terminal as usual, and it
-stays after you quit. Only the answer being written, running tools and the
-input stay in the live area at the bottom. Tool entries show the command, the
+The chat scrolls above the input with the mouse wheel or PageUp/PageDown; while
+scrolled up, "Jump to latest message" returns to new output. Drag over the chat
+to select text; releasing the mouse copies it. On quit, the conversation is
+printed to the terminal's scrollback. Tool entries show the command, the
 last 5 output lines (read from stored session history when a unique call ID is
 available) and the status; full output stays in Wisp's history.
 

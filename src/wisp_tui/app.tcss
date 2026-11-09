@@ -1,17 +1,14 @@
 App { background: ansi_default; }
-Screen { background: transparent; color: ansi_default; }
-/* Textual's inline Screen draws tall top/bottom borders with ▔/▁ in the
-   default foreground: a bright line above and below the app. */
-Screen:inline { border-top: none; border-bottom: none; }
+Screen { background: transparent; color: ansi_default; layers: default flash; }
 ApprovalModal, SessionPicker, ModelPicker { background: transparent; }
 #welcome {
     height: auto; max-height: 60vh; margin: 1;
     background: transparent; color: ansi_default;
 }
-/* Only live items: finished ones are printed to the terminal's scrollback.
-   Items render themselves (scrollback.render_item), including the
-   owner-approved teal prompt fill (48;5;23); nothing else is painted. */
-#chat { height: auto; max-height: 70vh; padding: 0; scrollbar-size: 0 0; }
+/* Items render themselves (scrollback.render_item), including the
+   owner-approved fills: teal prompts (48;5;23) and tool blocks (48;5;236,
+   48;5;52 when failed); nothing else is painted. */
+#chat { height: 1fr; padding: 0; scrollbar-size: 0 0; }
 #chat > * {
     height: auto; margin: 0 0 1 0; background: transparent; color: ansi_default;
 }
@@ -21,8 +18,8 @@ ApprovalModal, SessionPicker, ModelPicker { background: transparent; }
     min-height: 3;
     max-height: 8;
     scrollbar-size: 0 0;
-    border-top: solid ansi_bright_blue;
-    border-bottom: solid ansi_bright_blue;
+    border-top: solid $wisp-accent;
+    border-bottom: solid $wisp-accent;
     border-left: none;
     border-right: none;
     border-title-align: left;
@@ -32,9 +29,13 @@ ApprovalModal, SessionPicker, ModelPicker { background: transparent; }
 }
 #input:focus { background-tint: transparent; }
 #input .text-area--suggestion { color: ansi_default; text-style: dim; }
+#jump-latest {
+    display: none; height: 1; width: 1fr; text-align: center;
+    background: transparent; color: $wisp-accent;
+}
 #command-hints {
     display: none; height: auto; background: transparent; color: ansi_default;
-    text-style: dim;
+    text-style: dim; padding: 0 1;
 }
 #status, #session-info, #thinking-info, #usage-info, #location, #session-id {
     height: 1;
@@ -51,7 +52,12 @@ ApprovalModal, SessionPicker, ModelPicker { background: transparent; }
 #session-info, #usage-info { width: 1fr; height: auto; max-height: 2; }
 #session-info { text-align: right; }
 #usage-info { color: ansi_bright_cyan; }
-#status { height: auto; max-height: 2; display: none; }
+#status { height: auto; max-height: 2; display: none; padding: 0 1; }
+/* Pi's copy flash: top right, over the chat, in reverse video. */
+#flash {
+    display: none; layer: flash; dock: right; width: auto; height: 1;
+    background: transparent; color: ansi_default;
+}
 #release-notice {
     display: none; height: 1; background: transparent; color: ansi_default;
     text-style: dim;
