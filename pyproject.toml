@@ -1,6 +1,6 @@
 [project]
 name = "wisp-tui"
-version = "0.1.0"
+version = "0.2.2"
 description = "Terminal chat client for the local Wisp runtime (loopback only, chat-scoped API)"
 requires-python = ">=3.11"
 # Compatible range only; exact versions live in requirements*.txt. Textual
