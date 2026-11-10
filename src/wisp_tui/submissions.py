@@ -9,15 +9,13 @@ No credentials or runtime configuration are stored, only a URL fingerprint.
 
 from __future__ import annotations
 
-import fcntl
-import hashlib
 import json
 import math
 import os
 import re
-import stat
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
@@ -30,6 +28,11 @@ from .config import ConfigError
 MAX_DRAFT_BYTES = 128 * 1024
 MAX_SUBMISSION_FILE_BYTES = 1024 * 1024
 MAX_RETRY_AGE_SECONDS = 23 * 3600
+IDEMPOTENCY_KEY_RE = re.compile(rf"wisp-tui:{UUID}")
+
+
+def new_idempotency_key() -> str:
+    return f"wisp-tui:{uuid.uuid4()}"
 
 
 class SubmissionError(Exception):
@@ -89,9 +92,9 @@ def _decode(data: dict[str, Any]) -> tuple[PendingSubmission, str | None]:
         or len(draft.encode("utf-8")) > MAX_DRAFT_BYTES
         or not isinstance(turns, int)
         or isinstance(turns, bool)
-        or not 1 <= turns <= 200
+        or not 1 <= turns <= config.MAX_TURNS
         or not isinstance(key, str)
-        or not re.fullmatch(rf"wisp-tui:{UUID}", key)
+        or not IDEMPOTENCY_KEY_RE.fullmatch(key)
         or not isinstance(created, (int, float))
         or isinstance(created, bool)
         or created < 0
@@ -116,7 +119,7 @@ class SubmissionStore:
     def __init__(self, runtime_url: str, root: Path | None = None) -> None:
         self.root = root if root is not None else config.STATE_DIR
         self.path = self.root / "submission.json"
-        self.runtime_fingerprint = hashlib.sha256(runtime_url.encode()).hexdigest()
+        self.runtime_fingerprint = config.runtime_fingerprint(runtime_url)
         self._lock_fd: int | None = None
         self._owns_pending = False
         self._mutex = RLock()
@@ -125,30 +128,11 @@ class SubmissionStore:
 
     def _lock(self) -> None:
         config.ensure_private_directory(self.root)
-        if self._lock_fd is not None:
-            return
-        fd = os.open(
-            self.root / "submission.lock",
-            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
-            0o600,
-        )
-        try:
-            info = os.fstat(fd)
-            if (
-                not stat.S_ISREG(info.st_mode)
-                or info.st_uid != os.getuid()
-                or info.st_mode & 0o077
-                or info.st_nlink != 1
-            ):
-                raise SubmissionError("pending_state_insecure")
+        if self._lock_fd is None:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                raise SubmissionError("pending_state_busy") from None
-        except BaseException:
-            os.close(fd)
-            raise
-        self._lock_fd = fd
+                self._lock_fd = config.lock_private_file(self.root / "submission.lock")
+            except ConfigError as error:
+                raise SubmissionError(f"pending_state_{error}") from None
 
     def close(self) -> None:
         """Release the lease, but never discard a pending request on exit."""

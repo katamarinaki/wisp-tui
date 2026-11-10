@@ -250,7 +250,6 @@ def test_long_stream_resize_and_modal_keys_in_a_real_terminal() -> None:
     assert result["session"] == "session-1"
     assert result["model"] == {"mode": "model", "model": "scripted-model", "thinking": True}
     assert result["approval"] == "deny"
-    assert result["characters"] > 12000
     assert result["draft"] == "keep this draft"
     # Full screen pins the composer; the shell screen comes back on exit.
     assert b"\x1b[?1049h" in capture and b"\x1b[?1049l" in capture

@@ -9,13 +9,14 @@ from typing import Any
 import pytest
 
 from tests.helpers import RID, SID, RequestGate
-from tests.test_app import chat_text, eventually, make_app, text_of
+from tests.test_app import chat_text, eventually, make_app, ready, text_of
 from tests.test_runs import record
 from tests.test_submissions import COMPLETED, URL, pending
 from wisp_tui.app import WispTuiApp
 from wisp_tui.client import ClientError
 from wisp_tui.editor import PromptInput as Input
 from wisp_tui.history import ChatMessage
+from wisp_tui.runs import SessionState
 from wisp_tui.submissions import SubmissionStore
 
 SESSION = f"/v1/sessions/{SID}"
@@ -58,7 +59,7 @@ async def test_recovery_loads_metadata_history_and_runs_without_resubmitting_or_
             assert "It is not proof this request was accepted" in chat_text(app)
         else:
             assert "not proof the request was rejected" in chat_text(app)
-        app._new_session("blocked")
+        app._new_session("blocked", on_ready=lambda: None)
         app._model_answered({"mode": "advanced"}, SID)
         assert not app._session_change_in_progress
         assert app._pending_submission is not None
@@ -131,7 +132,7 @@ async def test_stale_pending_view_cannot_replace_view_or_send_deferred_retry(
 ) -> None:
     app, client = make_app([], monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         original = pending()
         app.session_id = SID
         app._pending_submission = original
@@ -154,9 +155,11 @@ async def test_stale_pending_view_cannot_replace_view_or_send_deferred_retry(
             token,
             original,
             epoch,
-            {"id": SID, "title": "Wrong view", "effectiveSelection": {"mode": "advanced"}},
-            [ChatMessage("assistant", "stale history")],
-            RID,
+            SessionState(
+                {"id": SID, "title": "Wrong view", "effectiveSelection": {"mode": "advanced"}},
+                [ChatMessage("assistant", "stale history")],
+                RID,
+            ),
         )
         app._pending_view_failed(token, original, "runtime_timeout")
         app._pending_view_done(token, original)

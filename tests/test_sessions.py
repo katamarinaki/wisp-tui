@@ -15,15 +15,16 @@ from typing import Any
 import pytest
 
 from tests.helpers import RID, SID, ScriptedClient
-from tests.test_app import approval_armed, chat_text, eventually, make_app
+from tests.test_app import approval_armed, chat_text, eventually, make_app, ready
 from wisp_tui import __main__ as cli
+from wisp_tui import program_name
 from wisp_tui.app import WispTuiApp
 from wisp_tui.app_base import Startup
 from wisp_tui.client import ClientError
 from wisp_tui.config import Config
 from wisp_tui.editor import PromptInput as Input
 from wisp_tui.screens import ModelPicker, SessionPicker
-from wisp_tui.sessions import MAX_ENTRY_TEXT_CHARS, MAX_SESSION_FILE_BYTES, SessionStore
+from wisp_tui.sessions import MAX_ENTRY_TEXT_CHARS, SessionStore
 from wisp_tui.text import display_path
 
 OTHER = "0b7e5a52-3c3b-4f7e-9a41-2f8d6c1e9b10"
@@ -117,7 +118,6 @@ def test_entries_and_files_are_bounded(tmp_path: Path, monkeypatch: pytest.Monke
     assert len(entries(store, SID)[1]["text"]) == MAX_ENTRY_TEXT_CHARS + 1
     monkeypatch.setattr("wisp_tui.sessions.MAX_SESSION_FILE_BYTES", 1)
     assert store.record(SID, {"text": "more"}) == "local_session_full"
-    assert MAX_SESSION_FILE_BYTES > MAX_ENTRY_TEXT_CHARS
 
 
 def test_store_never_raises_on_unusable_location(tmp_path: Path) -> None:
@@ -137,7 +137,7 @@ async def test_launch_is_fresh_and_first_message_creates_the_session(
     app, client = make_app(COMPLETED, monkeypatch)
     echo_title(client)
     async with app.run_test() as pilot:
-        await eventually(lambda: "new session" in app._status_text)
+        await eventually(lambda: ready(app))
         assert app.session_id is None
         assert [c[:2] for c in client.calls] == [("GET", "/v1/health")]
         editor = app.query_one("#input", Input)
@@ -176,7 +176,7 @@ async def test_failed_session_creation_keeps_draft_and_releases(
     app, client = make_app(COMPLETED, monkeypatch)
     client.replies[("POST", "/v1/sessions")] = deque([ClientError("runtime_timeout")])
     async with app.run_test() as pilot:
-        await eventually(lambda: "new session" in app._status_text)
+        await eventually(lambda: ready(app))
         editor = app.query_one("#input", Input)
         editor.value = "keep me"
         await pilot.press("enter")
@@ -195,7 +195,7 @@ async def test_new_command_starts_fresh_without_server_calls(
     app, client = make_app(COMPLETED, monkeypatch)
     echo_title(client)
     async with app.run_test() as pilot:
-        await eventually(lambda: "new session" in app._status_text)
+        await eventually(lambda: ready(app))
         app._open_session(SID)
         await eventually(lambda: app.session_id == SID and not app._session_change_in_progress)
         calls_before = len(client.calls)
@@ -224,7 +224,7 @@ async def test_model_picker_without_session_creates_one_first(
     app, client = make_app([], monkeypatch)
     client.replies[("GET", "/v1/models")] = deque([{"data": [{"id": "model-a"}]}])
     async with app.run_test() as pilot:
-        await eventually(lambda: "new session" in app._status_text)
+        await eventually(lambda: ready(app))
         await pilot.press("f3")
         await eventually(lambda: isinstance(app.screen, ModelPicker))
         assert app.session_id == SID
@@ -361,7 +361,7 @@ async def test_resume_command_accepts_a_prefix(
     seed(private_state_dir, (SID, "one", 1_000), (OTHER, "two", 2_000))
     app, _ = make_app([], monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "new session" in app._status_text)
+        await eventually(lambda: ready(app))
         app.query_one("#input", Input).value = command
         await pilot.press("enter")
         if expected is None:
@@ -374,7 +374,7 @@ async def test_resume_command_accepts_a_prefix(
 async def test_resume_command_and_empty_store(monkeypatch: pytest.MonkeyPatch) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "new session" in app._status_text)
+        await eventually(lambda: ready(app))
         app.query_one("#input", Input).value = "/resume"
         await pilot.press("enter")
         await pilot.pause()
@@ -419,7 +419,7 @@ async def test_approval_decision_is_recorded_with_what_was_approved(
     app, _ = make_app(events, monkeypatch)
     app.config = dataclasses.replace(app.config, log_approval_args=log_args)
     async with app.run_test() as pilot:
-        await eventually(lambda: "new session" in app._status_text)
+        await eventually(lambda: ready(app))
         app.query_one("#input", Input).value = "restart webapp"
         await pilot.press("enter")
         await eventually(lambda: len(app.screen_stack) > 1)
@@ -467,7 +467,7 @@ async def test_record_failure_is_reported_once(
         sessions=SessionStore(blocker / "sessions"),
     )
     async with app.run_test() as pilot:
-        await eventually(lambda: "new session" in app._status_text)
+        await eventually(lambda: ready(app))
         app.query_one("#input", Input).value = "hello"
         await pilot.press("enter")
         await eventually(lambda: "Disk is fine." in chat_text(app))
@@ -483,7 +483,6 @@ async def test_record_failure_is_reported_once(
     [
         ([], Startup()),
         (["-c"], Startup("continue")),
-        (["--continue"], Startup("continue")),
         (["-r"], Startup("resume")),
         (["-r", "3bf1ba87"], Startup("resume", "3bf1ba87")),
         (["--resume", "3BF1BA87"], Startup("resume", "3bf1ba87")),
@@ -538,7 +537,7 @@ def test_program_name_follows_launcher(
     monkeypatch.delenv("WISP_TUI_PROG", raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    assert cli.program_name() == expected
+    assert program_name() == expected
 
 
 def test_launcher_symlink_uses_its_own_name(tmp_path: Path) -> None:

@@ -27,12 +27,15 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from wisp_tui import config
 from wisp_tui.client import UUID, ClientError, WispClient
-from wisp_tui.history import HistoryError, parse_history
-from wisp_tui.runs import LIVE_STATUSES, find_active_run
+from wisp_tui.history import parse_history
+from wisp_tui.runs import LIVE_STATUSES, TERMINAL_EVENTS, find_active_run, live_runs_path
 from wisp_tui.sessions import SessionStore
 
 WATCH_POLL_SECONDS = 3.0
@@ -145,7 +148,7 @@ def _wait_for_run(client: WispClient, session_id: str) -> str | None:
     while True:
         payload = client.request(
             "GET",
-            f"/v1/runs?sessionId={session_id}&status={','.join(LIVE_STATUSES)}&limit=200",
+            live_runs_path(session_id),
             timeout=10.0,
         )
         run_id = find_active_run(payload, session_id)
@@ -184,7 +187,7 @@ def _print_tool_event(event: dict[str, Any]) -> None:
         suffix = f"  ok={event.get('ok')}" if kind == "tool_call" else ""
         shown = event.get("toolCallId") or "(none)"
         print(f"  event {kind}  {event.get('name')}  id={shown}{suffix}")
-    elif kind in ("run.completed", "run.failed", "run.cancelled"):
+    elif kind in TERMINAL_EVENTS:
         print(f"  event {kind}")
 
 
@@ -196,9 +199,7 @@ def _wait_for_any_run(client: WispClient) -> tuple[str, str] | None:
     """
     deadline = time.monotonic() + WATCH_WAIT_MINUTES * 60.0
     while True:
-        payload = client.request(
-            "GET", f"/v1/runs?status={','.join(LIVE_STATUSES)}&limit=200", timeout=10.0
-        )
+        payload = client.request("GET", live_runs_path(), timeout=10.0)
         executing: list[tuple[str, str]] = []
         queued: list[tuple[str, str]] = []
         records = payload.get("runs") if isinstance(payload, dict) else None
@@ -248,7 +249,7 @@ def _compare_after_run(client: WispClient, session_id: str, live: list[LiveTool]
     for attempt in range(4):
         try:
             report = analyze_history(fetch_history(client, session_id))
-        except (ClientError, HistoryError) as error:
+        except ClientError as error:
             print(f"history unavailable: {error}", file=sys.stderr)
             return 1
         matched = len(live_ids & report.result_ids)
@@ -350,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"session {session_id}")
     try:
         messages = fetch_history(client, session_id)
-    except (ClientError, HistoryError) as error:
+    except ClientError as error:
         print(f"history unavailable: {error}", file=sys.stderr)
         return 1
     print_history_report(analyze_history(messages))
@@ -358,5 +359,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.path.insert(0, "src")
     raise SystemExit(main())

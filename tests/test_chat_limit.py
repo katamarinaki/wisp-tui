@@ -7,7 +7,7 @@ from collections import deque
 import pytest
 
 from tests.helpers import SID
-from tests.test_app import eventually, make_app
+from tests.test_app import eventually, make_app, ready
 from wisp_tui.app import WispTuiApp
 
 LIMIT = 5
@@ -35,7 +35,7 @@ async def test_long_history_prints_only_the_tail(monkeypatch: pytest.MonkeyPatch
         ]
     )
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app._open_session(SID)
         await eventually(lambda: app.session_id == SID)
         await pilot.pause()

@@ -7,7 +7,7 @@ from collections import deque
 import pytest
 
 from tests.helpers import RID, SID, RequestGate
-from tests.test_app import chat_text, eventually, make_app, text_of
+from tests.test_app import chat_text, eventually, make_app, ready, text_of
 from wisp_tui.app import WispTuiApp
 from wisp_tui.app_base import SPINNER_FRAMES
 from wisp_tui.client import ClientError
@@ -30,7 +30,7 @@ async def test_working_animates_in_input_rule_and_disappears_on_completion(
 ) -> None:
     app, client = make_app([], monkeypatch)
     async with app.run_test(size=(width, 24)) as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         editor = app.query_one("#input", Input)
         assert spinner(app) == ""
         assert tab_status(app) == TabStatus.IDLE
@@ -64,7 +64,7 @@ async def test_spinner_stops_on_every_terminal_outcome(
 ) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         assert spinner(app)
@@ -84,7 +84,7 @@ async def test_spinner_covers_submission_and_stops_after_ambiguous_failure(
 
     client.replies[("POST", path)] = deque([ClientError("runtime_timeout")])
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app.query_one("#input", Input).value = "hello"
         try:
@@ -105,7 +105,7 @@ async def test_waiting_disconnected_and_cancelling_are_not_labelled_working(
 ) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         app._handle_event({"kind": "run.parked"})
@@ -126,13 +126,13 @@ async def test_tab_status_writes_only_changes_and_stays_cleared_after_exit(
 ) -> None:
     app, client = make_app([], monkeypatch)
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         driver = app._driver
         assert driver is not None
         writes: list[str] = []
         with monkeypatch.context() as patch:
             patch.setattr(driver, "write", writes.append)
-            app._set_status("error: example_error")
+            app._show_error("example_error")
             assert tab_status(app) == TabStatus.ERROR
             assert writes == []  # Headless sessions never emit control sequences.
             # Exercise the terminal writer synchronously, without running a real
@@ -152,12 +152,12 @@ async def test_tab_status_writes_only_changes_and_stays_cleared_after_exit(
         assert client.calls == [("GET", "/v1/health", None)]
 
 
-@pytest.mark.parametrize("status", ["runtime unreachable: runtime_timeout", "runtime_not_ready"])
+@pytest.mark.parametrize("health", [ClientError("runtime_timeout"), {"status": "starting"}])
 async def test_failed_startup_is_not_idle_in_tab(
-    monkeypatch: pytest.MonkeyPatch, status: str
+    monkeypatch: pytest.MonkeyPatch, health: object
 ) -> None:
-    app, _ = make_app([], monkeypatch)
+    app, client = make_app([], monkeypatch)
+    client.replies[("GET", "/v1/health")] = deque([health])
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
-        app._set_status(status)
-        assert tab_status(app) == TabStatus.ERROR
+        await eventually(lambda: tab_status(app) == TabStatus.ERROR)
+        assert app.query_one("#status").display

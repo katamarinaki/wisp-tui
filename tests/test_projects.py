@@ -9,12 +9,14 @@ from typing import Any
 import pytest
 
 from tests.helpers import RID, SID
-from tests.test_app import chat_text, eventually, make_app
+from tests.test_app import chat_text, eventually, make_app, ready
 from wisp_tui import __main__ as cli
+from wisp_tui import config
 from wisp_tui.app import WispTuiApp
 from wisp_tui.app_base import Startup
 from wisp_tui.client import ClientError, session_path
 from wisp_tui.editor import PromptInput as Input
+from wisp_tui.runs import SessionState
 
 ROOT = "/work/my project"
 RUNS = f"/v1/sessions/{SID}/runs"
@@ -53,8 +55,8 @@ def test_launch_folder_is_the_project_unless_it_exposes_private_files(
     for path in (folder, home / ".config/wisp-tui", home / ".local/state/wisp-tui"):
         path.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(Path, "home", lambda: home)
-    monkeypatch.setattr(cli, "CONFIG_PATH", home / ".config/wisp-tui/config.json")
-    monkeypatch.setattr(cli, "STATE_DIR", home / ".local/state/wisp-tui")
+    monkeypatch.setattr(config, "CONFIG_DIR", home / ".config/wisp-tui")
+    monkeypatch.setattr(config, "STATE_DIR", home / ".local/state/wisp-tui")
     monkeypatch.chdir(folder)
     assert cli.launch_project() == (str(folder.resolve()) if project else None)
 
@@ -62,14 +64,13 @@ def test_launch_folder_is_the_project_unless_it_exposes_private_files(
 async def test_new_session_is_created_saved_and_addressed_with_its_folder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app, client = make_app(COMPLETED, monkeypatch)
-    app.startup = Startup(project_root=ROOT)
+    app, client = make_app(COMPLETED, monkeypatch, Startup(project_root=ROOT))
     runs, patch = session_path(SID, "/runs", ROOT), session_path(SID, "", ROOT)
     selection = {"mode": "advanced", "thinking": False}
     client.replies[("POST", runs)] = deque([{"runId": RID, "status": "queued"}])
     client.replies[("PATCH", patch)] = deque([{"id": SID, "effectiveSelection": selection}])
     async with app.run_test() as pilot:
-        await eventually(lambda: "new session" in app._status_text)
+        await eventually(lambda: ready(app))
         await enter(app, pilot, "hello")
         await eventually(lambda: "Done." in chat_text(app))
         await eventually(lambda: app.active_run is None and app._pending_submission is None)
@@ -88,8 +89,7 @@ async def test_new_session_is_created_saved_and_addressed_with_its_folder(
 async def test_resumed_session_keeps_its_saved_folder_unless_wisp_reports_one(
     monkeypatch: pytest.MonkeyPatch, reported: str | None, expected: str
 ) -> None:
-    app, client = make_app([], monkeypatch)
-    app.startup = Startup("session", SID, "/launched/elsewhere")
+    app, client = make_app([], monkeypatch, Startup("session", SID, "/launched/elsewhere"))
     app.sessions.record(SID, {"type": "message", "role": "user", "text": "hi"}, project_root=ROOT)
     client.replies[("GET", f"/v1/sessions/{SID}")] = deque([{"id": SID, "projectRoot": reported}])
     async with app.run_test():
@@ -100,13 +100,12 @@ async def test_resumed_session_keeps_its_saved_folder_unless_wisp_reports_one(
 async def test_refused_folder_becomes_a_desk_session_and_sends_nothing_until_repeated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app, client = make_app(COMPLETED, monkeypatch)
-    app.startup = Startup(project_root=ROOT)
+    app, client = make_app(COMPLETED, monkeypatch, Startup(project_root=ROOT))
     client.replies[("POST", "/v1/sessions")] = deque(
         [ClientError("runtime_http_400:invalid_project_root"), {"id": SID}]
     )
     async with app.run_test() as pilot:
-        await eventually(lambda: "new session" in app._status_text)
+        await eventually(lambda: ready(app))
         await enter(app, pilot, "hello")
         await eventually(lambda: "refused this folder" in chat_text(app))
         assert bodies(client.calls, "POST", "/v1/sessions") == [
@@ -114,7 +113,6 @@ async def test_refused_folder_becomes_a_desk_session_and_sends_nothing_until_rep
             {"origin": "cli", "title": "hello"},
         ]
         assert app.query_one("#input", Input).value == "hello"
-        assert (app._project_root, app.startup.project_root) == (None, None)
         assert not bodies(client.calls, "POST", RUNS)
         await pilot.press("enter")
         await eventually(lambda: "Done." in chat_text(app))
@@ -124,11 +122,10 @@ async def test_refused_folder_becomes_a_desk_session_and_sends_nothing_until_rep
 async def test_other_runtime_errors_are_not_retried_as_a_desk_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app, client = make_app([], monkeypatch)
-    app.startup = Startup(project_root=ROOT)
+    app, client = make_app([], monkeypatch, Startup(project_root=ROOT))
     client.replies[("POST", "/v1/sessions")] = deque([ClientError("runtime_http_500")])
     async with app.run_test() as pilot:
-        await eventually(lambda: "new session" in app._status_text)
+        await eventually(lambda: ready(app))
         await enter(app, pilot, "hello")
         await eventually(lambda: "Could not start a Wisp session" in chat_text(app))
         assert len(bodies(client.calls, "POST", "/v1/sessions")) == 1
@@ -145,15 +142,18 @@ async def test_thinking_command_toggles_and_refuses_a_model_without_reasoning(
     client.replies[("PATCH", path)] = deque([{"id": SID, "effectiveSelection": on}])
     client.replies[("GET", "/v1/models")] = deque([{"data": [{"id": "plain", "reasoning": False}]}])
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app._session_loaded(
-            {"id": SID, "effectiveSelection": {"mode": "balanced", "thinking": False}}, [], ""
+            SessionState(
+                {"id": SID, "effectiveSelection": {"mode": "balanced", "thinking": False}}, [], ""
+            ),
+            None,
         )
         await enter(app, pilot, "/thinking")
         await eventually(lambda: app._model_selection == on)
         await eventually(lambda: not app._session_change_in_progress)
         assert bodies(client.calls, "PATCH", path) == [{"selection": on}]
-        app._session_loaded({"id": SID, "effectiveSelection": plain}, [], "")
+        app._session_loaded(SessionState({"id": SID, "effectiveSelection": plain}, [], ""), None)
         await enter(app, pilot, "/thinking on")
         await eventually(lambda: "plain doesn't support thinking" in chat_text(app))
         await enter(app, pilot, "/thinking maybe")
@@ -166,7 +166,7 @@ async def test_other_slash_lines_go_to_wisp_but_a_mistyped_command_does_not(
 ) -> None:
     app, client = make_app(COMPLETED, monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         await enter(app, pilot, "/stauts")
         assert "unknown command /stauts — did you mean /status?" in chat_text(app)

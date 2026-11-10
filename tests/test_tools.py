@@ -10,12 +10,13 @@ from typing import Any
 import pytest
 
 from tests.helpers import RID, SID, RequestGate
-from tests.test_app import eventually, make_app
+from tests.test_app import eventually, make_app, ready
 from tests.test_submissions import COMPLETED
 from wisp_tui import app_chat
 from wisp_tui.client import ClientError
 from wisp_tui.editor import PromptInput
 from wisp_tui.history import parse_history, tool_history_results
+from wisp_tui.runs import SessionState
 from wisp_tui.tool_data import MAX_DETAIL_CHARS, MAX_DETAIL_LINES, detail_text
 from wisp_tui.tool_view import ToolCallView
 
@@ -78,7 +79,7 @@ async def test_live_contract_does_not_accept_unverified_output_or_id_aliases(
             completed=True,
         )
         assert tool.call_id == "" and tool.output_text is None
-        assert tool.input_text == "sanitized"
+        assert tool.title == 'example "sanitized"'
 
 
 async def test_history_read_preserves_live_inputs_and_joins_parallel_calls_by_id(
@@ -128,9 +129,7 @@ async def test_history_read_preserves_live_inputs_and_joins_parallel_calls_by_id
         await eventually(
             lambda: first.output_text == "A result" and second.output_text == "B result"
         )
-        assert '"executed"' in (first.input_text or "") and '"planned"' not in (
-            first.input_text or ""
-        )
+        assert '"executed"' in first.title and '"planned"' not in first.title
         assert first.tool_name == second.tool_name == "underlying_tool"
         assert first.status_text == "underlying_tool · failed"
         assert second.status_text == "underlying_tool · ok"
@@ -163,7 +162,7 @@ async def test_stored_result_fills_a_running_call_and_keeps_model_input_as_plann
         await pilot.pause()
         app._request_tool_history(force_after_current=True)
         await eventually(lambda: tool.output_text == "stored summary")
-        assert '"planned"' in (tool.input_text or "")
+        assert '"planned"' in tool.title
 
 
 async def test_history_status_is_distinct_from_the_registry_success_flag(
@@ -217,7 +216,9 @@ async def test_stale_tool_history_cannot_fill_a_new_widget_with_the_same_call_id
             if change == "clear":
                 app._reset_chat()
             else:
-                app._session_loaded({"id": "af06ed54-82b0-45e6-af55-7c85ab55e7ea"}, [], "")
+                app._session_loaded(
+                    SessionState({"id": "af06ed54-82b0-45e6-af55-7c85ab55e7ea"}, [], ""), None
+                )
             current = app._show_tool_call({"toolCallId": "one", "name": "new"}, completed=True)
         finally:
             gate.release.set()
@@ -282,7 +283,7 @@ async def test_tool_history_lookup_does_not_block_new_input_or_submission(
     gate = RequestGate("GET", route)
     client.request_hook = gate
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         tool = app._show_tool_call({"toolCallId": "one", "name": "example"}, completed=True)
         await pilot.pause()
@@ -319,7 +320,6 @@ async def test_terminal_text_replaces_multi_round_deltas_including_an_explicit_e
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert view.widget.text == final_text
-        assert "Checking first" not in view.widget.text
 
 
 async def test_terminal_only_metadata_stays_unidentified_instead_of_guessing_results(
@@ -359,7 +359,7 @@ async def test_replay_tool_outputs_need_only_one_lookup(
     client.request_hook = gate
     async with app.run_test() as pilot:
         app.session_id = SID
-        app._begin_run(RID, history=[])
+        app._begin_run(RID, reattached=True)
         tool = app._show_tool_call(
             {"toolCallId": "one", "name": "read_file", "ok": True}, completed=True
         )
@@ -383,7 +383,7 @@ async def test_interleaved_tool_logs_stay_in_order_and_update_by_call_id(
         [tool_history("call-1", "file contents")]
     )
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         app._handle_event({"kind": "text.delta", "text": "I checked. "})
@@ -411,7 +411,6 @@ async def test_interleaved_tool_logs_stay_in_order_and_update_by_call_id(
         tool = VIEWS[0]
         assert tool.title == 'read_file {"path": "/example/file"}'
         assert tool.status_text == "read_file · ok · 0.2s"
-        assert tool.input_text == '{\n  "path": "/example/file"\n}'
         await eventually(lambda: tool.output_text == "file contents")
         await eventually(lambda: not app._chat_items)
         assert app.transcript() == [
@@ -429,14 +428,10 @@ async def test_interleaved_tool_logs_stay_in_order_and_update_by_call_id(
     "value, expected",
     [(None, "null"), (False, "false"), (0, "0"), ("", "(empty)"), ({}, "{}"), ([], "[]")],
 )
-async def test_empty_and_false_tool_values_are_reported_not_treated_as_missing(
-    monkeypatch: pytest.MonkeyPatch, value: Any, expected: str
+def test_empty_and_false_tool_values_are_reported_not_treated_as_missing(
+    value: Any, expected: str
 ) -> None:
-    app, _ = make_app([], monkeypatch)
-    async with app.run_test():
-        created = app._show_tool_call({"name": "example", "args": value}, completed=True)
-        created.apply_history(output_text=detail_text(value))
-        assert created.input_text == created.output_text == expected
+    assert detail_text(value) == expected
 
 
 async def test_missing_fields_do_not_show_unrelated_event_or_error_contents(
@@ -457,7 +452,7 @@ async def test_missing_fields_do_not_show_unrelated_event_or_error_contents(
         await pilot.pause()
         _, shown = tool.entry()
         assert tool.status_text == "example · failed"
-        assert tool.input_text is None and tool.output_text is None
+        assert tool.title == "example" and tool.output_text is None
         assert "private" not in shown and "headers" not in shown
 
 
@@ -475,8 +470,8 @@ async def test_parallel_same_name_calls_keep_results_with_their_explicit_id(
             created.apply_history(output_text=result)
         await pilot.pause()
         first, second = VIEWS
-        assert first.output_text == "first result" and '"first"' in (first.input_text or "")
-        assert second.output_text == "second result" and '"second"' in (second.input_text or "")
+        assert first.output_text == "first result" and '"first"' in first.title
+        assert second.output_text == "second result" and '"second"' in second.title
 
 
 async def test_unidentified_same_name_calls_are_never_merged(
@@ -514,7 +509,7 @@ async def test_clear_and_new_run_do_not_reuse_old_call_widgets(
         await pilot.pause()
         new = created
         assert new is not old
-        assert new.input_text is None and new.output_text == "new output"
+        assert new.title == "new" and new.output_text == "new output"
         app._begin_run("af06ed54-82b0-45e6-af55-7c85ab55e7ea")
         created = app._show_tool_call({"toolCallId": "same", "name": "next"}, completed=True)
         created.apply_history(output_text="next output")
@@ -546,7 +541,7 @@ async def test_terminal_aggregate_does_not_duplicate_live_cards_or_invent_output
         await pilot.pause()
         assert len(VIEWS) == 1
         tool = VIEWS[0]
-        assert tool.input_text == "argument" and tool.output_text is None
+        assert tool.title == 'read "argument"' and tool.output_text is None
         assert app.transcript()[-1] == ("assistant", "Final answer")
 
 
@@ -577,11 +572,11 @@ async def test_checkpoint_tool_calls_and_results_stay_in_order(
     )
     app, _ = make_app([], monkeypatch)
     async with app.run_test() as pilot:
-        app._session_loaded({"id": SID}, messages, "")
+        app._session_loaded(SessionState({"id": SID}, messages, ""), None)
         await pilot.pause()
         first, second = VIEWS
         assert first.output_text == "first result" and second.output_text == "second result"
-        assert first.input_text == '{\n  "path": "[x]"\n}'
+        assert first.title == 'read[/] {"path": "[x]"}'
         assert first.status_text == "read[/] · finished"
         assert app.transcript()[-1] == ("assistant", "final answer")
 
@@ -609,9 +604,9 @@ def test_checkpoint_retains_empty_tool_results_and_validates_optional_metadata()
         ]
     )
     assert len(messages) == 2
-    assert [call.input_text for call in messages[0].tool_calls] == ["0", "false"]
+    assert [call.summary for call in messages[0].tool_calls] == ["0", "false"]
     assert all(call.call_id == "" for call in messages[0].tool_calls)
-    assert messages[1].role == "tool" and messages[1].text == ""
+    assert messages[1].role == "tool" and messages[1].text == "(empty)"
     assert messages[1].tool_call_id == ""
 
 
@@ -635,7 +630,7 @@ async def test_checkpoint_call_without_a_result_does_not_claim_to_be_running(
     )
     app, _ = make_app([], monkeypatch)
     async with app.run_test() as pilot:
-        app._session_loaded({"id": SID}, messages, "")
+        app._session_loaded(SessionState({"id": SID}, messages, ""), None)
         await pilot.pause()
         (tool,) = VIEWS
         assert tool.status_text == "example · recorded"

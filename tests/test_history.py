@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from wisp_tui.history import HistoryError, parse_history
+from wisp_tui.client import ClientError
+from wisp_tui.history import parse_history
 
 
 def checkpoint(messages: list[object]) -> dict[str, object]:
@@ -82,5 +83,5 @@ class TestParseHistory:
         assert parse_history([{"values": {}}]) == []
 
     def test_invalid_shape_raises(self) -> None:
-        with pytest.raises(HistoryError):
+        with pytest.raises(ClientError):
             parse_history({"not": "a list"})

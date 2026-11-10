@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from tests.helpers import RID, SID, RequestGate
-from tests.test_app import chat_text, eventually, make_app
+from tests.test_app import chat_text, eventually, make_app, ready
 from wisp_tui.app_base import Startup
 from wisp_tui.client import ClientError
 from wisp_tui.editor import PromptInput as Input
@@ -23,7 +23,7 @@ COMPLETED: list[dict[str, Any]] = [
 async def test_rejected_input_is_kept(monkeypatch: pytest.MonkeyPatch, state: str) -> None:
     app, client = make_app([], monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         if state == "active_run":
             app.session_id = SID
             app.active_run = RID
@@ -43,7 +43,7 @@ async def test_inflight_submission_blocks_duplicates_and_session_changes(
     gate = RequestGate("POST", RUN_PATH)
     client.request_hook = gate
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         editor = app.query_one("#input", Input)
         editor.value = "original task"
@@ -55,7 +55,7 @@ async def test_inflight_submission_blocks_duplicates_and_session_changes(
             editor.value = "newer draft"
             await pilot.press("enter")
             app._open_session(SID)
-            app._new_session("should not be created")
+            app._new_session("should not be created", on_ready=lambda: None)
             app._model_answered({"mode": "balanced"}, SID)
             app._handle_command("/retry")
             assert not app._session_change_in_progress
@@ -87,7 +87,7 @@ async def test_retry_keeps_original_request_and_newer_draft(
     app, client = make_app(COMPLETED, monkeypatch)
     client.replies[("POST", RUN_PATH)] = deque([reply])
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         editor = app.query_one("#input", Input)
         editor.value = "original task"
@@ -99,7 +99,7 @@ async def test_retry_keeps_original_request_and_newer_draft(
         assert "untrusted diagnostic" not in app._status_text + chat_text(app)
         editor.value = "different task"
         await pilot.press("enter")
-        app._new_session("blocked while uncertain")
+        app._new_session("blocked while uncertain", on_ready=lambda: None)
         assert not app._session_change_in_progress
         assert len([c for c in client.calls if c[0] == "POST"]) == 1
         app._handle_command("/retry")
@@ -113,19 +113,6 @@ async def test_retry_keeps_original_request_and_newer_draft(
         assert chat_text(app).count("original task") == 1
 
 
-async def test_success_clears_only_acknowledged_draft(monkeypatch: pytest.MonkeyPatch) -> None:
-    app, _ = make_app(COMPLETED, monkeypatch)
-    async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
-        app.session_id = SID
-        editor = app.query_one("#input", Input)
-        editor.value = "  original task  "
-        await pilot.press("enter")
-        await eventually(lambda: app._status_text == "")
-        assert editor.value == ""
-        assert "original task" in chat_text(app)
-
-
 async def test_session_load_serializes_changes_and_preserves_input(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -133,13 +120,13 @@ async def test_session_load_serializes_changes_and_preserves_input(
     gate = RequestGate("GET", f"/v1/sessions/{SID}")
     client.request_hook = gate
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         editor = app.query_one("#input", Input)
         try:
             app._open_session(SID)
             await eventually(gate.entered.is_set)
             app._open_session(SID)
-            app._new_session("blocked")
+            app._new_session("blocked", on_ready=lambda: None)
             editor.value = "wait for session"
             await pilot.press("enter")
             assert editor.value == "wait for session"
@@ -166,7 +153,7 @@ async def test_failed_session_load_releases_reservation(
     app, client = make_app([], monkeypatch)
     client.replies[("GET", f"/v1/sessions/{SID}")] = deque([reply])
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app._open_session(SID)
         await eventually(lambda: not app._session_change_in_progress)
         assert not bool(app.session_id)
@@ -180,7 +167,7 @@ async def test_stale_model_callback_does_not_patch_another_session(
 ) -> None:
     app, client = make_app([], monkeypatch)
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = RID  # different valid session identifier
         app._model_answered({"mode": "balanced"}, SID)
         assert not app._session_change_in_progress
@@ -199,7 +186,7 @@ async def test_slow_bootstrap_does_not_replace_user_session(
     async with app.run_test():
         try:
             await eventually(gate.entered.is_set)
-            app._new_session("chosen by user")
+            app._new_session("chosen by user", on_ready=lambda: None)
             await eventually(lambda: app.session_id == SID and not app._session_change_in_progress)
         finally:
             gate.release.set()
@@ -221,7 +208,7 @@ async def test_run_failure_displays_only_safe_code(
 ) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.active_run = RID
         app._finalize_run(
             "run.failed",

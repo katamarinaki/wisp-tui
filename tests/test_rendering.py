@@ -13,7 +13,7 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from tests.helpers import RID, SID
-from tests.test_app import eventually, make_app
+from tests.test_app import eventually, make_app, ready
 from wisp_tui.app import WispTuiApp
 from wisp_tui.chat_view import ChatItem, ChatScroll, StreamView
 from wisp_tui.history import ChatMessage
@@ -68,7 +68,7 @@ async def test_chat_lines_status_and_commands_are_literal(
 ) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         app._handle_event({"seq": 1, "kind": "tool_call.started", "name": text})
@@ -129,7 +129,7 @@ async def test_runtime_text_cannot_send_terminal_control_sequences(
 ) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         app._handle_event({"seq": 1, "kind": "text.delta", "text": "live " + HOSTILE + "\r\n"})
@@ -207,7 +207,7 @@ async def test_streaming_prints_finished_blocks_and_matches_full_render(
 ) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test(size=(100, 60)) as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         # Many small deltas, including several before the widget is mounted.
@@ -234,7 +234,7 @@ async def test_streaming_prints_finished_blocks_and_matches_full_render(
 async def test_replacement_text_falls_back_to_full_update(monkeypatch: pytest.MonkeyPatch) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         app._handle_event({"seq": 1, "kind": "text.delta", "text": "draft that gets "})
@@ -293,7 +293,7 @@ async def test_fast_deltas_are_batched_without_losing_the_final_text(
     # No display batch falls due during the test, so every delta must coalesce.
     monkeypatch.setattr(StreamView, "UPDATE_INTERVAL", 30.0)
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         deltas = [f"word{index} " for index in range(100)]
@@ -322,7 +322,7 @@ async def test_terminal_outcome_flushes_the_answer_without_waiting_for_a_batch(
     monkeypatch.setattr(StreamView, "UPDATE_INTERVAL", 30.0)
     app, _ = make_app([], monkeypatch)
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         app._append_delta("streamed text")

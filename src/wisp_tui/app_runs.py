@@ -3,41 +3,32 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable
 from typing import Any
 
-from .app_base import ApprovalPrompt
 from .app_composer import ComposerLayer
-from .client import TERMINAL_RUN_STATUSES, ClientError, safe_code, session_path
-from .history import ChatMessage
-from .runs import RunFollower
-from .screens import ApprovalModal
+from .client import safe_code, session_path
+from .runs import TERMINAL_EVENTS, TERMINAL_STATUSES, Confirmation, RunFollower, confirmations
+from .screens import DECISIONS, RULE_DECISIONS, ApprovalModal
+from .terminal_status import TabStatus
 from .text import safe_text, usage_line
 from .tool_view import ToolCallView
 
-RUN_PROGRESS_STATUS = {
-    "run.queued": "",
-    "run.started": "",
-    "run.resumed": "",
-    "run.parked": "run parked — checking current approvals",
-}
+CANCEL_REQUESTED = "cancellation requested — awaiting runtime confirmation"
 
 
 class RunLayer(ComposerLayer):
-    def _begin_run(self, run_id: str, history: list[ChatMessage] | None = None) -> None:
-        if self._stream_view is not None:
-            self._stream_view.flush()
+    def _begin_run(self, run_id: str, *, reattached: bool = False) -> None:
+        """Follow ``run_id``; a reattached run replays below the history shown."""
+        self._end_answer()
         self.active_run = run_id
         self._tool_calls.clear()
         self._saw_live_tool_events = False
         self._tool_history_post_run_reads = 0
-        self._reattached_checkpoint = list(history) if history is not None else None
+        self._replay_note_due = reattached
         self._cancel_requested = False
-        self._answer_text = ""
-        self._stream_view = None
         self._queue_sync()
         self._disconnected = False
-        self._answer_segment_start = 0
-        self._replay_label_shown = False
         self._set_status("")
 
     def _start_follow(self) -> None:
@@ -55,7 +46,6 @@ class RunLayer(ComposerLayer):
             self.client,
             run_id,
             session_id,
-            event_timeout=self.config.event_timeout,
             last_seq=self.last_seq.get(run_id),
             on_event=lambda event: self.call_from_thread(self._follow_event, follower, event),
             on_snapshot=lambda record: self.call_from_thread(
@@ -82,17 +72,16 @@ class RunLayer(ComposerLayer):
             return
         self._disconnected = False
         status = record["status"]
-        if status in TERMINAL_RUN_STATUSES:
+        if status in TERMINAL_STATUSES:
             self._finalize_run(f"run.{status}", record)
             return
         if status == "parked":
-            self._set_status("run parked — waiting for approval")
-            self._sync_confirmations(record.get("confirmations", []))
+            self._set_status("run parked — waiting for approval", TabStatus.WAITING)
         else:
-            self._sync_confirmations([])
             self._set_status("")
+        self._sync_confirmations(confirmations(record))
         if self._cancel_requested:
-            self._set_status("cancellation requested — awaiting runtime confirmation")
+            self._set_status(CANCEL_REQUESTED)
 
     def _follow_error(self, follower: RunFollower, code: str) -> None:
         if self._follower is follower and self.active_run == follower.run_id:
@@ -117,12 +106,7 @@ class RunLayer(ComposerLayer):
             self._append_delta(str(event.get("text", "")))
         elif kind == "gap":
             text = event.get("text")
-            earlier = self._answer_text[: self._answer_segment_start]
-            self._answer_text = text if isinstance(text, str) else ""
-            if not self._answer_text.startswith(earlier):
-                # Server text replaced what is shown above; show all of it.
-                self._answer_segment_start = 0
-            self._show_stream_text(self._answer_text[self._answer_segment_start :])
+            self._show_stream_text(self._replace_answer(text if isinstance(text, str) else ""))
             if self._stream_view is not None:
                 self._stream_view.flush()
         elif kind == "tool_call.started":
@@ -147,33 +131,32 @@ class RunLayer(ComposerLayer):
             self._show_line("approval resolved", "tool")
         elif kind == "audio.transcribed":
             self._show_line(f"transcribed: {safe_text(event.get('text'), 120)}", "tool")
-        elif kind in RUN_PROGRESS_STATUS:
-            self._set_status(RUN_PROGRESS_STATUS[kind])
-        elif kind in ("run.completed", "run.failed", "run.cancelled"):
+        elif kind == "run.parked":
+            self._set_status("run parked — checking current approvals", TabStatus.WAITING)
+        elif kind in ("run.queued", "run.started", "run.resumed"):
+            self._set_status("")
+        elif kind in TERMINAL_EVENTS:
             self._finalize_run(kind, event.get("outcome"))
 
     def _append_delta(self, text: str) -> None:
         self._answer_text += text
         self._show_stream_text(self._answer_text[self._answer_segment_start :])
 
-    def _sync_confirmations(self, prompts: list[dict[str, Any]]) -> None:
-        run_id = self.active_run or ""
+    def _replace_answer(self, text: str) -> str:
+        """Make ``text`` the whole answer; return the part the current segment shows."""
+        earlier = self._answer_text[: self._answer_segment_start]
+        self._answer_text = text
+        if not text.startswith(earlier):
+            # Server text replaced what is shown above; show all of it.
+            self._answer_segment_start = 0
+        return text[self._answer_segment_start :]
+
+    def _sync_confirmations(self, prompts: list[Confirmation]) -> None:
         self.queued_approvals = deque(
-            ApprovalPrompt(run_id, prompt["id"], prompt["toolName"], prompt.get("args"))
+            prompt
             for prompt in prompts
-            if prompt["id"] not in self._approvals_sending | self._approvals_answered
+            if prompt.prompt_id not in self._approvals_sending | self._approvals_answered
         )
-        self._approval_notes = {
-            prompt["id"]: " · ".join(
-                note
-                for applies, note in (
-                    (prompt.get("askedEveryTime") is True, "asked every time"),
-                    (prompt.get("escalatedBy") == "judge", "escalated by judge"),
-                )
-                if applies
-            )
-            for prompt in prompts
-        }
         ids = {queued.prompt_id for queued in self.queued_approvals}
         if self._approval_prompt_id not in ids:
             self._dismiss_approval()
@@ -190,15 +173,10 @@ class RunLayer(ComposerLayer):
     def _open_next_approval(self) -> None:
         if self._approval_modal is not None or not self.queued_approvals:
             return
-        run_id, prompt_id, tool, args = self.queued_approvals[0]
+        run_id, prompt_id, tool, args, note = self.queued_approvals[0]
         if self.active_run != run_id:
             return
-        modal = ApprovalModal(
-            tool,
-            args,
-            self._approval_notes.get(prompt_id, ""),
-            allow_rules=not self._rule_decisions_refused,
-        )
+        modal = ApprovalModal(tool, args, note, allow_rules=not self._rule_decisions_refused)
         self._approval_modal = modal
         self._approval_prompt_id = prompt_id
         self.push_screen(
@@ -214,7 +192,7 @@ class RunLayer(ComposerLayer):
         modal = self._approval_modal
         self._approval_modal = None
         self._approval_prompt_id = None
-        if decision not in ("approve", "deny", "allow_project", "allow_global"):
+        if decision not in DECISIONS:
             return
         if prompt_id in self._approvals_sending | self._approvals_answered:
             return
@@ -236,36 +214,40 @@ class RunLayer(ComposerLayer):
         self._approvals_sending.add(prompt_id)
         self._set_status(f"approval {decision} · sending…")
 
-        def work() -> None:
-            code = ""
-            try:
-                self.client.request(
-                    "POST",
-                    f"/v1/runs/{run_id}/confirmations/{prompt_id}",
-                    {"decision": decision, "wait": False},
-                )
-            except ClientError as error:
-                code = str(error)
-            except Exception:
-                code = "internal_error"
-            self.call_from_thread(self._confirmation_sent, run_id, prompt_id, decision, code)
+        def work() -> Callable[[], None]:
+            self.client.request(
+                "POST",
+                f"/v1/runs/{run_id}/confirmations/{prompt_id}",
+                {"decision": decision, "wait": False},
+            )
+            return lambda: self._confirmation_sent(run_id, prompt_id, decision, "")
 
-        self._run_threaded(work, group="confirm")
+        self._run_threaded(
+            work,
+            group="confirm",
+            on_error=lambda code: self._confirmation_sent(run_id, prompt_id, decision, code),
+        )
         self.call_after_refresh(self._open_next_approval)
 
     def _confirmation_sent(self, run_id: str, prompt_id: str, decision: str, code: str) -> None:
         if self.active_run != run_id:
             return
         self._approvals_sending.discard(prompt_id)
-        if code:
+        if not code:
+            self._approvals_answered.add(prompt_id)
+        else:
             self._record_locally(
                 {"type": "approval_result", "runId": run_id, "promptId": prompt_id, "error": code}
             )
-        if not code:
-            self._approvals_answered.add(prompt_id)
-        elif code.startswith("runtime_http_404"):
+            self._show_approval_error(code, decision)
+        # Re-read current prompts even after a failed/ambiguous POST. Never
+        # automatically submit the decision again, and never start a second SSE.
+        self._start_follow()
+
+    def _show_approval_error(self, code: str, decision: str) -> None:
+        if code.startswith("runtime_http_404"):
             self._show_line("Approval already settled or unavailable; checking run status.", "tool")
-        elif code.startswith("runtime_http_403") and decision in ("allow_project", "allow_global"):
+        elif code.startswith("runtime_http_403") and decision in RULE_DECISIONS:
             self._rule_decisions_refused = True
             # A dialog opened meanwhile still offers rules; reopen it without them.
             self._dismiss_approval()
@@ -276,9 +258,6 @@ class RunLayer(ComposerLayer):
             )
         else:
             self._show_line(f"approval error: {code}", "error")
-        # Re-read current prompts even after a failed/ambiguous POST. Never
-        # automatically submit the decision again, and never start a second SSE.
-        self._start_follow()
 
     def _finalize_run(self, kind: str, outcome: Any) -> None:
         answer = ""
@@ -288,20 +267,14 @@ class RunLayer(ComposerLayer):
         self._last_run_tokens = usage_line(data.get("usage"))
         self._render_metadata()
         if kind == "run.completed":
-            text = ""
             output = data.get("output")
-            has_final_text = isinstance(output, dict) and isinstance(output.get("text"), str)
-            if has_final_text:
-                assert isinstance(output, dict)
-                text = output["text"]
-                shown = text
+            text = output.get("text") if isinstance(output, dict) else None
+            if isinstance(text, str):
                 # Text before the last tool call is already on screen above it.
-                earlier = self._answer_text[: self._answer_segment_start]
-                if earlier and shown.startswith(earlier):
-                    shown = shown[len(earlier) :]
+                shown = self._replace_answer(text)
                 if shown or self._stream_view is not None:
                     self._show_stream_text(shown)
-            answer = text if has_final_text else self._answer_text
+            answer = self._answer_text
             if answer:
                 self._record_locally(
                     {
@@ -322,11 +295,11 @@ class RunLayer(ComposerLayer):
             self._record_locally(
                 {"type": "run", "runId": self.active_run, "status": "failed", "reason": reason}
             )
-            self._set_status("run failed")
+            self._set_status("run failed", TabStatus.ERROR)
         else:
             self._show_line("run cancelled", "tool")
             self._record_locally({"type": "run", "runId": self.active_run, "status": "cancelled"})
-            self._set_status("run cancelled")
+            self._set_status("run cancelled", TabStatus.CANCELLED)
         self._finish_run()
         if self._tool_targets():
             self._request_tool_history(force_after_current=True)
@@ -343,13 +316,12 @@ class RunLayer(ComposerLayer):
             details = {
                 key: call[key] for key in ("name", "args", "ok", "durationMs") if key in call
             }
-            self._show_tool_call(details, completed=True, terminal=True)
+            self._show_tool_call(details, completed=True, source="summary")
 
     def _finish_run(self) -> None:
-        if self._stream_view is not None:
-            self._stream_view.flush()
+        self._end_answer()
         for item in self._chat_items:
-            if isinstance(item, ToolCallView) and not item.completed and not item.historical:
+            if isinstance(item, ToolCallView) and not item.completed and item.source == "live":
                 item.mark_unreported()
         self._queue_sync()
         if self._follower is not None:
@@ -362,10 +334,7 @@ class RunLayer(ComposerLayer):
         if self.active_run:
             self.last_seq.pop(self.active_run, None)
         self.active_run = None
-        self._answer_text = ""
-        self._answer_segment_start = 0
-        self._stream_view = None
-        self._reattached_checkpoint = None
+        self._replay_note_due = False
         self.queued_approvals.clear()
         self._render_activity()
 
@@ -384,17 +353,13 @@ class RunLayer(ComposerLayer):
         path = session_path(self.session_id, "/cancel", self._project_root)
         run_id = self.active_run
 
-        def work() -> None:
-            code = ""
-            try:
-                self.client.request("POST", path, {}, timeout=5.0)
-            except ClientError as error:
-                code = str(error)
-            except Exception:
-                code = "internal_error"
-            self.call_from_thread(self._cancel_sent, run_id, code)
+        def work() -> Callable[[], None]:
+            self.client.request("POST", path, {}, timeout=5.0)
+            return lambda: self._cancel_sent(run_id, "")
 
-        self._run_threaded(work, group="cancel")
+        self._run_threaded(
+            work, group="cancel", on_error=lambda code: self._cancel_sent(run_id, code)
+        )
 
     def _cancel_sent(self, run_id: str, code: str) -> None:
         if self.active_run != run_id:
@@ -403,5 +368,5 @@ class RunLayer(ComposerLayer):
             self._cancel_requested = False
             self._set_status(f"cancel error: {code} · /cancel to retry")
         else:
-            self._set_status("cancellation requested — awaiting runtime confirmation")
+            self._set_status(CANCEL_REQUESTED)
             self._start_follow()

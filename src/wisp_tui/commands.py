@@ -1,24 +1,83 @@
-"""The F1 / /help text and the slash commands offered while typing."""
+"""Slash commands: the one table the editor completes, /help lists and the app runs.
 
-# (command, arguments, description); the first prefix match is completed.
-COMMANDS: tuple[tuple[str, str, str], ...] = (
-    ("/help", "", "keys and commands"),
-    ("/new", "[title]", "start a fresh session"),
-    ("/resume", "[id]", "pick or open a saved session"),
-    ("/sessions", "", "browse all Wisp sessions"),
-    ("/model", "", "choose model or mode"),
-    ("/thinking", "[on|off]", "set or toggle thinking"),
-    ("/cancel", "", "cancel the active run"),
-    ("/retry", "", "resend the unacknowledged request"),
-    ("/reconnect", "", "reattach to the active run"),
-    ("/status", "", "connection and session details"),
-    ("/exit", "", "leave wisp-tui"),
-    ("/quit", "", "leave wisp-tui"),
+app.COMMAND_HANDLERS runs each one; any other "/name" line is a prompt for
+Wisp (one of its Skills).
+"""
+
+from __future__ import annotations
+
+import difflib
+from typing import NamedTuple
+
+from .composer import MAX_HISTORY
+from .scrollback import TOOL_TAIL_ROWS
+from .submissions import MAX_DRAFT_BYTES
+
+
+class Command(NamedTuple):
+    name: str
+    usage: str
+    about: str
+
+
+COMMANDS: tuple[Command, ...] = (
+    Command("/help", "", "keys and commands"),
+    Command("/new", "[title]", "start a fresh session"),
+    Command("/resume", "[id]", "pick or open a saved session"),
+    Command("/sessions", "", "browse all Wisp sessions"),
+    Command("/model", "", "choose model or mode"),
+    Command("/thinking", "[on|off]", "set or toggle thinking"),
+    Command("/cancel", "", "cancel the active run"),
+    Command("/retry", "", "resend the unacknowledged request"),
+    Command("/reconnect", "", "reattach to the active run"),
+    Command("/status", "", "connection and session details"),
+    Command("/exit", "", "leave wisp-tui"),
+    Command("/quit", "", "leave wisp-tui"),
 )
-# Handled here; any other "/name" line is a prompt for Wisp (one of its Skills).
-RESERVED_COMMANDS = frozenset(name for name, _, _ in COMMANDS)
+NAMES = tuple(command.name for command in COMMANDS)
 
-HELP_TEXT = """**wisp-tui** — chat with the local Wisp runtime.
+
+def _single_line(text: str) -> bool:
+    """Multiline text starting with "/" is a prompt, not a sequence of commands."""
+    return "\n" not in text and "\r" not in text
+
+
+def parse_command(text: str) -> tuple[str, str] | None:
+    """The command the whole input names, and its argument."""
+    words = text.split(maxsplit=1)
+    if not words or not _single_line(text) or words[0].lower() not in NAMES:
+        return None
+    return words[0].lower(), words[1].strip() if len(words) > 1 else ""
+
+
+def mistyped_command(text: str) -> str | None:
+    """The command a lone "/word" is one typo away from; sent, it would start a run."""
+    words = text.split()
+    if len(words) != 1 or not _single_line(text) or not words[0].startswith("/"):
+        return None
+    near = difflib.get_close_matches(words[0].lower(), NAMES, 1, 0.8)
+    return near[0] if near else None
+
+
+def completions(text: str) -> list[Command]:
+    if not text.startswith("/") or any(char.isspace() for char in text):
+        return []
+    return [command for command in COMMANDS if command.name.startswith(text)]
+
+
+def is_command_text(text: str) -> bool:
+    """A command or the start of one, which is not worth saving as a draft."""
+    words = text.split()
+    return parse_command(text) is not None or (
+        len(words) == 1
+        and _single_line(text)
+        and any(name.startswith(words[0].lower()) for name in NAMES)
+    )
+
+
+_COMMAND_LIST = ", ".join(f"`{f'{c.name} {c.usage}'.rstrip()}`" for c in COMMANDS)
+
+HELP_TEXT = f"""**wisp-tui** — chat with the local Wisp runtime.
 
 | Key | Action |
 |---|---|
@@ -37,9 +96,7 @@ commands execute only when the entire input is a single line; multiline text
 starting with `/` is a prompt, not a sequence of commands. Ctrl+J works over
 ordinary SSH; Shift+Enter may arrive as plain Enter in some terminals.
 
-**Commands:** `/new [title]`, `/resume`, `/sessions`, `/model`,
-`/thinking [on|off]`, `/cancel`, `/retry`, `/reconnect`, `/status`, `/help`,
-`/exit` (or `/quit`). `/thinking` with no argument toggles thinking for the
+**Commands:** {_COMMAND_LIST}. `/thinking` with no argument toggles thinking for the
 current model or mode; picking a model in `/model` resets it to that model's
 default.
 
@@ -62,9 +119,10 @@ ID. It never sends your newer draft. Pending requests are saved privately before
 submission and recovered after exit, without automatic resubmission. A pending
 request state error blocks new work until resolved.
 
-Ctrl+P/Ctrl+N browse your last 50 acknowledged prompts, preserving the current
+Ctrl+P/Ctrl+N browse your last {MAX_HISTORY} acknowledged prompts, preserving the current
 draft and edits made while browsing. Up/Down still move within multiline text.
-One unsent draft is saved locally after a short pause and on exit, up to 128 KiB.
+One unsent draft is saved locally after a short pause and on exit, up to
+{MAX_DRAFT_BYTES // 1024} KiB.
 A fresh draft restores on a fresh launch; a session draft restores when you
 resume that session. Starting new text replaces the one saved draft. Nothing
 is sent automatically. Input history/recovery errors leave editing available.
@@ -84,7 +142,7 @@ The chat scrolls above the input with the mouse wheel or PageUp/PageDown; while
 scrolled up, "Jump to latest message" returns to new output. Drag over the chat
 to select text; releasing the mouse copies it. On quit, the conversation is
 printed to the terminal's scrollback. Tool entries show the command, the
-last 5 output lines (read from stored session history when a unique call ID is
+last {TOOL_TAIL_ROWS} output lines (read from stored session history when a unique call ID is
 available) and the status; full output stays in Wisp's history.
 
 While a run is active you will see tool calls as they happen. When Wisp needs

@@ -213,6 +213,9 @@ class ChatItem(SelectableStatic):
     def remaining(self) -> str:
         return self.text[self.committed :]
 
+    def entry(self) -> tuple[str, str]:
+        return self.kind, self.remaining()
+
     def _show(self) -> None:
         text = self.remaining().strip("\n")
         self.update(render_item(self.kind, text) if text.strip() else "")

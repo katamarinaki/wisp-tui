@@ -1,4 +1,4 @@
-"""Run-record validation and a single-owner event/reconciliation worker.
+"""A session's runs as the runtime reports them, and a single-owner run worker.
 
 A dropped stream is never proof of completion. Read the persisted run record
 before following/reconnecting, and poll parked records for current prompts.
@@ -10,11 +10,52 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from threading import Event
-from typing import Any
+from typing import Any, NamedTuple
 
-from .client import PROMPT_ID, TERMINAL_RUN_STATUSES, UUID, ClientError, WispClient
+from .client import PROMPT_ID, UUID, ClientError, WispClient
+from .history import ChatMessage, parse_history
 
 LIVE_STATUSES = ("queued", "running", "parked")
+TERMINAL_STATUSES = ("completed", "failed", "cancelled")
+TERMINAL_EVENTS = tuple(f"run.{status}" for status in TERMINAL_STATUSES)
+
+
+def live_runs_path(session_id: str | None = None) -> str:
+    session = f"sessionId={session_id}&" if session_id else ""
+    return f"/v1/runs?{session}status={','.join(LIVE_STATUSES)}&limit=200"
+
+
+class Confirmation(NamedTuple):
+    """A prompt a parked run waits on, queued for the approval dialog."""
+
+    run_id: str
+    prompt_id: str
+    tool_name: str
+    args: Any
+    note: str
+
+
+def confirmations(record: dict[str, Any]) -> list[Confirmation]:
+    """The current prompts of a record that passed ``validate_run``."""
+    if record["status"] != "parked":
+        return []
+    return [
+        Confirmation(
+            record["runId"],
+            prompt["id"],
+            prompt["toolName"],
+            prompt.get("args"),
+            " · ".join(
+                note
+                for applies, note in (
+                    (prompt.get("askedEveryTime") is True, "asked every time"),
+                    (prompt.get("escalatedBy") == "judge", "escalated by judge"),
+                )
+                if applies
+            ),
+        )
+        for prompt in record.get("confirmations", [])
+    ]
 
 
 def validate_run(payload: Any, run_id: str, session_id: str) -> dict[str, Any]:
@@ -22,7 +63,7 @@ def validate_run(payload: Any, run_id: str, session_id: str) -> dict[str, Any]:
         not isinstance(payload, dict)
         or payload.get("runId") != run_id
         or payload.get("sessionId") != session_id
-        or payload.get("status") not in LIVE_STATUSES + TERMINAL_RUN_STATUSES
+        or payload.get("status") not in LIVE_STATUSES + TERMINAL_STATUSES
     ):
         raise ClientError("invalid_run_record")
     if payload["status"] == "parked":
@@ -72,11 +113,35 @@ def find_active_run(payload: Any, session_id: str) -> str:
     return queued[-1] if queued else ""
 
 
+class SessionState(NamedTuple):
+    session: dict[str, Any]
+    messages: list[ChatMessage]
+    active_run: str
+
+
+def load_history(client: WispClient, session_id: str, timeout: float = 10.0) -> list[ChatMessage]:
+    return parse_history(
+        client.request("GET", f"/v1/sessions/{session_id}/history", timeout=timeout)
+    )
+
+
+def load_session(client: WispClient, session_id: str, timeout: float = 10.0) -> SessionState:
+    """The session, its history and its active run (\"\" when none)."""
+    session = client.request("GET", f"/v1/sessions/{session_id}", timeout=timeout)
+    if not isinstance(session, dict) or session.get("id") != session_id:
+        raise ClientError("invalid_session")
+    # Discover first: a run that finishes while history loads still has a
+    # known ID to reconcile, rather than disappearing from discovery.
+    runs = client.request("GET", live_runs_path(session_id), timeout=timeout)
+    active_run = find_active_run(runs, session_id)
+    return SessionState(session, load_history(client, session_id, timeout), active_run)
+
+
 class RunFollower:
     """One worker owns both SSE and parked-run polling for a single run.
 
     Retry/poll waits wake immediately on stop or an explicit user action. An
-    outstanding HTTP read is bounded to 20 seconds (not a cancellable socket).
+    outstanding HTTP read is bounded by READ_TIMEOUT (not a cancellable socket).
     A read timeout is *not* a failure: tools may run silently for minutes, so
     the worker re-reads the run record and reopens the stream from last_seq.
     Only real failures (unreachable runtime, bad responses, unexpected EOF)
@@ -87,6 +152,7 @@ class RunFollower:
     POLL_INTERVAL = 3.0
     RETRY_INTERVAL = 1.0
     MAX_FAILURES = 5
+    READ_TIMEOUT = 20.0
 
     def __init__(
         self,
@@ -94,7 +160,6 @@ class RunFollower:
         run_id: str,
         session_id: str,
         *,
-        event_timeout: float,
         last_seq: int | None,
         on_event: Callable[[dict[str, Any]], None],
         on_snapshot: Callable[[dict[str, Any]], None],
@@ -103,7 +168,6 @@ class RunFollower:
         self.client = client
         self.run_id = run_id
         self.session_id = session_id
-        self.event_timeout = min(event_timeout, 20.0)
         self.last_seq = last_seq
         self.on_event = on_event
         self.on_snapshot = on_snapshot
@@ -133,7 +197,7 @@ class RunFollower:
                     return
                 self.on_snapshot(snapshot)
                 status = snapshot["status"]
-                if status in TERMINAL_RUN_STATUSES or self.stopped.is_set():
+                if status in TERMINAL_STATUSES or self.stopped.is_set():
                     return
                 if status == "parked":
                     self._failures = 0
@@ -165,7 +229,7 @@ class RunFollower:
         run record first), ``quiet`` (read timeout without events) or ``ended``
         (unexpected EOF). Other stream errors propagate as failures.
         """
-        stream = self.client.iter_events(self.run_id, self.last_seq, self.event_timeout)
+        stream = self.client.iter_events(self.run_id, self.last_seq, self.READ_TIMEOUT)
         try:
             for event in stream:
                 if self.stopped.is_set():
@@ -179,7 +243,7 @@ class RunFollower:
                 self.on_event(event)
                 self._failures = 0
                 kind = event.get("kind")
-                if kind in ("run.completed", "run.failed", "run.cancelled"):
+                if kind in TERMINAL_EVENTS:
                     return "done"
                 # Prompts from replay may already be resolved. Only a fresh
                 # snapshot may open an actionable approval dialog.

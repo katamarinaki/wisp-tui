@@ -153,6 +153,8 @@ class ScriptedClient(WispClient):
             return {"status": "ready", "version": "0.1.8"}
         if (method, path) == ("GET", "/v1/sessions"):
             return []
+        if (method, path) == ("GET", "/v1/runs?limit=1"):
+            return {"runs": [], "nextCursor": None}
         if (method, path) == ("GET", f"/v1/sessions/{SID}"):
             return {
                 "id": SID,

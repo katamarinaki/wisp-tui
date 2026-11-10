@@ -12,7 +12,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 from textual import events
 from textual.app import App
@@ -24,29 +24,16 @@ from .client import ClientError, WispClient
 from .composer import ComposerState, ComposerStore
 from .config import Config
 from .editor import PromptInput
-from .help_text import COMMANDS
-from .history import ChatMessage
-from .runs import RunFollower
+from .runs import Confirmation, RunFollower
 from .screens import ApprovalModal
 from .sessions import SessionStore
-from .submissions import PendingSubmission, SubmissionStore
+from .submissions import PendingSubmission, SubmissionError, SubmissionStore
 from .terminal_status import TabStatus, tab_status_sequence
-from .text import display_path, metadata_text, model_label, safe_text
+from .text import display_path, metadata_text, safe_text
 from .tool_view import ToolCallView
 from .welcome import Welcome
 
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-
-FRESH_STATUS = "ready · new session"
-
-
-class ApprovalPrompt(NamedTuple):
-    """A confirmation prompt the runtime is waiting on, queued for the dialog."""
-
-    run_id: str
-    prompt_id: str
-    tool_name: str
-    args: Any
 
 
 class ReleaseCheck(NamedTuple):
@@ -60,7 +47,7 @@ class ReleaseCheck(NamedTuple):
 class Startup:
     """How the app starts: a fresh session (default) or an existing one."""
 
-    mode: str = "new"  # "new" | "continue" | "resume" | "session"
+    mode: Literal["new", "continue", "resume", "session"] = "new"
     # "session": a full UUID. "resume": optional ID or prefix ("" = picker).
     session_id: str = ""
     # The launch folder: new sessions are Project Sessions there (None: Desk).
@@ -68,6 +55,7 @@ class Startup:
 
 
 class AppBase(App[None]):
+    TITLE = "wisp-tui"
     # A loaded history prints only its newest items (several screens' worth);
     # Wisp keeps the full session history server-side.
     MAX_CHAT_ITEMS = 60
@@ -97,6 +85,8 @@ class AppBase(App[None]):
         self.client = client
         self.config = config
         self.startup = startup or Startup()
+        # Where the next new session is made; None after Wisp refused the folder once.
+        self._new_session_root = self.startup.project_root
         # None in tests: the only non-loopback request, made at startup.
         self._release_check = release_check
         self._welcome = Welcome(id="welcome")
@@ -105,7 +95,6 @@ class AppBase(App[None]):
         self.submissions = submissions or SubmissionStore(client.url)
         self.composer = ComposerStore(client.url, self.submissions.root)
         self._prompt_history: tuple[str, ...] = ()
-        self._composer_editor: PromptInput | None = None
         self._composer_available = False
         self._composer_dirty = False
         self._composer_draft = ""
@@ -114,7 +103,6 @@ class AppBase(App[None]):
         self._composer_errors: set[str] = set()
         self._recoverable_draft: ComposerState | None = None
         self._pending_state_error = False
-        # Title for the session that the next first message will create.
         self._next_session_title = ""
         self._record_error_shown = False
         self.session_id: str | None = None
@@ -133,13 +121,13 @@ class AppBase(App[None]):
         self._pending_submission: PendingSubmission | None = None
         self._recovery_view_token: object | None = None
         self._retry_after_recovery = False
-        self._pending_view_history: list[ChatMessage] | None = None
+        # The recovery view showed the session's history: a run is a replay over it.
+        self._pending_view_shown = False
         self._session_change_in_progress = False
         self.last_seq: dict[str, int] = {}
-        self.queued_approvals: deque[ApprovalPrompt] = deque()
+        self.queued_approvals: deque[Confirmation] = deque()
         self._approval_modal: ApprovalModal | None = None
         self._approval_prompt_id: str | None = None
-        self._approval_notes: dict[str, str] = {}
         self._approvals_sending: set[str] = set()
         self._approvals_answered: set[str] = set()
         # The token's capabilities do not change while this process runs.
@@ -150,9 +138,9 @@ class AppBase(App[None]):
         self._answer_text = ""
         # Offset in _answer_text where the current answer widget starts.
         self._answer_segment_start = 0
-        self._replay_label_shown = False
+        # A reattached run replays its answer below the history already shown.
+        self._replay_note_due = False
         self._stream_view: StreamView | None = None
-        self._reattached_checkpoint: list[ChatMessage] | None = None
         self._chat_epoch = 0
         # Live (not yet finished) items, in display order.
         self._chat_items: deque[ChatItem | ToolCallView] = deque()
@@ -170,12 +158,14 @@ class AppBase(App[None]):
         self._tool_history_again = False
         self._tool_history_post_run_reads = 0
         self._status_text = "connecting…"
+        # What the status means for the terminal tab while nothing is running.
+        self._status_kind = TabStatus.CONNECTING
         self._tab_status: TabStatus | None = None
         self._tab_status_closed = False
         self._activity_frame = 0
         # The footer's (left, right) rows, printed again below the chat on exit.
         self.footer_rows: list[tuple[str, str]] = []
-        self._prompt_input = PromptInput(commands=tuple(name for name, _, _ in COMMANDS))
+        self._prompt_input = PromptInput()
         self._activity_timer: Timer | None = None
         self._flash_timer: Timer | None = None
         self._cancel_requested = False
@@ -186,25 +176,41 @@ class AppBase(App[None]):
 
     def _run_threaded(
         self,
-        work: Callable[[], None],
+        work: Callable[[], Callable[[], None] | None],
         group: str = "net",
         on_done: Callable[[], None] | None = None,
+        on_error: Callable[[str], None] | None = None,
     ) -> None:
+        """Run ``work`` off the UI thread, then on the UI thread the callback it returns.
+
+        Only a failure of ``work`` reaches ``on_error``, as a safe code.
+        """
+
         def guarded() -> None:
             try:
-                work()
-            except ClientError as error:
-                self.call_from_thread(self._set_status, f"error: {error}")
-            except Exception:
-                self.call_from_thread(self._set_status, "error: internal_error")
+                then = work()
+            except Exception as error:
+                safe = isinstance(error, (ClientError, SubmissionError))
+                code = str(error) if safe else "internal_error"
+                self.call_from_thread(on_error or self._show_error, code)
+            else:
+                try:
+                    if then is not None:
+                        self.call_from_thread(then)
+                except Exception:
+                    self.call_from_thread(self._show_error, "internal_error")
             finally:
                 if on_done is not None:
                     self.call_from_thread(on_done)
 
         self.run_worker(guarded, thread=True, group=group, exclusive=False)
 
-    def _set_status(self, text: str) -> None:
+    def _show_error(self, code: str) -> None:
+        self._set_status(f"error: {code}", TabStatus.ERROR)
+
+    def _set_status(self, text: str, kind: TabStatus = TabStatus.IDLE) -> None:
         self._status_text = safe_text(text, 200)
+        self._status_kind = kind
         self._render_status()
 
     def _render_status(self) -> None:
@@ -213,7 +219,7 @@ class AppBase(App[None]):
             return
         status = self.query_one("#status", Static)
         status.update(self._status_text)
-        status.display = bool(self._status_text) and self._status_text != FRESH_STATUS
+        status.display = bool(self._status_text)
         self._render_activity()
 
     def on_resize(self, event: events.Resize) -> None:
@@ -244,21 +250,7 @@ class AppBase(App[None]):
             return TabStatus.WORKING
         if self._pending_state_error or self._pending_submission is not None:
             return TabStatus.ATTENTION
-        if self._status_text == "connecting…":
-            return TabStatus.CONNECTING
-        if self._status_text.startswith(
-            (
-                "runtime unreachable:",
-                "runtime_not_ready",
-                "error:",
-                "run failed",
-                "session not found",
-            )
-        ):
-            return TabStatus.ERROR
-        if self._status_text == "run cancelled":
-            return TabStatus.CANCELLED
-        return TabStatus.IDLE
+        return self._status_kind
 
     def _render_activity(self) -> None:
         editor = self._prompt_input
@@ -283,7 +275,7 @@ class AppBase(App[None]):
         elif self._cancel_requested:
             label = "Cancelling"
             tab_status = TabStatus.CANCELLING
-        elif self._approval_modal is not None or self._status_text.startswith("run parked"):
+        elif self._approval_modal is not None or self._status_kind is TabStatus.WAITING:
             label = "Waiting for approval"
             tab_status = TabStatus.WAITING
         self._update_tab_status(tab_status)
@@ -302,19 +294,6 @@ class AppBase(App[None]):
     def _tick_activity(self) -> None:
         self._activity_frame = (self._activity_frame + 1) % len(SPINNER_FRAMES)
         self._render_activity()
-
-    def _metadata_lines(self) -> list[str]:
-        session = self.session_id[:8] if self.session_id else "new"
-        thinking = self._model_selection.get("thinking")
-        thinking_label = (
-            ("on" if thinking else "off") if isinstance(thinking, bool) else "unavailable"
-        )
-        return [
-            f"session {session} · {model_label({'effectiveSelection': self._model_selection})}",
-            f"thinking: {thinking_label} · context: unavailable",
-            f"last run tokens: {self._last_run_tokens or 'unavailable'}",
-            f"launch dir: {metadata_text(self._launch_dir, 1000)}",
-        ]
 
     def _render_metadata(self) -> None:
         if self.session_id is not None:
@@ -360,6 +339,17 @@ class AppBase(App[None]):
             (metadata_text(self._launch_dir, 1000), session_text if self.session_id else ""),
             (usage_text, label + thinking_text),
         ]
+
+    def _show_session(self, session_id: str | None, project_root: str | None, title: str) -> None:
+        """Make ``session_id`` current; its run tokens and selection belong to the old one."""
+        if session_id != self.session_id:
+            self._last_run_tokens = ""
+            self._model_selection = {}
+        self.session_id = session_id
+        self._project_root = project_root
+        self.session_title = title
+        self.title = f"Wisp — {title or '(untitled)'}" if session_id else self.TITLE
+        self._render_metadata()
 
     def _selection_updated(self, session: dict[str, Any], session_id: str) -> None:
         if self.session_id != session_id:

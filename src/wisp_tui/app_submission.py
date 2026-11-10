@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-import uuid
-from typing import Any
+from collections.abc import Callable
 
-from .app_base import FRESH_STATUS
 from .app_runs import RunLayer
-from .client import ClientError, safe_code, session_path
+from .client import UUID_RE, ClientError, safe_code, session_path
 from .composer import bounded_history
-from .editor import PromptInput
-from .history import ChatMessage, HistoryError, parse_history
-from .runs import find_active_run
-from .sessions import UUID_RE
-from .submissions import PendingSubmission, SubmissionError
+from .history import ChatMessage
+from .runs import SessionState, load_session
+from .submissions import PendingSubmission, SubmissionError, new_idempotency_key
 from .text import safe_text
 
 
@@ -34,21 +30,11 @@ class SubmissionLayer(RunLayer):
         self._pending_state_error = False
         if pending is None:
             if was_error:
-                self._set_status(FRESH_STATUS if self.session_id is None else "session ready")
+                self._set_status("" if self.session_id is None else "session ready")
             return
         self._pending_submission = pending
-        self.session_id = pending.session_id
-        self._project_root = pending.project_root
-        self.session_title = "Recovered submission"
-        self.title = "Wisp — recovered submission"
-        editor = self.query_one("#input", PromptInput)
-        if not editor.value:
-            editor.value = pending.draft
-            self._composer_draft = pending.draft
-            self._composer_submission_key = pending.idempotency_key
-            self._composer_dirty = True
-            self._queue_composer_save()
-        self._render_metadata()
+        self._show_session(pending.session_id, pending.project_root, "Recovered submission")
+        self._keep_pending_draft()
         self._set_status("unacknowledged submission restored · /retry")
         self._show_line(
             "Recovered an unacknowledged request. Nothing was resubmitted. "
@@ -57,46 +43,29 @@ class SubmissionLayer(RunLayer):
         )
         self._load_pending_view(pending)
 
+    def _keep_pending_draft(self) -> None:
+        """Show the pending request's text in an empty editor and save it as the draft."""
+        pending = self._pending_submission
+        if pending is not None and not self._prompt_input.value:
+            self._load_draft(pending.draft, pending.idempotency_key)
+            self._save_draft_soon()
+
     def _load_pending_view(self, pending: PendingSubmission) -> None:
         """Inspect the original session without identifying/replaying its request."""
         token = object()
         self._recovery_view_token = token
-        self._pending_view_history = None
+        self._pending_view_shown = False
         epoch = self._chat_epoch
 
-        def work() -> None:
-            try:
-                session = self.client.request(
-                    "GET", f"/v1/sessions/{pending.session_id}", timeout=5.0
-                )
-                if not isinstance(session, dict) or session.get("id") != pending.session_id:
-                    raise ClientError("invalid_session")
-                payload = self.client.request(
-                    "GET", f"/v1/sessions/{pending.session_id}/history", timeout=5.0
-                )
-                messages = parse_history(payload)
-                runs = self.client.request(
-                    "GET",
-                    f"/v1/runs?sessionId={pending.session_id}"
-                    "&status=queued,running,parked&limit=200",
-                    timeout=5.0,
-                )
-                active_id = find_active_run(runs, pending.session_id)
-            except ClientError as error:
-                code = str(error)
-            except HistoryError:
-                code = "unexpected_history_shape"
-            except Exception:
-                code = "internal_error"
-            else:
-                self.call_from_thread(
-                    self._pending_view_loaded, token, pending, epoch, session, messages, active_id
-                )
-                return
-            self.call_from_thread(self._pending_view_failed, token, pending, code)
+        def work() -> Callable[[], None]:
+            state = load_session(self.client, pending.session_id, timeout=5.0)
+            return lambda: self._pending_view_loaded(token, pending, epoch, state)
 
         self._run_threaded(
-            work, group="recovery", on_done=lambda: self._pending_view_done(token, pending)
+            work,
+            group="recovery",
+            on_done=lambda: self._pending_view_done(token, pending),
+            on_error=lambda code: self._pending_view_failed(token, pending, code),
         )
 
     def _pending_view_current(self, token: object, pending: PendingSubmission) -> bool:
@@ -109,34 +78,25 @@ class SubmissionLayer(RunLayer):
         )
 
     def _pending_view_loaded(
-        self,
-        token: object,
-        pending: PendingSubmission,
-        epoch: int,
-        session: dict[str, Any],
-        messages: list[ChatMessage],
-        active_id: str,
+        self, token: object, pending: PendingSubmission, epoch: int, state: SessionState
     ) -> None:
         if not self._pending_view_current(token, pending):
             return
-        self.session_title = safe_text(session.get("title"), 80) or "(untitled)"
-        self.title = f"Wisp — {self.session_title}"
-        self._selection_updated(session, pending.session_id)
+        title = safe_text(state.session.get("title"), 80)
+        self._show_session(pending.session_id, self._project_root, title)
+        self._selection_updated(state.session, pending.session_id)
         # A newer view cancels history restoration, but metadata is still useful.
         if self._chat_epoch != epoch:
             return
-        hidden = max(0, len(messages) - self.MAX_CHAT_ITEMS)
-        self._reset_chat(hidden)
-        for message in messages[hidden:]:
-            self._add_message(message)
-        self._pending_view_history = list(messages)
+        self._show_history(state.messages)
+        self._pending_view_shown = True
         self._show_line(
             "Recovered request remains unacknowledged. This view is read-only; "
             "only explicit /retry reuses the original request ID."
         )
-        if active_id:
+        if state.active_run:
             self._show_line(
-                f"Runtime reports active run {active_id[:8]}. "
+                f"Runtime reports active run {state.active_run[:8]}. "
                 "It is not proof this request was accepted.",
                 "tool",
             )
@@ -186,7 +146,7 @@ class SubmissionLayer(RunLayer):
             self.session_id,
             draft,
             self.config.max_turns,
-            "wisp-tui:" + str(uuid.uuid4()),
+            new_idempotency_key(),
             self._project_root,
         )
         if self._composer_draft == draft:
@@ -226,29 +186,23 @@ class SubmissionLayer(RunLayer):
         self._submitting = True
         self._set_status("submitting…")
 
-        def work() -> None:
-            try:
-                run_id = self.submissions.prepare(pending)
-                if run_id is None:
-                    # Never contact Wisp until the original request is durable.
-                    result = self.client.request(
-                        "POST",
-                        session_path(pending.session_id, "/runs", pending.project_root),
-                        pending.body(),
-                    )
-                    run_id = result.get("runId") if isinstance(result, dict) else None
-                if not isinstance(run_id, str) or not UUID_RE.fullmatch(run_id):
-                    raise ClientError("invalid_run_reference")
-                self.submissions.acknowledge(pending, run_id)
-            except (ClientError, SubmissionError) as error:
-                self.call_from_thread(self._submission_failed, str(error))
-                return
-            except Exception:
-                self.call_from_thread(self._submission_failed, "internal_error")
-                return
-            self.call_from_thread(self._submission_accepted, pending, run_id)
+        def work() -> Callable[[], None]:
+            run_id = self.submissions.prepare(pending)
+            if run_id is None:
+                # Never contact Wisp until the original request is durable.
+                result = self.client.request(
+                    "POST",
+                    session_path(pending.session_id, "/runs", pending.project_root),
+                    pending.body(),
+                )
+                run_id = result.get("runId") if isinstance(result, dict) else None
+            if not isinstance(run_id, str) or not UUID_RE.fullmatch(run_id):
+                raise ClientError("invalid_run_reference")
+            self.submissions.acknowledge(pending, run_id)
+            accepted: str = run_id
+            return lambda: self._submission_accepted(pending, accepted)
 
-        self._run_threaded(work, group="turn")
+        self._run_threaded(work, group="turn", on_error=self._submission_failed)
 
     def _submission_failed(self, code: str) -> None:
         self._submitting = False
@@ -260,22 +214,16 @@ class SubmissionLayer(RunLayer):
             "A pending_state error must be resolved before any new work.",
             "error",
         )
-        editor = self.query_one("#input", PromptInput)
-        if not editor.value and self._pending_submission is not None:
-            editor.value = self._pending_submission.draft
-            self._composer_draft = editor.value
-            self._composer_submission_key = self._pending_submission.idempotency_key
-            self._composer_dirty = True
-            self._queue_composer_save()
+        self._keep_pending_draft()
 
     def _submission_accepted(self, pending: PendingSubmission, run_id: str) -> None:
-        history = self._pending_view_history
-        self._pending_view_history = None
+        reattached = self._pending_view_shown
+        self._pending_view_shown = False
         self._recovery_view_token = None
         self._retry_after_recovery = False
         self._submitting = False
         self._pending_submission = None
-        editor = self.query_one("#input", PromptInput)
+        editor = self._prompt_input
         if editor.value == pending.draft:
             editor.value = ""
         self._prompt_history = bounded_history((*self._prompt_history, pending.draft))
@@ -284,10 +232,9 @@ class SubmissionLayer(RunLayer):
         self._flush_composer()
         self._add_message(ChatMessage(role="user", text=pending.draft.strip()))
         self._record_locally(
-            {"type": "message", "role": "user", "text": pending.draft.strip(), "runId": run_id},
-            pending.session_id,
+            {"type": "message", "role": "user", "text": pending.draft.strip(), "runId": run_id}
         )
-        self._begin_run(run_id, history=history)
+        self._begin_run(run_id, reattached=reattached)
         self._start_follow()
         if self._cancel_when_acknowledged:
             self._cancel_when_acknowledged = False

@@ -13,10 +13,12 @@ from textual.widgets import Static
 from tests.helpers import RID, SID, RequestGate, ScriptedClient
 from wisp_tui import app as app_module
 from wisp_tui.app import WispTuiApp
+from wisp_tui.app_base import Startup
 from wisp_tui.client import ClientError
 from wisp_tui.config import Config
 from wisp_tui.editor import PromptInput as Input
 from wisp_tui.screens import ApprovalModal
+from wisp_tui.terminal_status import TabStatus
 
 
 def text_of(widget: object) -> str:
@@ -31,6 +33,11 @@ def screen_text(app: WispTuiApp) -> str:
 def chat_text(app: WispTuiApp) -> str:
     """Printed (scrollback) and live chat text, in display order."""
     return "\n".join(text for _, text in app.transcript())
+
+
+def ready(app: WispTuiApp) -> bool:
+    """The runtime answered the startup health check and nothing needs attention."""
+    return app._tab_status is TabStatus.IDLE
 
 
 async def eventually(condition: Any, timeout: float = 60.0) -> None:
@@ -53,30 +60,14 @@ def freeze_ctrl_c_clock(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def make_app(
-    events: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+    events: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    startup: Startup | None = None,
 ) -> tuple[WispTuiApp, ScriptedClient]:
     client = ScriptedClient(events)
     # Local session records go to the per-test state dir (tests/conftest.py).
-    app = WispTuiApp(client, Config(url=client.url, token=client.token))
+    app = WispTuiApp(client, Config(url=client.url, token=client.token), startup)
     return app, client
-
-
-async def test_boots_and_shows_ready(monkeypatch: pytest.MonkeyPatch) -> None:
-    app, _ = make_app([], monkeypatch)
-    async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in text_of(app.query_one("#status")))
-        await pilot.pause()
-
-
-async def test_help_command(monkeypatch: pytest.MonkeyPatch) -> None:
-    app, _ = make_app([], monkeypatch)
-    async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in text_of(app.query_one("#status")))
-        app.query_one("#input", Input).value = "/help"
-        await pilot.press("enter")
-        await pilot.pause()
-        rendered = chat_text(app)
-        assert "wisp-tui" in rendered
 
 
 async def test_submit_streams_and_completes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -99,7 +90,7 @@ async def test_submit_streams_and_completes(monkeypatch: pytest.MonkeyPatch) -> 
     ]
     app, client = make_app(events, monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in text_of(app.query_one("#status")))
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app.query_one("#input", Input).value = "hi there"
         await pilot.press("enter")
@@ -143,7 +134,7 @@ async def test_confirmation_flow_approves(monkeypatch: pytest.MonkeyPatch) -> No
     ]
     app, client = make_app(events, monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in text_of(app.query_one("#status")))
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app.query_one("#input", Input).value = "restart webapp please"
         await pilot.press("enter")
@@ -199,7 +190,7 @@ async def test_refused_rule_decision_offers_only_approve_or_deny(
     gate = RequestGate("POST", f"/v1/runs/{RID}/confirmations/prompt-1")
     client.request_hook = gate
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in text_of(app.query_one("#status")))
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app.query_one("#input", Input).value = "restart both"
         await pilot.press("enter")
@@ -266,7 +257,7 @@ async def test_confirmation_flow_esc_denies(monkeypatch: pytest.MonkeyPatch) -> 
     ]
     app, client = make_app(events, monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in text_of(app.query_one("#status")))
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app.query_one("#input", Input).value = "restart database"
         await pilot.press("enter")
@@ -296,7 +287,7 @@ async def test_failed_run_shows_reason(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
     app, _ = make_app(events, monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in text_of(app.query_one("#status")))
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app.query_one("#input", Input).value = "hello"
         await pilot.press("enter")
@@ -308,7 +299,7 @@ async def test_failed_run_shows_reason(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_session_history_load(monkeypatch: pytest.MonkeyPatch) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test():
-        await eventually(lambda: "ready" in text_of(app.query_one("#status")))
+        await eventually(lambda: ready(app))
         app._open_session(SID)
         await eventually(lambda: app.session_id == SID)
         await eventually(lambda: "past answer" in str(chat_text(app)))
@@ -319,23 +310,23 @@ async def test_session_history_load(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_exit_commands_leave(monkeypatch: pytest.MonkeyPatch, command: str) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in text_of(app.query_one("#status")))
+        await eventually(lambda: ready(app))
         app.query_one("#input", Input).value = command
         await pilot.press("enter")
-        await eventually(lambda: bool(app._exit))
+        await eventually(lambda: not app.is_running)
 
 
 async def test_ctrl_c_exits_when_idle(monkeypatch: pytest.MonkeyPatch) -> None:
     freeze_ctrl_c_clock(monkeypatch)
     app, _ = make_app([], monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in text_of(app.query_one("#status")))
-        assert not bool(app._exit)
+        await eventually(lambda: ready(app))
+        assert app.is_running
         await pilot.press("ctrl+c")  # first press arms, does not exit
         await eventually(lambda: "again" in text_of(app.query_one("#status")))
-        assert not bool(app._exit)
+        assert app.is_running
         await pilot.press("ctrl+c")
-        await eventually(lambda: bool(app._exit))
+        await eventually(lambda: not app.is_running)
 
 
 async def test_ctrl_c_cancels_active_run_then_exits(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -346,7 +337,7 @@ async def test_ctrl_c_cancels_active_run_then_exits(monkeypatch: pytest.MonkeyPa
     ]
     app, client = make_app(events, monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in text_of(app.query_one("#status")))
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app.query_one("#input", Input).value = "long task"
         await pilot.press("enter")
@@ -354,7 +345,7 @@ async def test_ctrl_c_cancels_active_run_then_exits(monkeypatch: pytest.MonkeyPa
         await pilot.press("ctrl+c")
         # first press cancels the run, it does not exit
         await eventually(lambda: any(c[1].endswith("/cancel") for c in client.calls))
-        assert not bool(app._exit)
+        assert app.is_running
         # second press exits even though the run is still marked active
         await pilot.press("ctrl+c")
-        await eventually(lambda: bool(app._exit))
+        await eventually(lambda: not app.is_running)

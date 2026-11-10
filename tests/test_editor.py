@@ -10,7 +10,7 @@ from textual.widgets import Static
 from textual.widgets.text_area import Selection
 
 from tests.helpers import SID, RequestGate
-from tests.test_app import chat_text, eventually, make_app
+from tests.test_app import chat_text, eventually, make_app, ready
 from tests.test_submissions import COMPLETED, pending
 from wisp_tui.client import ClientError
 from wisp_tui.editor import PromptInput
@@ -27,7 +27,7 @@ async def test_newline_edits_but_enter_sends_the_whole_prompt_once(
 ) -> None:
     app, client = make_app(COMPLETED, monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         editor = app.query_one("#input", PromptInput)
         await pilot.press("h", "i", newline, "t", "h", "e", "r", "e")
         assert editor.value == "hi\nthere"
@@ -50,7 +50,6 @@ async def test_newline_edits_but_enter_sends_the_whole_prompt_once(
         ("first\r\nsecond\r\n", "first\nsecond\n"),
         ("first\rsecond\r", "first\nsecond\n"),
         ("/quit\n/new other\n/cancel\n", "/quit\n/new other\n/cancel\n"),
-        ("/quit\n", "/quit\n"),
         ("a\n\nb\n", "a\n\nb\n"),
         ("日本語 🐈\n\tbrackets [/]", "日本語 🐈\n\tbrackets [/]"),
     ],
@@ -60,7 +59,7 @@ async def test_paste_is_literal_and_never_dispatches_commands_or_submits(
 ) -> None:
     app, client = make_app(COMPLETED, monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         editor = app.query_one("#input", PromptInput)
         app._add_message(ChatMessage("assistant", "Keep this view"))
         editor.post_message(events.Paste(payload))
@@ -162,7 +161,7 @@ async def test_multiline_ack_preserves_newer_paste_and_retry_identity(
     gate = RequestGate("POST", RUNS)
     client.request_hook = gate
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         editor = app.query_one("#input", PromptInput)
         editor.value = "original\nmultiline task"
@@ -217,7 +216,7 @@ async def test_large_unicode_paste_is_kept_without_creating_a_session(
 ) -> None:
     app, client = make_app([], monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         editor = app.query_one("#input", PromptInput)
         payload = "🐈" * (MAX_DRAFT_BYTES // 4 + 1) + "\nend"
         editor.post_message(events.Paste(payload))
@@ -285,7 +284,7 @@ async def test_slash_lists_matching_commands_and_tab_or_right_completes(
 ) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         editor = app.query_one("#input", PromptInput)
         hints = app.query_one("#command-hints", Static)
 

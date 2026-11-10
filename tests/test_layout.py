@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from tests.test_app import eventually, make_app
+from tests.test_app import eventually, make_app, ready
 from wisp_tui import __version__
 from wisp_tui.chat_view import ChatItem
 from wisp_tui.editor import PromptInput as Input
@@ -25,7 +25,7 @@ async def test_welcome_reflows_and_leaves_the_conversation(
 ) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test(size=(width, height)) as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         for columns, rows in ((width, height), (100, 30), (40, 24)):
             await pilot.resize_terminal(columns, rows)
             await pilot.pause()
@@ -42,7 +42,7 @@ async def test_welcome_reflows_and_leaves_the_conversation(
         assert not app.query_one("#welcome").display
         app._start_fresh("")
         assert app.query_one("#welcome").display
-        app._session_loaded({"id": "example-session"}, [], "", announce_empty=False)
+        app._enter_session({"id": "example-session"}, None)
         assert not app.query_one("#welcome").display
 
 

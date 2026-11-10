@@ -13,7 +13,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from tests.helpers import RID, SID, ScriptedClient
-from tests.test_app import eventually
+from tests.test_app import eventually, ready
 from wisp_tui.app import WispTuiApp
 from wisp_tui.config import Config
 from wisp_tui.editor import PromptInput
@@ -65,7 +65,7 @@ class UsabilityFixture(WispTuiApp):
         return decisions[0]
 
     async def exercise(self) -> None:
-        await eventually(lambda: "ready" in self._status_text)
+        await eventually(lambda: ready(self))
         self.session_id = SID
         self._begin_run(RID)
         self.query_one(PromptInput).value = "keep this draft"
