@@ -498,6 +498,7 @@ def test_cli_selects_startup(
     seen: list[Startup] = []
     monkeypatch.setattr(cli, "load_config", lambda: Config(url=client.url, token=client.token))
     monkeypatch.setattr(WispTuiApp, "run", lambda self, **kwargs: seen.append(self.startup))
+    monkeypatch.setattr(cli, "launch_project", lambda: None)
     assert cli.main(argv) == 0
     assert seen == [expected]
 

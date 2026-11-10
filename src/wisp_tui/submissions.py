@@ -24,7 +24,7 @@ from threading import RLock
 from typing import Any
 
 from . import config
-from .client import UUID
+from .client import UUID, valid_project_root
 from .config import ConfigError
 
 MAX_DRAFT_BYTES = 128 * 1024
@@ -42,6 +42,7 @@ class PendingSubmission:
     draft: str
     max_turns: int
     idempotency_key: str
+    project_root: str | None = None
     created_monotonic: float = field(default_factory=time.monotonic)
     created_wall: float = field(default_factory=time.time)
 
@@ -75,9 +76,12 @@ def _decode(data: dict[str, Any]) -> tuple[PendingSubmission, str | None]:
         data.get("createdAt"),
     )
     run_id = data.get("runId")
+    # Version 2 adds the session's Project folder; version 1 requests have none.
+    root = data.get("projectRoot")
     if (
         type(data.get("version")) is not int
-        or data.get("version") != 1
+        or data.get("version") not in (1, 2)
+        or (root is not None and (data["version"] == 1 or valid_project_root(root) is None))
         or not isinstance(session, str)
         or not re.fullmatch(UUID, session)
         or not isinstance(draft, str)
@@ -102,6 +106,7 @@ def _decode(data: dict[str, Any]) -> tuple[PendingSubmission, str | None]:
         draft,
         turns,
         key,
+        root,
         created_monotonic=time.monotonic() - age,
         created_wall=float(created),
     ), run_id
@@ -197,12 +202,13 @@ class SubmissionStore:
     def _write(self, pending: PendingSubmission, run_id: str | None = None) -> None:
         config.ensure_private_directory(self.root)
         data = {
-            "version": 1,
+            "version": 2,
             "runtime": self.runtime_fingerprint,
             "sessionId": pending.session_id,
             "draft": pending.draft,
             "maxTurns": pending.max_turns,
             "key": pending.idempotency_key,
+            "projectRoot": pending.project_root,
             "createdAt": pending.created_wall,
             "runId": run_id,
         }
@@ -231,12 +237,15 @@ class SubmissionStore:
 
     @staticmethod
     def _same_request(left: PendingSubmission, right: PendingSubmission) -> bool:
-        def identity(request: PendingSubmission) -> tuple[str, str, int, str, float]:
+        def identity(
+            request: PendingSubmission,
+        ) -> tuple[str, str, int, str, str | None, float]:
             return (
                 request.session_id,
                 request.draft,
                 request.max_turns,
                 request.idempotency_key,
+                request.project_root,
                 request.created_wall,
             )
 

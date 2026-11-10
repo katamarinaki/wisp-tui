@@ -495,3 +495,35 @@ async def test_recheck_after_other_client_acknowledges_unblocks_without_posting(
         assert not bool(app._pending_state_error)
         assert "new session" in app._status_text
         assert not any(method == "POST" for method, _, _ in client.calls)
+
+
+def test_journal_keeps_the_project_folder_and_still_reads_version_1(tmp_path: Path) -> None:
+    store = SubmissionStore(URL, tmp_path / "state")
+    assert store.prepare(pending(project_root="/work/app")) is None
+    store.close()
+    saved = json.loads(store.path.read_text())
+    assert (saved["version"], saved["projectRoot"]) == (2, "/work/app")
+    version_1 = {key: value for key, value in saved.items() if key != "projectRoot"} | {
+        "version": 1
+    }
+
+    def reload(data: dict[str, Any]) -> PendingSubmission | None:
+        store.path.write_text(json.dumps(data))
+        resumed = SubmissionStore(URL, store.root)
+        try:
+            return resumed.load()
+        finally:
+            resumed.close()
+
+    for data, root in ((saved, "/work/app"), (version_1, None)):
+        loaded = reload(data)
+        assert loaded is not None and loaded.project_root == root
+    for changes in (
+        {"version": 1},
+        {"version": 3},
+        {"projectRoot": "relative"},
+        {"projectRoot": "/a\nb"},
+        {"projectRoot": 7},
+    ):
+        with pytest.raises(SubmissionError):
+            reload(saved | changes)

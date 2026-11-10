@@ -63,6 +63,8 @@ class Startup:
     mode: str = "new"  # "new" | "continue" | "resume" | "session"
     # "session": a full UUID. "resume": optional ID or prefix ("" = picker).
     session_id: str = ""
+    # The launch folder: new sessions are Project Sessions there (None: Desk).
+    project_root: str | None = None
 
 
 class AppBase(App[None]):
@@ -116,6 +118,8 @@ class AppBase(App[None]):
         self._next_session_title = ""
         self._record_error_shown = False
         self.session_id: str | None = None
+        # The current session's Project folder; None for a Desk Session or unknown.
+        self._project_root: str | None = None
         self.session_title: str = ""
         self._model_selection: dict[str, Any] = {}
         self._last_run_tokens = ""
@@ -309,7 +313,7 @@ class AppBase(App[None]):
             f"session {session} · {model_label({'effectiveSelection': self._model_selection})}",
             f"thinking: {thinking_label} · context: unavailable",
             f"last run tokens: {self._last_run_tokens or 'unavailable'}",
-            f"launch dir (client only): {metadata_text(self._launch_dir, 1000)}",
+            f"launch dir: {metadata_text(self._launch_dir, 1000)}",
         ]
 
     def _render_metadata(self) -> None:

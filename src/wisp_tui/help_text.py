@@ -7,6 +7,7 @@ COMMANDS: tuple[tuple[str, str, str], ...] = (
     ("/resume", "[id]", "pick or open a saved session"),
     ("/sessions", "", "browse all Wisp sessions"),
     ("/model", "", "choose model or mode"),
+    ("/thinking", "[on|off]", "set or toggle thinking"),
     ("/cancel", "", "cancel the active run"),
     ("/retry", "", "resend the unacknowledged request"),
     ("/reconnect", "", "reattach to the active run"),
@@ -14,6 +15,8 @@ COMMANDS: tuple[tuple[str, str, str], ...] = (
     ("/exit", "", "leave wisp-tui"),
     ("/quit", "", "leave wisp-tui"),
 )
+# Handled here; any other "/name" line is a prompt for Wisp (one of its Skills).
+RESERVED_COMMANDS = frozenset(name for name, _, _ in COMMANDS)
 
 HELP_TEXT = """**wisp-tui** — chat with the local Wisp runtime.
 
@@ -34,8 +37,17 @@ commands execute only when the entire input is a single line; multiline text
 starting with `/` is a prompt, not a sequence of commands. Ctrl+J works over
 ordinary SSH; Shift+Enter may arrive as plain Enter in some terminals.
 
-**Commands:** `/new [title]`, `/resume`, `/sessions`, `/model`, `/cancel`,
-`/retry`, `/reconnect`, `/status`, `/help`, `/exit` (or `/quit`).
+**Commands:** `/new [title]`, `/resume`, `/sessions`, `/model`,
+`/thinking [on|off]`, `/cancel`, `/retry`, `/reconnect`, `/status`, `/help`,
+`/exit` (or `/quit`). `/thinking` with no argument toggles thinking for the
+current model or mode; picking a model in `/model` resets it to that model's
+default.
+
+**Skills:** any other `/name args` is sent to Wisp, which runs its Skill
+`name` with those arguments (or treats the line as a normal message if it has
+no such Skill). The commands above take priority over a Skill of the same name.
+A single word that looks like a mistyped command (`/stauts`) is not sent; to
+run a Skill with such a name, give it arguments.
 Typing `/` lists matching commands; Tab or Right completes the suggestion.
 
 **Sessions:** every launch starts fresh; your first message creates the Wisp
@@ -62,7 +74,11 @@ send your next message. The footer keeps the session, model/mode, thinking
 setting and last finished run's reported tokens visible (↑ input, ↓ output,
 Σ total). Missing stats are hidden; `/status` explains what is not reported.
 Tokens update when a run finishes, not live; context occupancy is unavailable.
-The launch directory belongs to this client, not Wisp's tools.
+
+**Project folder:** like Pi, new sessions work in the folder you launched from:
+Wisp's file tools work there and ask before going outside it. Launched from
+your home folder or `/`, sessions get no project folder (Wisp's own desk).
+A resumed session keeps its own folder; `/status` shows it.
 
 The chat scrolls above the input with the mouse wheel or PageUp/PageDown; while
 scrolled up, "Jump to latest message" returns to new output. Drag over the chat

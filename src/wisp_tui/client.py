@@ -26,6 +26,7 @@ MAX_JSON_BYTES = 8_388_608  # 8 MiB cap for JSON API responses
 MAX_EVENT_BYTES = 1_048_576  # per SSE event
 UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 PROMPT_ID = r"[A-Za-z0-9._:-]{1,128}"
+MAX_PROJECT_ROOT_CHARS = 4096
 
 ALLOWED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", r"/v1/health"),
@@ -103,14 +104,49 @@ def _validate_runs_query(path: str) -> dict[str, str]:
     return result
 
 
+def valid_project_root(value: object) -> str | None:
+    """An absolute folder path that is safe to send as ``projectRoot``, else None."""
+    if (
+        isinstance(value, str)
+        and 1 < len(value) <= MAX_PROJECT_ROOT_CHARS
+        and value.startswith("/")
+        and value.isprintable()
+    ):
+        return value
+    return None
+
+
+def session_path(session_id: str, suffix: str = "", project_root: str | None = None) -> str:
+    """A session route; the runtime finds a dropped Project Session only by its folder."""
+    path = f"/v1/sessions/{session_id}{suffix}"
+    if project_root is None:
+        return path
+    return (
+        path
+        + "?"
+        + urllib.parse.urlencode({"projectRoot": project_root}, quote_via=urllib.parse.quote)
+    )
+
+
 def _route_permitted(method: str, path: str) -> bool:
-    base = urllib.parse.urlsplit(path).path
+    split = urllib.parse.urlsplit(path)
+    base = split.path
     if not any(m == method and re.fullmatch(p, base) for m, p in ALLOWED_ROUTES):
         return False
     if base == "/v1/runs":
         try:
             _validate_runs_query(path)
         except ClientError:
+            return False
+    elif split.query:
+        if not re.fullmatch(rf"/v1/sessions/{UUID}(/runs|/cancel)?", base):
+            return False
+        pairs = urllib.parse.parse_qsl(split.query, keep_blank_values=True)
+        if (
+            len(pairs) != 1
+            or pairs[0][0] != "projectRoot"
+            or valid_project_root(pairs[0][1]) is None
+        ):
             return False
     return True
 

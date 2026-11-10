@@ -47,6 +47,13 @@ change that affects a row. "Like Pi" means that table, not memory of Pi.
   decision — billing/tokens/update/connector/permission routes stay out.
 - Interactive approval is the only privileged action; it must stay explicit
   per prompt. No auto-approval paths.
+- New sessions are Project Sessions in the launch folder, like Pi
+  (`launch_project` in `src/wisp_tui/__main__.py`): Wisp's file tools work
+  there without asking, so where the user launches is a privilege grant.
+  Never the home folder, `/`, or a folder that contains or sits inside the
+  config/state folders; a resumed session keeps its own folder, never the
+  current one. Don't widen this (more folders, a flag, changing a session's
+  folder) without asking.
 - The terminal background must stay unpainted: `App { background: ansi_default; }` +
   `Screen { background: transparent; }` in `src/wisp_tui/app.tcss` and
   `ansi_color=True` in `AppBase.__init__` (`app_base.py`) work together to emit SGR 49. Changing any of these

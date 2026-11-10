@@ -201,7 +201,8 @@ class ChatLayer(AppBase):
         if target is None:
             return
         title = "" if self.session_title == "(untitled)" else self.session_title
-        code = self.sessions.record(target, entry, title=title)
+        root = self._project_root if target == self.session_id else None
+        code = self.sessions.record(target, entry, title=title, project_root=root)
         if code and not self._record_error_shown:
             self._record_error_shown = True
             self._show_line(f"Local session record unavailable: {code}", "error")

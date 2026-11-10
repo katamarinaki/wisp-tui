@@ -272,6 +272,25 @@ async def test_session_draft_waits_for_explicit_resume_and_survives_view_command
         assert not any(method == "POST" for method, _, _ in client.calls)
 
 
+async def test_skill_line_is_saved_as_a_draft_but_a_command_being_typed_is_not(
+    monkeypatch: pytest.MonkeyPatch, private_state_dir: Path
+) -> None:
+    seed(private_state_dir, ComposerState(draft="session draft", session_id=SID))
+    app, _ = make_app([], monkeypatch)
+    async with app.run_test() as pilot:
+        await eventually(lambda: "ready" in app._status_text)
+        editor = app.query_one("#input", PromptInput)
+        for typed in ("/", "/res", f"/resume {SID[:8]}"):
+            editor.value = typed
+            await pilot.pause()
+            app._flush_composer()
+            assert app.composer.load().draft == "session draft"
+        editor.value = "/deploy staging"
+        await pilot.pause()
+        app._flush_composer()
+        assert app.composer.load().draft == "/deploy staging"
+
+
 async def test_resume_does_not_overwrite_text_entered_while_loading(
     monkeypatch: pytest.MonkeyPatch, private_state_dir: Path
 ) -> None:

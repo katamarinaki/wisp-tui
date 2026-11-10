@@ -250,11 +250,40 @@ different session clears the observed usage; no lifetime totals are inferred.
 
 An automatic mode is not evidence of the concrete model serving a run, and a
 thinking setting is not a live reasoning stream. This client has no verified
-contract for live token counters, current context occupancy/limit, or the
-runtime's working directory: those are not inferred from token sums, model IDs,
-or the client's launch directory. Unknown stats are omitted from the compact
-footer and explained as unavailable in `/status`.
+contract for live token counters or current context occupancy/limit: those are
+not inferred from token sums or model IDs. Unknown stats are omitted from the
+compact footer and explained as unavailable in `/status`.
 No routes, telemetry event kinds, or inference requests were added for the footer.
+
+## Project sessions
+
+Source: docs.usewisp.io (`/adapter-contract`, "Naming the Project again";
+`/reference`), read 2026-11-10; not yet checked against `/v1/openapi.json` or a
+live runtime.
+
+- `POST /v1/sessions` takes `projectRoot`, the folder the session works in for
+  its whole life. Wisp's file tools work there; a call outside it asks first.
+  Without it the session is a Desk Session.
+- The runtime does not remember a Project Session's folder once it drops the
+  session from memory (e.g. after a restart). Then `PATCH /v1/sessions/{id}`,
+  `POST /v1/sessions/{id}/runs` and `POST /v1/sessions/{id}/cancel` answer 404
+  unless the query names it again: `?projectRoot=<folder>`. A wrong folder gets
+  the same 404. `GET /v1/sessions/{id}` and `/history` still answer without it;
+  the session's `projectRoot` is then `null`.
+
+wisp-tui, like Pi and the Wisp CLI, creates sessions with the realpath of the
+launch folder, except the home folder, `/`, and any folder that contains or
+sits inside the client's config or state folders (Desk Session instead). A 400
+for the folder retries once as a Desk Session and says so; the message or
+command that started the session is not sent until it is repeated, and later
+sessions of that launch are Desk Sessions. Each session's folder is
+saved in its local record header and in the pending-request journal (version 2;
+version 1 records load as Desk), and sent as `?projectRoot=` on the three routes
+above. A resumed session uses its own saved folder, or the one `GET` reports,
+never the current launch folder. A Project Session created elsewhere whose
+folder is unknown after a restart can be read, but not changed or sent to.
+The allowlist accepts only a single absolute, printable `projectRoot` query
+on the session, runs and cancel routes, and no query on other non-`/v1/runs` routes.
 
 ## Tests and remaining validation
 

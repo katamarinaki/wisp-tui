@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from .app_base import FRESH_STATUS
 from .app_submission import SubmissionLayer
-from .client import ClientError
+from .client import ClientError, session_path, valid_project_root
 from .history import ChatMessage, parse_history
 from .runs import find_active_run
 from .screens import ModelPicker, SessionPicker, server_session_label
 from .sessions import RESUME_QUERY_RE, UUID_RE
-from .text import display_path, model_label, safe_text
+from .text import display_path, metadata_text, model_label, safe_text
 
 
 class SessionLayer(SubmissionLayer):
@@ -47,6 +48,7 @@ class SessionLayer(SubmissionLayer):
             return
 
         def work() -> None:
+            root = self.sessions.project_root(session_id)
             try:
                 session = self.client.request("GET", f"/v1/sessions/{session_id}")
             except ClientError as error:
@@ -64,7 +66,9 @@ class SessionLayer(SubmissionLayer):
             )
             active_id = find_active_run(runs, session_id)
             history = self.client.request("GET", f"/v1/sessions/{session_id}/history")
-            self.call_from_thread(self._session_loaded, session, parse_history(history), active_id)
+            self.call_from_thread(
+                self._session_loaded, session, parse_history(history), active_id, True, root
+            )
 
         self._run_threaded(work, group="load", on_done=self._release_session_change)
 
@@ -82,11 +86,14 @@ class SessionLayer(SubmissionLayer):
         messages: list[ChatMessage],
         active_run_id: str,
         announce_empty: bool = True,
+        project_root: str | None = None,
     ) -> None:
         session_id = str(session.get("id", ""))
         if self.session_id != session_id:
             self._last_run_tokens = ""
         self.session_id = session_id
+        # The runtime reports the folder only while it holds the session in memory.
+        self._project_root = valid_project_root(session.get("projectRoot")) or project_root
         self._selection_updated(session, session_id)
         self._restore_matching_draft()
         if self._composer_editor is not None and self._composer_editor.value:
@@ -116,35 +123,61 @@ class SessionLayer(SubmissionLayer):
         body: dict[str, Any] = {"origin": "cli"}
         if title:
             body["title"] = title
+        root = self.startup.project_root
+        attempts = [{**body, "projectRoot": root}, body] if root else [body]
 
         def work() -> None:
-            try:
-                session = self.client.request("POST", "/v1/sessions", body)
-            except ClientError as error:
-                self.call_from_thread(self._session_create_failed, str(error))
-                return
-            except Exception:
-                self.call_from_thread(self._session_create_failed, "internal_error")
-                return
+            for attempt in attempts:
+                try:
+                    session = self.client.request("POST", "/v1/sessions", attempt)
+                except ClientError as error:
+                    # A folder the runtime refuses falls back to a Desk Session.
+                    if attempt is not attempts[-1] and str(error).startswith("runtime_http_400"):
+                        continue
+                    self.call_from_thread(self._session_create_failed, str(error))
+                    return
+                except Exception:
+                    self.call_from_thread(self._session_create_failed, "internal_error")
+                    return
+                break
             if (
                 isinstance(session, dict)
                 and isinstance(session.get("id"), str)
                 and UUID_RE.fullmatch(session["id"])
             ):
-                self.call_from_thread(self._session_created, session, on_ready, announce)
+                self.call_from_thread(
+                    self._session_created, session, on_ready, announce, attempt.get("projectRoot")
+                )
             else:
                 self.call_from_thread(self._session_create_failed, "invalid_session")
 
         self._run_threaded(work, group="load")
 
     def _session_created(
-        self, session: dict[str, Any], on_ready: Callable[[], None] | None, announce: bool
+        self,
+        session: dict[str, Any],
+        on_ready: Callable[[], None] | None,
+        announce: bool,
+        project_root: str | None = None,
     ) -> None:
         # Release before continuing, so the continuation (submit, model
         # picker) is not mistaken for a session change still in progress.
         self._release_session_change()
         self._next_session_title = ""
-        self._session_loaded(session, [], "", announce_empty=announce)
+        if "projectRoot" in session:
+            # Wisp's answer wins: a null means it made a Desk Session.
+            project_root = None
+        self._session_loaded(session, [], "", announce_empty=announce, project_root=project_root)
+        if self.startup.project_root and self._project_root is None:
+            # Asked once: the rest of this launch makes Desk Sessions, and a
+            # prompt written for the folder is not sent elsewhere unasked.
+            self.startup = replace(self.startup, project_root=None)
+            self._show_line(
+                "Wisp refused this folder as a project; this session has no project folder. "
+                "Nothing was sent — send again to continue without one.",
+                "error",
+            )
+            return
         if on_ready is not None:
             on_ready()
 
@@ -159,6 +192,7 @@ class SessionLayer(SubmissionLayer):
             return
         self._release_session_change()
         self.session_id = None
+        self._project_root = None
         self.session_title = ""
         self._restore_matching_draft()
         if self._composer_editor is not None and self._composer_editor.value:
@@ -271,16 +305,68 @@ class SessionLayer(SubmissionLayer):
             lambda selection: self._model_answered(selection, session_id),
         )
 
+    def action_thinking(self, argument: str = "") -> None:
+        """/thinking [on|off]: set thinking for the current mode/model; no argument toggles."""
+        if argument not in ("", "on", "off"):
+            self._show_line("usage: /thinking [on|off]")
+            return
+        if self.session_id is None:
+            self._new_session(
+                self._next_session_title,
+                on_ready=lambda: self.action_thinking(argument),
+                announce=False,
+            )
+            return
+        mode = self._model_selection.get("mode")
+        model = self._model_selection.get("model")
+        if mode not in ("advanced", "balanced", "model") or (
+            mode == "model" and not isinstance(model, str)
+        ):
+            self._show_line("Current selection is unknown — choose one with /model.", "error")
+            return
+        thinking = (
+            argument == "on" if argument else self._model_selection.get("thinking") is not True
+        )
+        selection: dict[str, Any] = {"mode": mode, "thinking": thinking}
+        if mode != "model":
+            self._model_answered(selection, self.session_id)
+            return
+        selection["model"] = model
+        if not thinking:
+            self._model_answered(selection, self.session_id)
+            return
+        session_id = self.session_id
+
+        # The runtime answers 400 to thinking on a model without reasoning.
+        def work() -> None:
+            models = self.client.request("GET", "/v1/models")
+            data = models.get("data") if isinstance(models, dict) else None
+            if not isinstance(data, list):
+                self.call_from_thread(self._show_line, "invalid models response", "error")
+            elif any(
+                isinstance(item, dict) and item.get("id") == model and item.get("reasoning") is True
+                for item in data
+            ):
+                self.call_from_thread(self._model_answered, selection, session_id)
+            else:
+                self.call_from_thread(
+                    self._show_line,
+                    f"{metadata_text(model, 200)} doesn't support thinking — "
+                    "pick a reasoning model with /model.",
+                    "error",
+                )
+
+        self._run_threaded(work, group="load")
+
     def _model_answered(self, selection: dict[str, Any] | None, session_id: str) -> None:
         if selection is None or self.session_id != session_id:
             return
         if not self._reserve_session_change():
             return
+        path = session_path(session_id, "", self._project_root)
 
         def work() -> None:
-            session = self.client.request(
-                "PATCH", f"/v1/sessions/{session_id}", {"selection": selection}
-            )
+            session = self.client.request("PATCH", path, {"selection": selection})
             if isinstance(session, dict):
                 self.call_from_thread(self._selection_updated, session, session_id)
                 self.call_from_thread(

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import difflib
 import os
 import signal
 import subprocess
@@ -29,9 +30,9 @@ from .app_sessions import SessionLayer
 from .chat_view import ChatItem, ChatScroll, JumpToLatest
 from .client import ClientError
 from .editor import PromptInput
-from .help_text import HELP_TEXT
+from .help_text import HELP_TEXT, RESERVED_COMMANDS
 from .sessions import UUID_RE
-from .text import safe_text, title_from
+from .text import metadata_text, safe_text, title_from
 from .update import RELEASE_QUERY, newer_release, release_query_env
 
 
@@ -153,10 +154,23 @@ class WispTuiApp(SessionLayer):
         text = event.value.strip()
         if not text:
             return
-        if text.startswith("/") and "\n" not in event.value and "\r" not in event.value:
+        word = text.split(maxsplit=1)[0].lower()
+        single_line = "\n" not in event.value and "\r" not in event.value
+        if single_line and word in RESERVED_COMMANDS:
             event.input.value = ""
             self._handle_command(text)
             return
+        # Any other "/name args" goes to Wisp, which runs its Skill of that name,
+        # except a lone word one typo away from a command: that would start a run.
+        if single_line and word.startswith("/") and word == text.lower():
+            near = difflib.get_close_matches(word, RESERVED_COMMANDS, 1, 0.8)
+            if near:
+                event.input.value = ""
+                self._show_line(
+                    f"unknown command {word} — did you mean {near[0]}? Nothing was sent; "
+                    "a Wisp Skill with this name needs arguments."
+                )
+                return
         if self._session_change_in_progress:
             self._show_line("Session/history load in progress — your draft is kept.")
             return
@@ -209,6 +223,8 @@ class WispTuiApp(SessionLayer):
             self.action_sessions()
         elif command == "/model":
             self.action_model()
+        elif command == "/thinking":
+            self.action_thinking(argument.lower())
         elif command == "/cancel":
             self._cancel_run()
         elif command == "/retry":
@@ -219,8 +235,6 @@ class WispTuiApp(SessionLayer):
             self._status_command()
         elif command in ("/exit", "/quit"):
             self.exit()
-        else:
-            self._show_line(f"unknown command {command} — /help lists them")
 
     def _status_command(self) -> None:
         if self._pending_state_error:
@@ -231,6 +245,14 @@ class WispTuiApp(SessionLayer):
             submission = "unacknowledged"
         else:
             submission = "none"
+        if self._project_root:
+            folder = metadata_text(self._project_root, 1000)
+        elif self.session_id is not None:
+            folder = "none known (a Desk Session, or a folder not saved here)"
+        elif self.startup.project_root:
+            folder = f"{metadata_text(self.startup.project_root, 1000)} (for the next session)"
+        else:
+            folder = "none (Wisp's own desk folder)"
         lines = [
             f"runtime: {self.client.url}",
             f"session: {self.session_id or 'none'}"
@@ -240,7 +262,7 @@ class WispTuiApp(SessionLayer):
             f"recovery view: {'loading' if self._recovery_view_token is not None else 'none'}",
             f"max turns: {self.config.max_turns}",
             *self._metadata_lines(),
-            "Wisp working directory: unavailable (not the client launch directory)",
+            f"Wisp project folder: {folder}",
             "Token usage is reported at run completion, not live; "
             "context occupancy is unavailable.",
         ]

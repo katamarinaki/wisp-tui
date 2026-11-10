@@ -68,7 +68,7 @@ async def test_fresh_footer_and_full_status_explain_unavailable_data(
         assert "thinking: unavailable" in chat_text(app)
         assert "context: unavailable" in chat_text(app)
         assert "last run tokens: unavailable" in chat_text(app)
-        assert "Wisp working directory: unavailable" in chat_text(app)
+        assert "Wisp project folder: none" in chat_text(app)
         assert "not live" in chat_text(app)
         assert client.calls == [("GET", "/v1/health", None)]
         app._set_status("runtime unreachable: runtime_timeout")

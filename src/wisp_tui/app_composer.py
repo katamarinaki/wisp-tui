@@ -7,7 +7,7 @@ from textual.widgets import Static, TextArea
 from .app_chat import ChatLayer
 from .composer import ComposerError, ComposerState, bounded_history
 from .editor import PromptInput
-from .help_text import COMMANDS
+from .help_text import COMMANDS, RESERVED_COMMANDS
 from .submissions import MAX_DRAFT_BYTES
 
 
@@ -102,7 +102,14 @@ class ComposerLayer(ChatLayer):
 
     @staticmethod
     def _composer_command(text: str) -> bool:
-        return text.lstrip().startswith("/") and "\n" not in text and "\r" not in text
+        """A reserved command or the start of one; other "/name" lines are prompts."""
+        words = text.split(maxsplit=1)
+        if not words or "\n" in text or "\r" in text:
+            return False
+        word = words[0].lower()
+        return word in RESERVED_COMMANDS or (
+            len(words) == 1 and any(name.startswith(word) for name in RESERVED_COMMANDS)
+        )
 
     def _queue_composer_save(self) -> None:
         if self._composer_timer is not None:

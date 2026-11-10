@@ -11,10 +11,27 @@ from pathlib import Path
 from . import __version__
 from .app import WispTuiApp
 from .app_base import ReleaseCheck, Startup
-from .client import ClientError, WispClient
-from .config import ConfigError, load_config
+from .client import ClientError, WispClient, valid_project_root
+from .config import CONFIG_PATH, STATE_DIR, ConfigError, load_config
 from .scrollback import print_footer, print_transcript
 from .sessions import RESUME_QUERY_RE, UUID_RE, SessionStore
+
+
+def launch_project() -> str | None:
+    """The launch folder as the Wisp project, like Pi; never the home folder or disk root."""
+    try:
+        cwd = Path.cwd().resolve()
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):
+        return None
+    if cwd in (home, cwd.parent):
+        return None
+    # Wisp's file tools work in the project without asking: keep our token
+    # and the saved conversations out.
+    for private in (CONFIG_PATH.parent.resolve(), STATE_DIR.resolve()):
+        if private.is_relative_to(cwd) or cwd.is_relative_to(private):
+            return None
+    return valid_project_root(str(cwd))
 
 
 def program_name() -> str:
@@ -85,14 +102,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{parser.prog}: authenticated, runtime ready. No inference started.")
         return 0
     # Default: a fresh session (created by the first message), like Pi.
+    project = launch_project()
     if args.session:
-        startup = Startup("session", args.session)
+        startup = Startup("session", args.session, project)
     elif args.resume_latest:
-        startup = Startup("continue")
+        startup = Startup("continue", project_root=project)
     elif args.resume is not None:
-        startup = Startup("resume", args.resume.lower())
+        startup = Startup("resume", args.resume.lower(), project)
     else:
-        startup = Startup()
+        startup = Startup(project_root=project)
     if config.session_retention_days is not None:
         SessionStore().prune(config.session_retention_days)
     release_check = ReleaseCheck(Path(__file__).resolve().parents[2], f"{parser.prog} update")

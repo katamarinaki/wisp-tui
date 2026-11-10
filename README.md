@@ -114,10 +114,17 @@ wi -r [ID]        # pick a saved session, or resume one by ID prefix
 wi update         # verify the newest signed release, switch after you confirm
 ```
 
+Like Pi, new sessions work in the folder you launch from: Wisp's file tools
+work there and ask before going outside it. Launched from your home folder or
+`/`, sessions get no project folder. A resumed session keeps its own folder.
+
 Inside the app: **Enter** sends, **Ctrl+J** adds a newline, **F1** lists keys,
 **F2** opens sessions, **F3** picks a model. Commands: `/new`, `/resume`,
-`/sessions`, `/model`, `/cancel`, `/retry`, `/reconnect`, `/status`, `/exit`
-(or `/quit`); typing `/` lists them and Tab completes. The app runs full screen:
+`/sessions`, `/model`, `/thinking [on|off]`, `/cancel`, `/retry`, `/reconnect`,
+`/status`, `/exit` (or `/quit`); typing `/` lists them and Tab completes. Any
+other `/name args` runs the Wisp skill `name`, as in Wisp's other clients; the
+commands above take priority, and a lone word that looks like a mistyped
+command is not sent. The app runs full screen:
 the mouse wheel or PageUp/PageDown scrolls the chat while the editor and footer
 stay put. Drag over the chat to select text; releasing the mouse copies it,
 through `pbcopy` on a local Mac and through your terminal (OSC 52) otherwise,

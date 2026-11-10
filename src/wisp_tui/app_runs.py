@@ -7,7 +7,7 @@ from typing import Any
 
 from .app_base import ApprovalPrompt
 from .app_composer import ComposerLayer
-from .client import TERMINAL_RUN_STATUSES, ClientError, safe_code
+from .client import TERMINAL_RUN_STATUSES, ClientError, safe_code, session_path
 from .history import ChatMessage
 from .runs import RunFollower
 from .screens import ApprovalModal
@@ -381,13 +381,13 @@ class RunLayer(ComposerLayer):
             self._show_line("Cancellation already requested; awaiting runtime confirmation.")
             return
         self._cancel_requested = True
-        session_id = self.session_id
+        path = session_path(self.session_id, "/cancel", self._project_root)
         run_id = self.active_run
 
         def work() -> None:
             code = ""
             try:
-                self.client.request("POST", f"/v1/sessions/{session_id}/cancel", {}, timeout=5.0)
+                self.client.request("POST", path, {}, timeout=5.0)
             except ClientError as error:
                 code = str(error)
             except Exception:

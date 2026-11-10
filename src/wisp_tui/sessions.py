@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config
-from .client import UUID
+from .client import UUID, valid_project_root
 from .config import ConfigError
 
 UUID_RE = re.compile(UUID)
@@ -72,7 +72,13 @@ class SessionStore:
 
     # -- writing ----------------------------------------------------------------
 
-    def record(self, session_id: str, entry: dict[str, Any], title: str = "") -> str:
+    def record(
+        self,
+        session_id: str,
+        entry: dict[str, Any],
+        title: str = "",
+        project_root: str | None = None,
+    ) -> str:
         """Append ``entry``; create the file (with header) on first use.
 
         Returns "" on success or a safe error code. Never raises.
@@ -100,6 +106,8 @@ class SessionStore:
                     "timestamp": _now(),
                     "title": _truncate_long_text(title),
                 }
+                if project_root is not None:
+                    header["projectRoot"] = project_root
                 payload = json.dumps(header, ensure_ascii=False) + "\n" + payload
             return self._append(path, payload.encode())
         except ConfigError:
@@ -191,6 +199,21 @@ class SessionStore:
             SessionSummary(session_id, self._title(path), mtime, path)
             for session_id, (path, mtime) in ordered[:limit]
         ]
+
+    def project_root(self, session_id: str) -> str | None:
+        """The Project folder saved in the session's header, if any. Never raises."""
+        path = self.path_for(session_id)
+        if path is None:
+            return None
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            with os.fdopen(fd, "rb") as source:
+                header = json.loads(source.readline(MAX_TITLE_SCAN_BYTES))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(header, dict) or header.get("type") != "session":
+            return None
+        return valid_project_root(header.get("projectRoot"))
 
     def _title(self, path: Path) -> str:
         try:

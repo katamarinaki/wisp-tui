@@ -7,7 +7,7 @@ from typing import Any
 
 from .app_base import FRESH_STATUS
 from .app_runs import RunLayer
-from .client import ClientError, safe_code
+from .client import ClientError, safe_code, session_path
 from .composer import bounded_history
 from .editor import PromptInput
 from .history import ChatMessage, HistoryError, parse_history
@@ -38,6 +38,7 @@ class SubmissionLayer(RunLayer):
             return
         self._pending_submission = pending
         self.session_id = pending.session_id
+        self._project_root = pending.project_root
         self.session_title = "Recovered submission"
         self.title = "Wisp — recovered submission"
         editor = self.query_one("#input", PromptInput)
@@ -182,7 +183,11 @@ class SubmissionLayer(RunLayer):
             return
         self._capture_composer()
         self._pending_submission = PendingSubmission(
-            self.session_id, draft, self.config.max_turns, "wisp-tui:" + str(uuid.uuid4())
+            self.session_id,
+            draft,
+            self.config.max_turns,
+            "wisp-tui:" + str(uuid.uuid4()),
+            self._project_root,
         )
         if self._composer_draft == draft:
             self._composer_submission_key = self._pending_submission.idempotency_key
@@ -227,7 +232,9 @@ class SubmissionLayer(RunLayer):
                 if run_id is None:
                     # Never contact Wisp until the original request is durable.
                     result = self.client.request(
-                        "POST", f"/v1/sessions/{pending.session_id}/runs", pending.body()
+                        "POST",
+                        session_path(pending.session_id, "/runs", pending.project_root),
+                        pending.body(),
                     )
                     run_id = result.get("runId") if isinstance(result, dict) else None
                 if not isinstance(run_id, str) or not UUID_RE.fullmatch(run_id):
