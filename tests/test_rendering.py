@@ -13,10 +13,9 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from tests.helpers import RID, SID
-from tests.test_app import eventually, make_app
+from tests.test_app import eventually, make_app, ready
 from wisp_tui.app import WispTuiApp
-from wisp_tui.chat_view import ChatItem, StreamView
-from wisp_tui.editor import PromptInput as Input
+from wisp_tui.chat_view import ChatItem, ChatScroll, StreamView
 from wisp_tui.history import ChatMessage
 from wisp_tui.screens import ApprovalModal, ModelPicker, SessionPicker, server_session_label
 from wisp_tui.scrollback import render_ansi, settled_length
@@ -69,25 +68,19 @@ async def test_chat_lines_status_and_commands_are_literal(
 ) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         app._handle_event({"seq": 1, "kind": "tool_call.started", "name": text})
         app._handle_event({"seq": 2, "kind": "audio.transcribed", "text": text})
         app._set_status(text)
-        app.query_one("#input", Input).value = f"/x{text}"
-        await pilot.press("enter")
         app._add_message(ChatMessage("assistant", text))
         await pilot.pause()
 
-        lines = [text for kind, text in app.transcript() if kind == "system"]
         tool = app.query_one(ToolCallView)
         assert tool.title == text and tool.status_text == f"{text} · running…"
         assert text in printed([tool.entry()])
         assert f"transcribed: {text}" in [t for k, t in app.transcript() if k == "tool"]
-        assert any(
-            line.startswith(f"unknown command /x{text.split(maxsplit=1)[0]}") for line in lines
-        )
         assert plain(app.query_one("#status", Static)).startswith(text)
         assert text.replace("\\[", "[") in printed([("assistant", answers(app)[-1])])
 
@@ -136,7 +129,7 @@ async def test_runtime_text_cannot_send_terminal_control_sequences(
 ) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         app._handle_event({"seq": 1, "kind": "text.delta", "text": "live " + HOSTILE + "\r\n"})
@@ -214,7 +207,7 @@ async def test_streaming_prints_finished_blocks_and_matches_full_render(
 ) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test(size=(100, 60)) as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         # Many small deltas, including several before the widget is mounted.
@@ -241,7 +234,7 @@ async def test_streaming_prints_finished_blocks_and_matches_full_render(
 async def test_replacement_text_falls_back_to_full_update(monkeypatch: pytest.MonkeyPatch) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         app._handle_event({"seq": 1, "kind": "text.delta", "text": "draft that gets "})
@@ -300,7 +293,7 @@ async def test_fast_deltas_are_batched_without_losing_the_final_text(
     # No display batch falls due during the test, so every delta must coalesce.
     monkeypatch.setattr(StreamView, "UPDATE_INTERVAL", 30.0)
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         deltas = [f"word{index} " for index in range(100)]
@@ -329,7 +322,7 @@ async def test_terminal_outcome_flushes_the_answer_without_waiting_for_a_batch(
     monkeypatch.setattr(StreamView, "UPDATE_INTERVAL", 30.0)
     app, _ = make_app([], monkeypatch)
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         app._append_delta("streamed text")
@@ -358,3 +351,24 @@ async def test_terminal_outcome_flushes_the_answer_without_waiting_for_a_batch(
 )
 def test_streamed_answers_settle_only_complete_blocks(text: str, settled: str) -> None:
     assert text[: settled_length(text)] == settled
+
+
+async def test_selection_repaint_does_not_hide_a_text_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _ = make_app([], monkeypatch)
+    async with app.run_test() as pilot:
+        item = ChatItem("system", "first text")
+        await app.query_one(ChatScroll).mount(item)
+        await pilot.pause()
+        assert "first text" in item.render_line(0).text
+        # A drag moving over an entry in the same frame as its new text.
+        item.set_text("later text")
+        item.repaint_selection()
+        await pilot.pause()
+        assert "later text" in item.render_line(0).text
+        # The marks alone reuse the rendered lines.
+        lines = item._render_cache.lines
+        item.repaint_selection()
+        await pilot.pause()
+        assert item._render_cache.lines is lines

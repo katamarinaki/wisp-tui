@@ -10,9 +10,10 @@ import pytest
 from textual.widgets import Static
 
 from tests.helpers import RID, SID, RequestGate
-from tests.test_app import chat_text, eventually, make_app, text_of
+from tests.test_app import chat_text, eventually, make_app, ready, text_of
 from wisp_tui.app import WispTuiApp
 from wisp_tui.editor import PromptInput as Input
+from wisp_tui.runs import SessionState
 from wisp_tui.text import usage_line
 
 OTHER_SID = "af06ed54-82b0-45e6-af55-7c85ab55e7ea"
@@ -31,7 +32,7 @@ async def test_fresh_footer_and_full_status_explain_unavailable_data(
     monkeypatch.chdir(launch)
     app, client = make_app([], monkeypatch)
     async with app.run_test(size=(width, 24)) as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         await pilot.pause()
         assert not app.query_one("#status").display
         assert app.query_one("#location-row").display
@@ -68,8 +69,7 @@ async def test_fresh_footer_and_full_status_explain_unavailable_data(
         assert "thinking: unavailable" in chat_text(app)
         assert "context: unavailable" in chat_text(app)
         assert "last run tokens: unavailable" in chat_text(app)
-        assert "Wisp working directory: unavailable" in chat_text(app)
-        assert "not live" in chat_text(app)
+        assert "Wisp project folder: none" in chat_text(app)
         assert client.calls == [("GET", "/v1/health", None)]
         app._set_status("runtime unreachable: runtime_timeout")
         assert app.query_one("#status").display
@@ -90,8 +90,10 @@ async def test_selection_stays_visible_through_run_status_changes(
 ) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
-        app._session_loaded({"id": SID, "effectiveSelection": selection}, [], "")
+        await eventually(lambda: ready(app))
+        app._session_loaded(
+            SessionState({"id": SID, "effectiveSelection": selection}, [], ""), None
+        )
         assert app.query_one("#location-row").display
         assert app.query_one("#summary").display
         expected = footer(app, "session-info")
@@ -141,7 +143,7 @@ async def test_follow_up_uses_same_session_and_updates_last_run_not_context(
         ]
     )
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         editor = app.query_one("#input", Input)
         editor.value = "First question"
         await pilot.press("enter")
@@ -181,8 +183,8 @@ async def test_model_patch_updates_footer_only_after_acknowledgement(
     gate = RequestGate("PATCH", path)
     client.request_hook = gate
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
-        app._session_loaded({"id": SID}, [], "")
+        await eventually(lambda: ready(app))
+        app._session_loaded(SessionState({"id": SID}, [], ""), None)
         try:
             app._model_answered(selection, SID)
             await eventually(gate.entered.is_set)
@@ -201,15 +203,15 @@ async def test_session_change_and_new_clear_usage_and_model_metadata(
 ) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         session = {"id": SID, "effectiveSelection": {"mode": "balanced", "thinking": False}}
-        app._session_loaded(session, [], "")
+        app._session_loaded(SessionState(session, [], ""), None)
         app._begin_run(RID)
         app._finalize_run("run.completed", {"usage": {"inputTokens": 100}})
         # Reloading the same session retains the observed usage; switching doesn't.
-        app._session_loaded(session, [], "")
+        app._session_loaded(SessionState(session, [], ""), None)
         assert "↑100" in footer(app, "usage-info")
-        app._session_loaded({"id": OTHER_SID}, [], "")
+        app._session_loaded(SessionState({"id": OTHER_SID}, [], ""), None)
         assert footer(app, "usage-info") == "T: unavailable"
         assert app.query_one("#usage-info").display
         assert "balanced" not in footer(app, "session-info")
@@ -230,8 +232,8 @@ async def test_missing_usage_does_not_show_previous_run_tokens(
 ) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
-        app._session_loaded({"id": SID}, [], "")
+        await eventually(lambda: ready(app))
+        app._session_loaded(SessionState({"id": SID}, [], ""), None)
         app._begin_run(RID)
         app._finalize_run("run.completed", {"usage": {"inputTokens": 100}})
         app._begin_run(RID)
@@ -261,18 +263,21 @@ async def test_footer_is_bounded_transparent_and_survives_resize(
 ) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test(size=(width, 24)) as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app._session_loaded(
-            {
-                "id": SID,
-                "effectiveSelection": {
-                    "mode": "model",
-                    "model": "model[/]x\n\x1b[31m" + "x" * 200,
-                    "thinking": True,
+            SessionState(
+                {
+                    "id": SID,
+                    "effectiveSelection": {
+                        "mode": "model",
+                        "model": "model[/]x\n\x1b[31m" + "x" * 200,
+                        "thinking": True,
+                    },
                 },
-            },
-            [],
-            "",
+                [],
+                "",
+            ),
+            None,
         )
         app._launch_dir = "/example/project[/]\n\x1b[31m" + "x" * 1000
         app._render_metadata()
@@ -306,13 +311,10 @@ async def test_footer_contrast_and_summary_reflow(
     app, _ = make_app([], monkeypatch)
     app.theme = theme
     async with app.run_test(size=(100, 24)) as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app._launch_dir = "~/projects/example"
-        app._session_loaded(
-            {"id": SID, "effectiveSelection": {"mode": "balanced", "thinking": False}},
-            [],
-            "",
-            announce_empty=False,
+        app._enter_session(
+            {"id": SID, "effectiveSelection": {"mode": "balanced", "thinking": False}}, None
         )
         app._begin_run(RID)
         app._finalize_run(
@@ -361,9 +363,9 @@ async def test_session_and_thinking_stay_visible_with_long_metadata(
 ) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test(size=(width, 24)) as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         for thinking in (True, False):
-            app._session_loaded(
+            app._enter_session(
                 {
                     "id": SID,
                     "effectiveSelection": {
@@ -372,9 +374,7 @@ async def test_session_and_thinking_stay_visible_with_long_metadata(
                         "thinking": thinking,
                     },
                 },
-                [],
-                "",
-                announce_empty=False,
+                None,
             )
             app._begin_run(RID)
             app._finalize_run("run.completed", {"usage": {"inputTokens": 28606}})

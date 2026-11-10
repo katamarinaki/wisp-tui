@@ -7,11 +7,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tests.helpers import RID, SID, ScriptedClient
-from tests.test_app import eventually
+from tests.test_app import eventually, ready
 from wisp_tui import __main__ as cli
 from wisp_tui.app import WispTuiApp
 from wisp_tui.config import Config
 from wisp_tui.history import ChatMessage
+from wisp_tui.runs import Confirmation
 from wisp_tui.sessions import SessionStore
 from wisp_tui.submissions import SubmissionStore
 
@@ -25,13 +26,13 @@ class TerminalFixture(WispTuiApp):
 
     async def exercise(self) -> None:
         # Each step waits until the previous state has reached the terminal.
-        await eventually(lambda: "ready" in self._status_text)
+        await eventually(lambda: ready(self))
         await self.screen.wait_for_refresh()
         self.show_transcript()
         await eventually(lambda: not self._sync_queued)
         await self.screen.wait_for_refresh()
         self._sync_confirmations(
-            [{"id": "prompt-1", "toolName": "scripted_tool", "args": {"target": "example"}}]
+            [Confirmation(RID, "prompt-1", "scripted_tool", {"target": "example"}, "")]
         )
         await eventually(lambda: self._approval_modal is not None)
         await self.screen.wait_for_refresh()
@@ -41,7 +42,7 @@ class TerminalFixture(WispTuiApp):
         self.exit()
 
     def show_transcript(self) -> None:
-        self._session_loaded(
+        self._enter_session(
             {
                 "id": SID,
                 "effectiveSelection": {
@@ -50,9 +51,7 @@ class TerminalFixture(WispTuiApp):
                     "thinking": True,
                 },
             },
-            [],
-            "",
-            announce_empty=False,
+            None,
         )
         self._begin_run(RID)
         self._add_message(ChatMessage("user", "Show the server status"))

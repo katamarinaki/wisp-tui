@@ -5,19 +5,30 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .tool_data import ToolCallInfo, ToolHistoryInfo, command_summary, detail_text, output_text
+from .client import ClientError
+from .text import clip
+from .tool_data import MAX_NAME_CHARS, call_id_of, command_summary, detail_text, output_text
 
 
-class HistoryError(Exception):
-    """Raised when the history payload has an unexpected shape."""
+@dataclass(frozen=True)
+class ToolCallInfo:
+    name: str
+    call_id: str = ""
+    summary: str = ""
+
+
+@dataclass(frozen=True)
+class ToolHistoryInfo:
+    output_text: str
+    status: str = ""
+    summary: str = ""
 
 
 @dataclass(frozen=True)
 class ChatMessage:
     role: str  # "user" | "assistant" | "system" | "tool"
+    # A tool message's text is its output, formatted for display.
     text: str
-    # LangGraph message identity, when supplied; never inferred from the text.
-    message_id: str = ""
     tool_calls: tuple[ToolCallInfo, ...] = ()
     tool_name: str = ""
     tool_call_id: str = ""
@@ -51,13 +62,10 @@ def _parse_tool_calls(raw_calls: list[Any]) -> list[ToolCallInfo]:
     for call in raw_calls[:60]:
         if not isinstance(call, dict) or not isinstance(call.get("name"), str):
             continue
-        call_id = call.get("id")
-        name = call["name"]
         calls.append(
             ToolCallInfo(
-                name if len(name) <= 200 else name[:199] + "…",
-                call_id if isinstance(call_id, str) and 0 < len(call_id) <= 200 else "",
-                detail_text(call["args"]) if "args" in call else None,
+                clip(call["name"], MAX_NAME_CHARS),
+                call_id_of(call.get("id")),
                 command_summary(call["args"]) if "args" in call else "",
             )
         )
@@ -85,20 +93,16 @@ def _parse_message(message: Any) -> ChatMessage | None:
     )
     if not text.strip() and not calls and role != "tool":
         return None
-    message_id = message.get("id")
+    if role != "tool":
+        return ChatMessage(role=role, text=text, tool_calls=tuple(calls))
     tool_name = message.get("name")
-    tool_call_id = message.get("tool_call_id")
     status = message.get("status")
     return ChatMessage(
         role=role,
-        text=text,
-        message_id=message_id if isinstance(message_id, str) else "",
-        tool_calls=tuple(calls),
-        tool_name=tool_name if role == "tool" and isinstance(tool_name, str) else "",
-        tool_call_id=tool_call_id
-        if role == "tool" and isinstance(tool_call_id, str) and 0 < len(tool_call_id) <= 200
-        else "",
-        tool_status=status if role == "tool" and status in ("success", "error") else "",
+        text=output_text(text),
+        tool_name=tool_name if isinstance(tool_name, str) else "",
+        tool_call_id=call_id_of(message.get("tool_call_id")),
+        tool_status=status if status in ("success", "error") else "",
     )
 
 
@@ -125,8 +129,7 @@ def tool_history_results(
             results[message.tool_call_id] = message
     matched = {
         call_id: ToolHistoryInfo(
-            calls[call_id].input_text if call_id in calls else None,
-            output_text(message.text),
+            message.text,
             message.tool_status,
             calls[call_id].summary if call_id in calls else "",
         )
@@ -143,7 +146,7 @@ def parse_history(payload: Any) -> list[ChatMessage]:
     checkpoint's ``values.messages`` holds the full conversation state.
     """
     if not isinstance(payload, list):
-        raise HistoryError("unexpected_history_shape")
+        raise ClientError("unexpected_history_shape")
     for checkpoint in reversed(payload):
         if not isinstance(checkpoint, dict):
             continue

@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import fcntl
-import hashlib
 import json
 import os
 import re
-import stat
 import tempfile
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
@@ -17,7 +14,7 @@ from typing import Any
 from . import config
 from .client import UUID
 from .config import ConfigError
-from .submissions import MAX_DRAFT_BYTES
+from .submissions import IDEMPOTENCY_KEY_RE, MAX_DRAFT_BYTES
 
 MAX_HISTORY = 50
 MAX_HISTORY_BYTES = 256 * 1024
@@ -71,10 +68,7 @@ def _decode(data: dict[str, Any]) -> ComposerState:
             session is not None
             and (not isinstance(session, str) or not re.fullmatch(UUID, session))
         )
-        or (
-            key is not None
-            and (not isinstance(key, str) or not re.fullmatch(rf"wisp-tui:{UUID}", key))
-        )
+        or (key is not None and (not isinstance(key, str) or not IDEMPOTENCY_KEY_RE.fullmatch(key)))
     ):
         raise ComposerError("composer_state_invalid")
     prompts: tuple[str, ...] = tuple(history)
@@ -86,37 +80,17 @@ def _decode(data: dict[str, Any]) -> ComposerState:
 class ComposerStore:
     def __init__(self, runtime_url: str, root: Path | None = None) -> None:
         self.root = root if root is not None else config.STATE_DIR
-        fingerprint = hashlib.sha256(runtime_url.encode()).hexdigest()
-        self.path = self.root / f"composer-{fingerprint}.json"
+        self.path = self.root / f"composer-{config.runtime_fingerprint(runtime_url)}.json"
         self.lock_path = self.path.with_suffix(".lock")
         self._lock_fd: int | None = None
 
     def _lock(self) -> None:
         config.ensure_private_directory(self.root)
-        if self._lock_fd is not None:
-            return
-        fd = os.open(
-            self.lock_path,
-            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
-            0o600,
-        )
-        try:
-            info = os.fstat(fd)
-            if (
-                not stat.S_ISREG(info.st_mode)
-                or info.st_uid != os.getuid()
-                or info.st_mode & 0o077
-                or info.st_nlink != 1
-            ):
-                raise ComposerError("composer_state_insecure")
+        if self._lock_fd is None:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                raise ComposerError("composer_state_busy") from None
-        except BaseException:
-            os.close(fd)
-            raise
-        self._lock_fd = fd
+                self._lock_fd = config.lock_private_file(self.lock_path)
+            except ConfigError as error:
+                raise ComposerError(f"composer_state_{error}") from None
 
     def _read(self) -> ComposerState:
         try:

@@ -7,12 +7,11 @@ import contextlib
 import getpass
 import json
 import os
-import re
 import sys
 import tempfile
 from pathlib import Path
 
-from . import config
+from . import config, program_name
 from .client import ClientError, WispClient, validate_runtime_url
 
 DEFAULT_URL = "http://127.0.0.1:3008"
@@ -82,8 +81,7 @@ def setup(prog: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    name = os.environ.get("WISP_TUI_PROG", "")
-    prog = name if re.fullmatch(r"[A-Za-z0-9._-]{1,32}", name) else "wisp-tui"
+    prog = program_name()
     parser = argparse.ArgumentParser(
         prog=f"{prog} setup",
         description="Ask for the runtime URL and token (hidden), verify them "

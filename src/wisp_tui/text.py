@@ -22,16 +22,24 @@ def terminal_text(text: str) -> str:
     )
 
 
+def clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def printable(text: str, keep: str = "") -> str:
+    """Also hides bidi overrides and zero-width characters, not just controls."""
+    return "".join(char if char.isprintable() or char in keep else "�" for char in text)
+
+
 def safe_text(value: Any, limit: int = 4000) -> str:
     if not isinstance(value, str):
         return ""
-    return terminal_text(value if len(value) <= limit else value[: limit - 1] + "…")
+    return terminal_text(clip(value, limit))
 
 
 def metadata_text(value: Any, limit: int = 100) -> str:
     """Bound metadata and keep control characters from creating fake UI lines."""
-    text = safe_text(value, limit)
-    return "".join(char if char.isprintable() else "�" for char in text)
+    return printable(safe_text(value, limit))
 
 
 def pretty_args(args: Any, limit: int = 4000) -> str:
@@ -39,16 +47,13 @@ def pretty_args(args: Any, limit: int = 4000) -> str:
         rendered = json.dumps(args, indent=2, ensure_ascii=False, default=str)
     except (TypeError, ValueError):
         rendered = repr(args)
-    # Also hide bidi overrides and zero-width characters: the owner reads these to approve.
-    return "".join(
-        char if char.isprintable() or char in "\n\t" else "�" for char in safe_text(rendered, limit)
-    )
+    # The owner reads these to approve.
+    return printable(safe_text(rendered, limit), "\n\t")
 
 
 def title_from(draft: str, limit: int = 60) -> str:
     """Session title from the first non-empty line of the first prompt."""
-    line = next((line.strip() for line in draft.splitlines() if line.strip()), "")
-    return line if len(line) <= limit else line[: limit - 1] + "…"
+    return clip(next((line.strip() for line in draft.splitlines() if line.strip()), ""), limit)
 
 
 def display_path(path: Path) -> str:
@@ -68,12 +73,10 @@ def usage_line(usage: Any) -> str:
     return ", ".join(parts)
 
 
-def model_label(session: dict[str, Any]) -> str:
-    selection = session.get("effectiveSelection")
-    if isinstance(selection, dict):
-        if selection.get("mode") == "model":
-            return f"model: {metadata_text(selection.get('model')) or 'unavailable'}"
-        mode = metadata_text(selection.get("mode"))
-        if mode:
-            return f"mode: {mode} (runtime-selected model)"
+def model_label(selection: dict[str, Any]) -> str:
+    if selection.get("mode") == "model":
+        return f"model: {metadata_text(selection.get('model')) or 'unavailable'}"
+    mode = metadata_text(selection.get("mode"))
+    if mode:
+        return f"mode: {mode} (runtime-selected model)"
     return "model: unavailable (runtime default)"

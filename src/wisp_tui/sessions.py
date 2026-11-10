@@ -18,7 +18,6 @@ import contextlib
 import json
 import os
 import re
-import stat
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -26,10 +25,10 @@ from pathlib import Path
 from typing import Any
 
 from . import config
-from .client import UUID
+from .client import UUID, valid_project_root
 from .config import ConfigError
+from .text import clip
 
-UUID_RE = re.compile(UUID)
 # A session ID or a prefix of one (as shown in pickers), for --resume / /resume.
 RESUME_QUERY_RE = re.compile(r"[0-9a-f][0-9a-f-]{3,35}")
 SESSION_FILE_RE = re.compile(rf"(\d{{8}}T\d{{6}}Z)_({UUID})\.jsonl")
@@ -59,9 +58,7 @@ class SessionSummary:
     def label(self) -> str:
         when = datetime.fromtimestamp(self.updated).strftime("%Y-%m-%d %H:%M")
         title = "".join(char if char.isprintable() else " " for char in self.title)
-        title = title.strip() or "(untitled)"
-        if len(title) > 70:
-            title = title[:69] + "…"
+        title = clip(title.strip() or "(untitled)", 70)
         return f"{title}  ·  {when}  ·  {self.id[:8]}"
 
 
@@ -70,9 +67,13 @@ class SessionStore:
         # Resolved at construction so tests can redirect config.STATE_DIR.
         self.root = root if root is not None else config.STATE_DIR / "sessions"
 
-    # -- writing ----------------------------------------------------------------
-
-    def record(self, session_id: str, entry: dict[str, Any], title: str = "") -> str:
+    def record(
+        self,
+        session_id: str,
+        entry: dict[str, Any],
+        title: str = "",
+        project_root: str | None = None,
+    ) -> str:
         """Append ``entry``; create the file (with header) on first use.
 
         Returns "" on success or a safe error code. Never raises.
@@ -100,6 +101,8 @@ class SessionStore:
                     "timestamp": _now(),
                     "title": _truncate_long_text(title),
                 }
+                if project_root is not None:
+                    header["projectRoot"] = project_root
                 payload = json.dumps(header, ensure_ascii=False) + "\n" + payload
             return self._append(path, payload.encode())
         except ConfigError:
@@ -112,12 +115,7 @@ class SessionStore:
         fd = os.open(path, flags, 0o600)
         try:
             info = os.fstat(fd)
-            if (
-                not stat.S_ISREG(info.st_mode)
-                or info.st_uid != os.getuid()
-                or info.st_mode & 0o077
-                or info.st_nlink != 1
-            ):
+            if not config.is_private_file(info):
                 return "local_sessions_insecure"
             if info.st_size + len(data) > MAX_SESSION_FILE_BYTES:
                 return "local_session_full"
@@ -134,14 +132,12 @@ class SessionStore:
                 with contextlib.suppress(OSError):
                     path.unlink()
 
-    # -- reading ----------------------------------------------------------------
-
     def _files(self) -> list[tuple[Path, str, float]]:
         try:
             info = self.root.lstat()
         except OSError:
             return []
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        if not config.is_private_dir(info):
             return []
         found: list[tuple[Path, str, float]] = []
         for path in self.root.iterdir():
@@ -152,11 +148,7 @@ class SessionStore:
                 file_info = path.lstat()
             except OSError:
                 continue
-            if (
-                stat.S_ISREG(file_info.st_mode)
-                and file_info.st_uid == os.getuid()
-                and not file_info.st_mode & 0o077
-            ):
+            if config.is_private_file(file_info):
                 found.append((path, match.group(2), file_info.st_mtime))
         return found
 
@@ -191,6 +183,21 @@ class SessionStore:
             SessionSummary(session_id, self._title(path), mtime, path)
             for session_id, (path, mtime) in ordered[:limit]
         ]
+
+    def project_root(self, session_id: str) -> str | None:
+        """The Project folder saved in the session's header, if any. Never raises."""
+        path = self.path_for(session_id)
+        if path is None:
+            return None
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            with os.fdopen(fd, "rb") as source:
+                header = json.loads(source.readline(MAX_TITLE_SCAN_BYTES))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(header, dict) or header.get("type") != "session":
+            return None
+        return valid_project_root(header.get("projectRoot"))
 
     def _title(self, path: Path) -> str:
         try:

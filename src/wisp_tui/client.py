@@ -25,7 +25,9 @@ from typing import Any, Protocol
 MAX_JSON_BYTES = 8_388_608  # 8 MiB cap for JSON API responses
 MAX_EVENT_BYTES = 1_048_576  # per SSE event
 UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+UUID_RE = re.compile(UUID)
 PROMPT_ID = r"[A-Za-z0-9._:-]{1,128}"
+MAX_PROJECT_ROOT_CHARS = 4096
 
 ALLOWED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", r"/v1/health"),
@@ -42,8 +44,6 @@ ALLOWED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", rf"/v1/runs/{UUID}/events"),
     ("POST", rf"/v1/runs/{UUID}/confirmations/{PROMPT_ID}"),
 )
-
-TERMINAL_RUN_STATUSES = ("completed", "failed", "cancelled")
 
 
 class ClientError(Exception):
@@ -82,35 +82,62 @@ def validate_token(value: object) -> str:
     return value
 
 
-def _validate_runs_query(path: str) -> dict[str, str]:
-    """Parse and validate a conservative query string for GET /v1/runs."""
-    query = urllib.parse.urlsplit(path).query
-    if not query:
-        return {}
-    pairs = urllib.parse.parse_qsl(query, keep_blank_values=True)
-    allowed = {"sessionId", "status", "limit", "cursor"}
-    result: dict[str, str] = {}
-    for key, value in pairs:
-        if key not in allowed or not value or key in result:
-            raise ClientError("query_parameter_not_permitted")
-        if key == "sessionId" and not re.fullmatch(UUID, value):
-            raise ClientError("invalid_session_id")
-        if key == "status" and not re.fullmatch(r"[a-z,]{1,80}", value):
-            raise ClientError("invalid_status_filter")
-        if key == "limit" and not re.fullmatch(r"[1-9][0-9]{0,2}", value):
-            raise ClientError("invalid_limit")
-        result[key] = value
-    return result
+def _runs_query_permitted(query: str) -> bool:
+    """A conservative query string for GET /v1/runs."""
+    seen: set[str] = set()
+    for key, value in urllib.parse.parse_qsl(query, keep_blank_values=True):
+        valid = {
+            "sessionId": UUID,
+            "status": r"[a-z,]{1,80}",
+            "limit": r"[1-9][0-9]{0,2}",
+            "cursor": r".+",
+        }.get(key)
+        if valid is None or key in seen or not re.fullmatch(valid, value):
+            return False
+        seen.add(key)
+    return True
+
+
+def valid_project_root(value: object) -> str | None:
+    """An absolute folder path that is safe to send as ``projectRoot``, else None."""
+    if (
+        isinstance(value, str)
+        and 1 < len(value) <= MAX_PROJECT_ROOT_CHARS
+        and value.startswith("/")
+        and value.isprintable()
+    ):
+        return value
+    return None
+
+
+def session_path(session_id: str, suffix: str = "", project_root: str | None = None) -> str:
+    """A session route; the runtime finds a dropped Project Session only by its folder."""
+    path = f"/v1/sessions/{session_id}{suffix}"
+    if project_root is None:
+        return path
+    return (
+        path
+        + "?"
+        + urllib.parse.urlencode({"projectRoot": project_root}, quote_via=urllib.parse.quote)
+    )
 
 
 def _route_permitted(method: str, path: str) -> bool:
-    base = urllib.parse.urlsplit(path).path
+    split = urllib.parse.urlsplit(path)
+    base = split.path
     if not any(m == method and re.fullmatch(p, base) for m, p in ALLOWED_ROUTES):
         return False
     if base == "/v1/runs":
-        try:
-            _validate_runs_query(path)
-        except ClientError:
+        return _runs_query_permitted(split.query)
+    if split.query:
+        if not re.fullmatch(rf"/v1/sessions/{UUID}(/runs|/cancel)?", base):
+            return False
+        pairs = urllib.parse.parse_qsl(split.query, keep_blank_values=True)
+        if (
+            len(pairs) != 1
+            or pairs[0][0] != "projectRoot"
+            or valid_project_root(pairs[0][1]) is None
+        ):
             return False
     return True
 
@@ -123,27 +150,6 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-class _FakeResponse:
-    """Minimal response interface for tests: context manager + byte lines."""
-
-    def __init__(self, lines: list[bytes]) -> None:
-        self._lines = lines
-        self.status = 200
-        self.closed = False
-
-    def __iter__(self) -> Iterator[bytes]:
-        return iter(self._lines)
-
-    def __enter__(self) -> _FakeResponse:
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        self.close()
-
-    def close(self) -> None:
-        self.closed = True
-
-
 class WispClient:
     def __init__(
         self, url: str, token: str, opener: urllib.request.OpenerDirector | None = None
@@ -153,8 +159,6 @@ class WispClient:
         self.opener = opener or urllib.request.build_opener(
             urllib.request.ProxyHandler({}), _NoRedirect()
         )
-
-    # -- plain JSON requests -------------------------------------------------
 
     def request(
         self, method: str, path: str, body: dict[str, Any] | None = None, timeout: float = 10.0
@@ -192,8 +196,6 @@ class WispClient:
             raise ClientError("runtime_unreachable") from None
         except ValueError:
             raise ClientError("invalid_runtime_response") from None
-
-    # -- SSE event stream ----------------------------------------------------
 
     def iter_events(
         self, run_id: str, last_seq: int | None = None, read_timeout: float = 600.0

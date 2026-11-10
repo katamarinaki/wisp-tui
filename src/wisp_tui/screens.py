@@ -16,6 +16,9 @@ from .text import metadata_text, pretty_args
 APPROVAL_ARGS_LIMIT = 200_000
 # Rule decisions outlive the run, so they take a second, re-armed key press.
 RULE_DECISIONS = {"allow_project": ("p", "this project"), "allow_global": ("g", "every project")}
+DECISIONS = ("approve", "deny", *RULE_DECISIONS)
+# Selections where Wisp picks the model.
+AUTO_MODES = ("advanced", "balanced")
 
 
 class ApprovalModal(ModalScreen[str | None]):
@@ -168,8 +171,7 @@ class ModelPicker(ModalScreen[dict[str, Any] | None]):
     def __init__(self, models: list[dict[str, Any]], current: dict[str, Any] | None) -> None:
         super().__init__()
         self.options: list[dict[str, Any]] = [
-            {"mode": "advanced", "thinking": False},
-            {"mode": "balanced", "thinking": False},
+            {"mode": mode, "thinking": False} for mode in AUTO_MODES
         ]
         for model in models:
             model_id = model.get("id")
@@ -199,10 +201,7 @@ class ModelPicker(ModalScreen[dict[str, Any] | None]):
             return self.current.get("mode") == "model" and self.current.get("model") == option.get(
                 "model"
             )
-        return self.current.get("mode") == option.get("mode") and self.current.get("mode") in (
-            "advanced",
-            "balanced",
-        )
+        return self.current.get("mode") == option.get("mode") in AUTO_MODES
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         index = event.list_view.index if event.list_view.index is not None else -1

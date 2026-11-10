@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import urllib.parse
+
 import pytest
 
 from tests.helpers import FakeJsonResponse, FakeOpener, make_client, sse_response
-from wisp_tui.client import ClientError, WispClient, _route_permitted
+from wisp_tui.client import ClientError, WispClient, _route_permitted, session_path
 
 
 class TestRouteAllowlist:
@@ -61,6 +63,37 @@ class TestRouteAllowlist:
         assert not _route_permitted("GET", "/v1/runs?origin=all")
         assert not _route_permitted("GET", "/v1/runs?limit=9999")
         assert not _route_permitted("GET", "/v1/runs?status=parked&status=queued")
+
+    def test_project_root_query_only_on_session_runs_and_cancel(self) -> None:
+        sid = "3bf1ba87-760e-4c0c-8a9d-a88a581d6bc5"
+        root = "/tmp/a b&c=d#e?f/é"
+        assert session_path(sid, "/runs") == f"/v1/sessions/{sid}/runs"
+        assert _route_permitted("PATCH", session_path(sid, "", root))
+        assert _route_permitted("POST", session_path(sid, "/runs", root))
+        assert _route_permitted("POST", session_path(sid, "/cancel", root))
+        for method, path in [
+            ("GET", f"/v1/sessions/{sid}/history?projectRoot=%2Fp"),
+            ("GET", "/v1/sessions?projectRoot=%2Fp"),
+            ("GET", "/v1/models?x=1"),
+            ("POST", f"/v1/sessions/{sid}/runs?other=%2Fp"),
+            ("POST", f"/v1/sessions/{sid}/runs?projectRoot=%2Fp&projectRoot=%2Fq"),
+            ("POST", f"/v1/sessions/{sid}/runs?projectRoot=%2Fp&limit=1"),
+            ("POST", f"/v1/sessions/{sid}/runs?projectRoot=relative"),
+            ("POST", f"/v1/sessions/{sid}/runs?projectRoot=%2F"),
+            ("POST", f"/v1/sessions/{sid}/runs?projectRoot=%2Fa%0Ab"),
+            ("POST", f"/v1/sessions/{sid}/runs?projectRoot=%2F{'a' * 4096}"),
+        ]:
+            assert not _route_permitted(method, path), f"{method} {path} should be refused"
+
+    def test_project_root_reaches_the_runtime_intact(self) -> None:
+        sid = "3bf1ba87-760e-4c0c-8a9d-a88a581d6bc5"
+        root = "/tmp/a b&c=d#e?f/é"
+        opener = FakeOpener()
+        opener.responses.append(FakeJsonResponse({}))
+        make_client(opener).request("POST", session_path(sid, "/cancel", root), {})
+        sent = urllib.parse.urlsplit(opener.requests[0].path)
+        assert sent.path == f"/v1/sessions/{sid}/cancel" and not sent.fragment
+        assert urllib.parse.parse_qsl(sent.query) == [("projectRoot", root)]
 
 
 class TestClientConstruction:

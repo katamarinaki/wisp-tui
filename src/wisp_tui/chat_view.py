@@ -10,7 +10,7 @@ from rich.style import Style
 from textual import events
 from textual.app import App
 from textual.containers import VerticalScroll
-from textual.geometry import Offset, Region
+from textual.geometry import Offset, Region, Size
 from textual.message import Message
 from textual.strip import Strip
 from textual.timer import Timer
@@ -54,7 +54,10 @@ class ChatScroll(VerticalScroll):
             for child in self.children:
                 region = child.virtual_region
                 if region.y <= max(rows) and region.bottom > min(rows):
-                    child.refresh()
+                    if isinstance(child, SelectableStatic):
+                        child.repaint_selection()
+                    else:
+                        child.refresh()
 
     def clear_selection(self) -> None:
         if self.selection is not None:
@@ -135,6 +138,28 @@ _SELECTED = Style(reverse=True)
 class SelectableStatic(Static):
     """A chat entry that shows the chat's drag selection."""
 
+    _selection_repaint: tuple[Size, object] | None = None
+
+    def repaint_selection(self) -> None:
+        """Redraw the selection marks without rendering the content again."""
+        # A pending refresh (new text) still has to render: the lines are stale.
+        if not self._dirty_regions:
+            self._selection_repaint = (self.size, self.visual)
+        self.refresh()
+
+    def _render_content(self) -> None:
+        # Rendering a long Markdown answer takes ~0.1 s; doing it on every
+        # mouse move froze dragging. Reuse the lines if only the marks moved.
+        repaint, self._selection_repaint = self._selection_repaint, None
+        if (
+            repaint is not None
+            and repaint[0] == self.size == self._render_cache.size
+            and repaint[1] is self.visual
+        ):
+            self._dirty_regions.clear()
+            return
+        super()._render_content()
+
     def render_lines(self, crop: Region) -> list[Strip]:
         strips = super().render_lines(crop)
         chat = self.parent
@@ -187,6 +212,9 @@ class ChatItem(SelectableStatic):
 
     def remaining(self) -> str:
         return self.text[self.committed :]
+
+    def entry(self) -> tuple[str, str]:
+        return self.kind, self.remaining()
 
     def _show(self) -> None:
         text = self.remaining().strip("\n")

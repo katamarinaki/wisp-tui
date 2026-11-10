@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from typing import Any
+
+from .text import printable
 
 MAX_DETAIL_CHARS = 12 * 1024
 MAX_DETAIL_LINES = 200
 MAX_SUMMARY_CHARS = 200
+MAX_NAME_CHARS = 200
 
 
 def _json_prefix(value: Any, limit: int, indent: int | None = None) -> str:
@@ -34,7 +36,7 @@ def detail_text(value: Any) -> str:
         return "unsupported_tool_detail"
     truncated = len(text) > MAX_DETAIL_CHARS
     text = text[:MAX_DETAIL_CHARS].replace("\r\n", "\n").replace("\r", "\n")
-    text = "".join(char if char.isprintable() or char in "\n\t" else "�" for char in text)
+    text = printable(text, "\n\t")
     lines = text.split("\n")
     bounded = "\n".join(lines[:MAX_DETAIL_LINES])
     if truncated or len(lines) > MAX_DETAIL_LINES:
@@ -160,23 +162,12 @@ def command_summary(args: Any) -> str:
     if not text:
         return ""
     lines = text.strip().splitlines() or [""]
-    line = "".join(char if char.isprintable() else "�" for char in lines[0])
+    line = printable(lines[0])
     if len(lines) > 1 or len(line) > MAX_SUMMARY_CHARS:
         line = line[: MAX_SUMMARY_CHARS - 1] + "…"
     return line
 
 
-@dataclass(frozen=True)
-class ToolCallInfo:
-    name: str
-    call_id: str = ""
-    input_text: str | None = None
-    summary: str = ""
-
-
-@dataclass(frozen=True)
-class ToolHistoryInfo:
-    input_text: str | None
-    output_text: str
-    status: str = ""
-    summary: str = ""
+def call_id_of(value: Any) -> str:
+    """A tool call ID fit to correlate a call with its result; "" if not."""
+    return value if isinstance(value, str) and 0 < len(value) <= MAX_NAME_CHARS else ""

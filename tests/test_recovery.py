@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from tests.helpers import RID, SID, RequestGate
-from tests.test_app import approval_armed, chat_text, eventually, make_app
+from tests.test_app import approval_armed, chat_text, eventually, make_app, ready
 from tests.test_runs import record
 from wisp_tui.client import ClientError
 from wisp_tui.editor import PromptInput as Input
@@ -42,7 +42,7 @@ async def test_reopen_reattaches_then_reconciles_current_terminal_state(
     gate = RequestGate("GET", RUN_PATH)
     client.request_hook = gate
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         try:
             app._open_session(SID)
             await eventually(gate.entered.is_set)
@@ -63,7 +63,7 @@ async def test_disconnection_keeps_run_cursor_and_blocks_new_submission(
     monkeypatch.setattr(RunFollower, "MAX_FAILURES", 1)
     app, client = make_app([{"seq": 1, "kind": "text.delta", "text": "partial"}], monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         app._start_follow()
@@ -92,7 +92,7 @@ async def test_external_approval_closes_open_dialog_without_posting(
     app, client = make_app(EVENTS, monkeypatch)
     client.run_status = "parked"
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         app._start_follow()
@@ -119,7 +119,7 @@ async def test_multiple_prompts_do_not_start_competing_followers(
     gate = RequestGate("POST", RUN_PATH + "/confirmations/prompt-1")
     client.request_hook = gate
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         app._start_follow()
@@ -155,7 +155,7 @@ async def test_failed_approval_is_reconciled_not_automatically_reposted(
     path = RUN_PATH + "/confirmations/prompt-1"
     client.replies[("POST", path)] = deque([ClientError("runtime_timeout")])
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         app._start_follow()
@@ -182,7 +182,7 @@ async def test_already_resolved_approval_404_reconciles_terminal_record(
     # remote resolution; pause polling by using a long, interruptible wait.
     monkeypatch.setattr(RunFollower, "POLL_INTERVAL", 60.0)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         app._start_follow()
@@ -198,13 +198,12 @@ async def test_already_resolved_approval_404_reconciles_terminal_record(
 async def test_stale_callbacks_cannot_modify_another_run(monkeypatch: pytest.MonkeyPatch) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         old = RunFollower(
             app.client,
             RID,
             SID,
-            event_timeout=600,
             last_seq=None,
             on_event=lambda e: None,
             on_snapshot=lambda r: None,
@@ -229,7 +228,7 @@ async def test_cancel_failure_can_be_retried_without_losing_run(
     path = f"/v1/sessions/{SID}/cancel"
     client.replies[("POST", path)] = deque([ClientError("runtime_timeout")])
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         app._cancel_run()
@@ -250,7 +249,7 @@ async def test_cancel_during_submission_waits_for_acknowledgement(
     gate = RequestGate("POST", path)
     client.request_hook = gate
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         try:
             app.query_one("#input", Input).value = "long task"
@@ -269,13 +268,12 @@ async def test_cancel_during_submission_waits_for_acknowledgement(
 async def test_gap_snapshot_does_not_truncate_long_answer(monkeypatch: pytest.MonkeyPatch) -> None:
     app, _ = make_app([], monkeypatch)
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         text = "answer " * 800
         app._handle_event({"seq": 10, "kind": "gap", "status": "running", "text": text})
         app._handle_event({"seq": 11, "kind": "text.delta", "text": "end"})
-        assert app._answer_text == text + "end"
         await eventually(lambda: text + "end" in chat_text(app))
 
 
@@ -286,7 +284,7 @@ async def test_old_unacknowledged_submission_is_not_replayed(
     path = f"/v1/sessions/{SID}/runs"
     client.replies[("POST", path)] = deque([ClientError("runtime_timeout")])
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app.query_one("#input", Input).value = "original task"
         await pilot.press("enter")

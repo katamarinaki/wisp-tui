@@ -23,7 +23,6 @@ class TestLoadConfig:
         cfg = load_config(path)
         assert cfg.url == "http://127.0.0.1:3008"
         assert cfg.max_turns == 40
-        assert cfg.event_timeout == 600.0
 
     def test_missing_file(self, tmp_path: Path) -> None:
         with pytest.raises(ConfigError):

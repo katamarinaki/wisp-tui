@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from tests.helpers import RID, SID, ScriptedClient
-from tests.test_app import chat_text, eventually, make_app
+from tests.test_app import chat_text, eventually, make_app, ready
 from tests.test_runs import record
 from wisp_tui.app import WispTuiApp
 from wisp_tui.history import ChatMessage, parse_history
@@ -17,22 +17,16 @@ from wisp_tui.runs import RunFollower
 HISTORY = f"/v1/sessions/{SID}/history"
 RUN = f"/v1/runs/{RID}"
 LIST = f"/v1/runs?sessionId={SID}&status=queued,running,parked&limit=200"
-QUESTION = ChatMessage("user", "A question", "question-1")
-PARTIAL = ChatMessage("assistant", "A partial", "answer-1")
-FINAL = ChatMessage("assistant", "A partial answer", "answer-1")
+QUESTION = ChatMessage("user", "A question")
+PARTIAL = ChatMessage("assistant", "A partial")
+FINAL = ChatMessage("assistant", "A partial answer")
 OTHER = "af06ed54-82b0-45e6-af55-7c85ab55e7ea"
 
 
 def history(messages: list[ChatMessage]) -> list[dict[str, Any]]:
     kinds = {"user": "human", "assistant": "ai", "tool": "tool", "system": "system"}
     return [
-        {
-            "values": {
-                "messages": [
-                    {"type": kinds[m.role], "content": m.text, "id": m.message_id} for m in messages
-                ]
-            }
-        }
+        {"values": {"messages": [{"type": kinds[m.role], "content": m.text} for m in messages]}}
     ]
 
 
@@ -40,13 +34,8 @@ def answers(app: WispTuiApp) -> list[str]:
     return [text for kind, text in app.transcript() if kind == "assistant"]
 
 
-def test_history_retains_message_identity_without_merging_identical_turns() -> None:
-    messages = [
-        QUESTION,
-        FINAL,
-        ChatMessage("user", QUESTION.text, "q2"),
-        ChatMessage("assistant", FINAL.text, "a2"),
-    ]
+def test_history_keeps_identical_turns_apart() -> None:
+    messages = [QUESTION, FINAL, QUESTION, FINAL]
     assert parse_history(history(messages)) == messages
     assert parse_history(
         [
@@ -107,7 +96,7 @@ async def test_reattached_run_output_stays_separately_labelled(
     before = after
     configure_reattach(app, before, after)
     async with app.run_test():
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app._open_session(SID)
         await wait_finished(app)
         await eventually(lambda: answers(app) == [before[-1].text, FINAL.text])
@@ -119,9 +108,7 @@ async def test_reattached_long_history_prints_only_the_tail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(WispTuiApp, "MAX_CHAT_ITEMS", 5)
-    older = [
-        ChatMessage("user" if i % 2 == 0 else "assistant", f"old {i}", str(i)) for i in range(100)
-    ]
+    older = [ChatMessage("user" if i % 2 == 0 else "assistant", f"old {i}") for i in range(100)]
     before = [*older, QUESTION]
     after = [*before, FINAL]
     app, _ = make_app(
@@ -130,7 +117,7 @@ async def test_reattached_long_history_prints_only_the_tail(
     )
     configure_reattach(app, before, after)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app._open_session(SID)
         await wait_finished(app)
         await pilot.pause()
@@ -161,7 +148,7 @@ async def test_reconnect_replays_cursor_once_then_reconciles_gap_and_completion(
         ]
     )
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app._open_session(SID)
         await eventually(lambda: app._follower is None and app._disconnected)
         app._handle_command("/reconnect")

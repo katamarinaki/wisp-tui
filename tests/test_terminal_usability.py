@@ -11,9 +11,10 @@ from textual.timer import Timer
 from textual.widgets import ListItem, ListView, Static
 
 from tests.helpers import RID, SID
-from tests.test_app import eventually, freeze_ctrl_c_clock, make_app
+from tests.test_app import eventually, freeze_ctrl_c_clock, make_app, ready
 from tests.test_rendering import lines, printed
 from wisp_tui.editor import PromptInput
+from wisp_tui.runs import Confirmation
 from wisp_tui.screens import APPROVAL_ARGS_LIMIT, ApprovalModal, ModelPicker, SessionPicker
 
 
@@ -207,11 +208,11 @@ async def test_ctrl_c_cancels_active_work_from_every_modal_without_approving(
     freeze_ctrl_c_clock(monkeypatch)
     app, client = make_app([], monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app._begin_run(RID)
         if modal_kind == "approval":
-            app._sync_confirmations([{"id": "prompt-1", "toolName": "scripted", "args": {}}])
+            app._sync_confirmations([Confirmation(RID, "prompt-1", "scripted", {}, "")])
             await eventually(lambda: isinstance(app.screen, ApprovalModal))
         elif modal_kind == "session":
             app.push_screen(SessionPicker([(SID, "Example session")]))
@@ -242,7 +243,7 @@ async def test_long_mixed_stream_resizes_with_modal_and_preserves_exact_render(
     expected = "".join(parts)
     assert len(expected) > 12000
     async with app.run_test(size=(100, 30)) as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         editor = app.query_one(PromptInput)
         editor.value = "draft stays editable"
         app.session_id = SID

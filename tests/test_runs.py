@@ -28,7 +28,6 @@ def follower(
             client,
             RID,
             SID,
-            event_timeout=600.0,
             last_seq=None,
             on_event=events.append,
             on_snapshot=records.append,
@@ -207,14 +206,11 @@ def test_stop_wakes_poll_wait_without_more_requests() -> None:
         client,
         RID,
         SID,
-        event_timeout=600,
         last_seq=None,
         on_event=lambda e: None,
         on_snapshot=lambda r: None,
         on_error=lambda e: None,
     )
     worker.stop()
-    assert worker.wake.is_set()
     worker.run()
     assert not client.calls
-    assert worker.event_timeout == 20.0

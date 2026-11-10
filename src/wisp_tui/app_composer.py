@@ -5,9 +5,8 @@ from __future__ import annotations
 from textual.widgets import Static, TextArea
 
 from .app_chat import ChatLayer
+from .commands import completions, is_command_text
 from .composer import ComposerError, ComposerState, bounded_history
-from .editor import PromptInput
-from .help_text import COMMANDS
 from .submissions import MAX_DRAFT_BYTES
 
 
@@ -16,14 +15,13 @@ class ComposerLayer(ChatLayer):
         if code not in self._composer_errors:
             self._composer_errors.add(code)
             message = f"Input history/draft recovery: {code}. Current text is kept in memory."
-            if self._composer_editor is not None and self._composer_editor.is_attached:
+            if self._prompt_input.is_attached:
                 self._show_line(message, "error")
             else:
                 self.console.print(f"Input history/draft was not saved: {code}")
 
     def _restore_composer(self) -> None:
-        editor = self.query_one("#input", PromptInput)
-        self._composer_editor = editor
+        editor = self._prompt_input
         try:
             state = self.composer.load()
         except ComposerError as error:
@@ -49,12 +47,11 @@ class ComposerLayer(ChatLayer):
         self._recoverable_draft = state if state.draft else None
         pending = self._pending_submission
         if pending is not None and state.draft and state.session_id == pending.session_id:
-            editor.value = state.draft
             self._recoverable_draft = None
-            self._composer_submission_key = state.submission_key
+            self._load_draft(state.draft, state.submission_key)
         else:
+            self._composer_draft = editor.value
             self._composer_submission_key = pending.idempotency_key if pending is not None else None
-        self._composer_draft = editor.value
         if pending is not None:
             self._composer_dirty = True
         elif self.startup.mode == "new":
@@ -76,33 +73,42 @@ class ComposerLayer(ChatLayer):
                 "to recover it; the saved draft was not sent."
             )
 
+    def _load_draft(self, draft: str, submission_key: str | None) -> None:
+        """Put ``draft`` in the editor as the draft to save, tagged with its request."""
+        self._prompt_input.value = draft
+        self._composer_draft = draft
+        self._composer_submission_key = submission_key
+
     def _restore_matching_draft(self) -> None:
-        editor = self._composer_editor
         state = self._recoverable_draft
         if (
-            editor is not None
-            and state is not None
-            and not editor.value
+            state is not None
+            and not self._prompt_input.value
             and state.session_id == self.session_id
         ):
-            editor.value = state.draft
-            self._composer_draft = state.draft
-            self._composer_submission_key = state.submission_key
             self._recoverable_draft = None
+            self._load_draft(state.draft, state.submission_key)
             self._show_line("Recovered unsent draft. Nothing was sent; Enter sends it when ready.")
 
+    def _draft_follows_session(self) -> None:
+        """The saved draft names its session: restore the new one's, or re-save under it."""
+        self._restore_matching_draft()
+        if self._prompt_input.value:
+            self._save_draft_soon()
+
     def _capture_composer(self) -> None:
-        editor = self._composer_editor
-        if editor is not None and editor.value != self._composer_draft:
+        editor = self._prompt_input
+        if editor.value != self._composer_draft:
             self._composer_draft = editor.value
             self._composer_submission_key = None
-            if editor.value and not self._composer_command(editor.value):
+            if editor.value and not is_command_text(editor.value):
                 self._recoverable_draft = None
             self._composer_dirty = True
 
-    @staticmethod
-    def _composer_command(text: str) -> bool:
-        return text.lstrip().startswith("/") and "\n" not in text and "\r" not in text
+    def _save_draft_soon(self) -> None:
+        """The editor's draft changed outside typing (load, session, submission)."""
+        self._composer_dirty = True
+        self._queue_composer_save()
 
     def _queue_composer_save(self) -> None:
         if self._composer_timer is not None:
@@ -113,18 +119,15 @@ class ComposerLayer(ChatLayer):
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if event.text_area is self._prompt_input:
             self._render_command_hints(self._prompt_input.text)
-        if event.text_area is self._composer_editor:
             self._capture_composer()
             self._queue_composer_save()
 
     def _render_command_hints(self, text: str) -> None:
-        matches = []
-        if text.startswith("/") and not any(char.isspace() for char in text):
-            matches = [command for command in COMMANDS if command[0].startswith(text)]
-        lines = [f"{f'{name} {args}'.rstrip():<16}{about}" for name, args, about in matches]
+        matches = completions(text)
+        lines = [f"{f'{name} {usage}'.rstrip():<16}{about}" for name, usage, about in matches]
         if len(matches) > 6:
             # Too many to describe without crowding the transcript: names only.
-            lines = ["  ".join(name for name, _, _ in matches)]
+            lines = ["  ".join(command.name for command in matches)]
         # A queued change can arrive after shutdown removed the footer.
         for hints in self.query("#command-hints").results(Static):
             hints.update("\n".join(lines))
@@ -138,7 +141,7 @@ class ComposerLayer(ChatLayer):
             self._composer_warning("draft_too_large_to_save")
             return
         try:
-            draft = "" if self._composer_command(self._composer_draft) else self._composer_draft
+            draft = "" if is_command_text(self._composer_draft) else self._composer_draft
             recovery = self._recoverable_draft
             # Unmatched saved text is independent of a restored pending request.
             # Only an explicit editor change or matching restore claims its slot.
@@ -162,7 +165,8 @@ class ComposerLayer(ChatLayer):
     def _draft_fits(self, draft: str) -> bool:
         if len(draft.encode("utf-8")) > MAX_DRAFT_BYTES:
             self._show_line(
-                "Prompt exceeds the safe recovery limit (128 KiB). Split it; your draft is kept."
+                f"Prompt exceeds the safe recovery limit ({MAX_DRAFT_BYTES // 1024} KiB). "
+                "Split it; your draft is kept."
             )
             return False
         return True

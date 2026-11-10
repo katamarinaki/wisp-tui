@@ -8,9 +8,12 @@ never against a key fetched during the update.
 from __future__ import annotations
 
 import argparse
+import asyncio
+import contextlib
 import os
 import re
 import shlex
+import signal
 import stat
 import subprocess
 import sys
@@ -58,13 +61,33 @@ def release_version(name: str) -> tuple[int, int, int] | None:
     return None if match is None else (int(match[1]), int(match[2]), int(match[3]))
 
 
-# Lists origin's release tags. Run detached from the terminal (no stdin, new
-# session) so neither Git nor ssh can prompt over the TUI.
-RELEASE_QUERY = ("git", "ls-remote", "--tags", "--refs", "origin", "refs/tags/v*")
-
-
-def release_query_env() -> dict[str, str]:
-    return {**os.environ, "GIT_TERMINAL_PROMPT": "0", "SSH_ASKPASS_REQUIRE": "never"}
+async def check_release(root: Path, current: str) -> str | None:
+    """Origin's newest release tag above ``current``, asked without a terminal."""
+    # No stdin and a new session, so neither Git nor ssh can prompt over the TUI.
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *("git", "ls-remote", "--tags", "--refs", "origin", "refs/tags/v*"),
+            cwd=root,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "SSH_ASKPASS_REQUIRE": "never"},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        return None
+    try:
+        output, _ = await asyncio.wait_for(process.communicate(), 15.0)
+    except TimeoutError:
+        return None
+    finally:
+        if process.returncode is None:
+            # Its own session: this also stops ssh or https helpers Git started.
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+    if process.returncode != 0:
+        return None
+    return newer_release(output.decode("utf-8", "replace"), current)
 
 
 def newer_release(ls_remote: str, current: str) -> str | None:
@@ -262,8 +285,8 @@ def update(root: Path, prog: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # The launcher passes its symlink name through WISP_TUI_PROG, but importing
-    # __main__ would load Textual (which this command may need to repair).
+    # A copy of wisp_tui.program_name: the updater imports nothing from the
+    # package, so it still runs when the rest of the checkout needs repair.
     name = os.environ.get("WISP_TUI_PROG", "")
     prog = name if re.fullmatch(r"[A-Za-z0-9._-]{1,32}", name) else "wisp-tui"
     parser = argparse.ArgumentParser(

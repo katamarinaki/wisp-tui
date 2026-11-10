@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from tests.helpers import RID, SID
-from tests.test_app import chat_text, eventually, make_app
+from tests.test_app import chat_text, eventually, make_app, ready
 from tests.test_submissions import COMPLETED, URL, pending
 from wisp_tui.app_base import Startup
 from wisp_tui.client import ClientError
@@ -27,6 +27,7 @@ from wisp_tui.composer import (
     bounded_history,
 )
 from wisp_tui.editor import PromptInput
+from wisp_tui.runs import SessionState
 from wisp_tui.screens import ApprovalModal
 from wisp_tui.submissions import MAX_DRAFT_BYTES, SubmissionStore
 
@@ -215,7 +216,7 @@ async def test_only_acknowledged_prompts_enter_persistent_history(
 ) -> None:
     app, _ = make_app(COMPLETED, monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         editor = app.query_one("#input", PromptInput)
         editor.value = "/status"
         await pilot.press("enter")
@@ -257,7 +258,7 @@ async def test_session_draft_waits_for_explicit_resume_and_survives_view_command
     seed(private_state_dir, ComposerState(draft="session draft", session_id=SID))
     app, client = make_app([], monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         editor = app.query_one("#input", PromptInput)
         assert (editor.value, app.session_id) == ("", None)
         assert "Saved unsent draft" in chat_text(app)
@@ -272,6 +273,25 @@ async def test_session_draft_waits_for_explicit_resume_and_survives_view_command
         assert not any(method == "POST" for method, _, _ in client.calls)
 
 
+async def test_skill_line_is_saved_as_a_draft_but_a_command_being_typed_is_not(
+    monkeypatch: pytest.MonkeyPatch, private_state_dir: Path
+) -> None:
+    seed(private_state_dir, ComposerState(draft="session draft", session_id=SID))
+    app, _ = make_app([], monkeypatch)
+    async with app.run_test() as pilot:
+        await eventually(lambda: ready(app))
+        editor = app.query_one("#input", PromptInput)
+        for typed in ("/", "/res", f"/resume {SID[:8]}"):
+            editor.value = typed
+            await pilot.pause()
+            app._flush_composer()
+            assert app.composer.load().draft == "session draft"
+        editor.value = "/deploy staging"
+        await pilot.pause()
+        app._flush_composer()
+        assert app.composer.load().draft == "/deploy staging"
+
+
 async def test_resume_does_not_overwrite_text_entered_while_loading(
     monkeypatch: pytest.MonkeyPatch, private_state_dir: Path
 ) -> None:
@@ -280,7 +300,7 @@ async def test_resume_does_not_overwrite_text_entered_while_loading(
     async with app.run_test() as pilot:
         editor = app.query_one("#input", PromptInput)
         editor.value = "newer text"
-        app._session_loaded({"id": SID}, [], "")
+        app._session_loaded(SessionState({"id": SID}, [], ""), None)
         await pilot.pause()
         assert editor.value == "newer text"
 
@@ -319,7 +339,7 @@ async def test_two_clients_preserve_unrelated_draft_through_pending_recovery(
 ) -> None:
     owner, _ = make_app([], monkeypatch)
     async with owner.run_test():
-        await eventually(lambda: "ready" in owner._status_text)
+        await eventually(lambda: ready(owner))
         owner.session_id = saved_session
         owner.query_one("#input", PromptInput).value = "unrelated\nsaved draft"
         owner._flush_composer()
@@ -329,7 +349,7 @@ async def test_two_clients_preserve_unrelated_draft_through_pending_recovery(
             [ClientError("runtime_timeout")]
         )
         async with competitor.run_test() as pilot:
-            await eventually(lambda: "ready" in competitor._status_text)
+            await eventually(lambda: ready(competitor))
             assert "composer_state_busy" in chat_text(competitor)
             competitor.session_id = SID
             competitor.query_one("#input", PromptInput).value = "pending request"
@@ -462,7 +482,7 @@ async def test_storage_failure_is_safe_and_does_not_block_chat(
     store.path.write_text("private invalid json")
     app, _ = make_app(COMPLETED, monkeypatch)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         assert "composer_state_unavailable" in chat_text(app)
         assert "private invalid json" not in chat_text(app)
         editor = app.query_one("#input", PromptInput)
@@ -480,7 +500,7 @@ async def test_failed_and_blocked_submissions_do_not_enter_recall_history(
     app, client = make_app(COMPLETED, monkeypatch)
     client.replies[("POST", f"/v1/sessions/{SID}/runs")] = deque([ClientError("runtime_timeout")])
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         editor = app.query_one("#input", PromptInput)
         editor.value = "original\nprompt"

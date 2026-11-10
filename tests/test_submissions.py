@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from tests.helpers import RID, SID
-from tests.test_app import chat_text, eventually, make_app
+from tests.test_app import chat_text, eventually, make_app, ready
 from wisp_tui import submissions
 from wisp_tui.app_base import Startup
 from wisp_tui.client import ClientError
@@ -245,7 +245,7 @@ async def test_restart_keeps_original_request_and_newer_draft_but_never_auto_pos
     app, client = make_app([], monkeypatch)
     client.replies[("POST", RUN_PATH)] = deque([ClientError("runtime_timeout")])
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         editor = app.query_one("#input", Input)
         editor.value = "original task\nsecond line"
@@ -303,7 +303,7 @@ async def test_pending_is_fsynced_before_first_network_post(
     monkeypatch.setattr(os, "fsync", record_sync)
     client.request_hook = check_request
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app.query_one("#input", Input).value = "durable first"
         await pilot.press("enter")
@@ -320,7 +320,7 @@ async def test_no_post_without_durable_storage(monkeypatch: pytest.MonkeyPatch, 
     if cause == "write_failure":
         monkeypatch.setattr(app.submissions, "prepare", fail)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         editor = app.query_one("#input", Input)
         draft = "kept" if cause == "write_failure" else "x" * (MAX_DRAFT_BYTES + 1)
@@ -399,7 +399,7 @@ async def test_failed_ack_write_retains_original_key_for_restart_retry(
 
     monkeypatch.setattr(app.submissions, "acknowledge", fail_ack)
     async with app.run_test() as pilot:
-        await eventually(lambda: "ready" in app._status_text)
+        await eventually(lambda: ready(app))
         app.session_id = SID
         app.query_one("#input", Input).value = "ack was lost"
         await pilot.press("enter")
@@ -493,5 +493,37 @@ async def test_recheck_after_other_client_acknowledges_unblocks_without_posting(
         owner.acknowledge(original, RID)
         app._handle_command("/retry")
         assert not bool(app._pending_state_error)
-        assert "new session" in app._status_text
+        assert ready(app) and not app._status_text
         assert not any(method == "POST" for method, _, _ in client.calls)
+
+
+def test_journal_keeps_the_project_folder_and_still_reads_version_1(tmp_path: Path) -> None:
+    store = SubmissionStore(URL, tmp_path / "state")
+    assert store.prepare(pending(project_root="/work/app")) is None
+    store.close()
+    saved = json.loads(store.path.read_text())
+    assert (saved["version"], saved["projectRoot"]) == (2, "/work/app")
+    version_1 = {key: value for key, value in saved.items() if key != "projectRoot"} | {
+        "version": 1
+    }
+
+    def reload(data: dict[str, Any]) -> PendingSubmission | None:
+        store.path.write_text(json.dumps(data))
+        resumed = SubmissionStore(URL, store.root)
+        try:
+            return resumed.load()
+        finally:
+            resumed.close()
+
+    for data, root in ((saved, "/work/app"), (version_1, None)):
+        loaded = reload(data)
+        assert loaded is not None and loaded.project_root == root
+    for changes in (
+        {"version": 1},
+        {"version": 3},
+        {"projectRoot": "relative"},
+        {"projectRoot": "/a\nb"},
+        {"projectRoot": 7},
+    ):
+        with pytest.raises(SubmissionError):
+            reload(saved | changes)

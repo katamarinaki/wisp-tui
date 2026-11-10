@@ -4,52 +4,61 @@ from __future__ import annotations
 
 import json
 import math
-from typing import Any
+from typing import Any, Literal
 
 from .chat_view import SelectableStatic
 from .scrollback import render_item
-from .tool_data import command_summary, detail_text
+from .text import clip, printable
+from .tool_data import MAX_NAME_CHARS, call_id_of, command_summary
+
+# Live events, a stored history message, or a finished run's summary of its calls.
+ToolSource = Literal["live", "history", "summary"]
 
 
 class ToolCallView(SelectableStatic):
     """One tool entry; missing fields remain distinct from empty/false values."""
 
-    def __init__(self, event: dict[str, Any], *, completed: bool, historical: bool = False) -> None:
+    def __init__(
+        self,
+        event: dict[str, Any],
+        *,
+        completed: bool,
+        source: ToolSource,
+        session_id: str | None,
+    ) -> None:
         super().__init__(markup=False)
         self.tool_name = "?"
         self.summary = ""
         self.title = ""
         self.status_text = ""
         self.tail_text = ""
-        call_id = event.get("toolCallId")
-        self.call_id = call_id if isinstance(call_id, str) and 0 < len(call_id) <= 200 else ""
-        self.session_id: str | None = None
-        self.input_text: str | None = None
+        self.call_id = call_id_of(event.get("toolCallId"))
+        self.session_id = session_id
         self.output_text: str | None = None
         self.result_notice = ""
         # A stored-result read has finished (matched or not) for this entry.
         self.result_checked = False
         self.result_retried = False
         self.completed = completed
-        self.historical = historical
-        self.is_run_summary = False
+        self.source = source
         self.unreported = False
         self._ok: bool | None = None
         self._duration_ms: float | None = None
         self.update_event(event, completed=completed)
 
     @property
+    def finished(self) -> bool:
+        """The call will not report anything more, though its stored result may."""
+        return self.completed or self.unreported
+
+    @property
     def settled(self) -> bool:
         """Final: nothing further will change it, so it can go to scrollback."""
-        if not (self.completed or self.historical or self.unreported):
+        if self.source != "live":
+            return True
+        if not self.finished:
             return False
-        return (
-            self.output_text is not None
-            or self.result_checked
-            or self.historical
-            or self.is_run_summary
-            or not self.call_id
-        )
+        return self.output_text is not None or self.result_checked or not self.call_id
 
     def entry(self) -> tuple[str, str]:
         state = "-ok" if self._ok is True else "-failed" if self._ok is False else ""
@@ -59,11 +68,9 @@ class ToolCallView(SelectableStatic):
     def update_event(self, event: dict[str, Any], *, completed: bool) -> None:
         name = event.get("name")
         if isinstance(name, str) and name:
-            label = name if len(name) <= 200 else name[:199] + "…"
-            self.tool_name = "".join(char if char.isprintable() else "�" for char in label)
+            self.tool_name = printable(clip(name, MAX_NAME_CHARS))
         self.completed = self.completed or completed
         if "args" in event:
-            self.input_text = detail_text(event["args"])
             self.summary = command_summary(event["args"]) or self.summary
         ok = event.get("ok")
         if isinstance(ok, bool):
@@ -79,18 +86,17 @@ class ToolCallView(SelectableStatic):
         self.refresh_entry()
 
     def refresh_entry(self) -> None:
-        """Re-render status, title, colors and output tail from the current fields."""
         status = "running…"
         if self.completed:
             status = "ok" if self._ok is True else "failed" if self._ok is False else "finished"
-        elif self.historical:
+        elif self.source == "history":
             status = "recorded"
         elif self.unreported:
             status = "not reported"
         parts = [self.tool_name, status]
         if self._duration_ms is not None:
             parts.append(f"{self._duration_ms / 1000:.1f}s")
-        if self.is_run_summary:
+        if self.source == "summary":
             parts.append("run summary")
         self.status_text = " · ".join(parts)
         # The summary may predate the final name (history vs. live events).
@@ -104,14 +110,8 @@ class ToolCallView(SelectableStatic):
         self.update(render_item(*self.entry()))
 
     def apply_history(
-        self,
-        input_text: str | None = None,
-        output_text: str | None = None,
-        status: str = "",
-        summary: str = "",
+        self, output_text: str | None = None, status: str = "", summary: str = ""
     ) -> None:
-        if self.input_text is None and input_text is not None:
-            self.input_text = input_text
         self.summary = self.summary or summary
         if output_text is not None:
             self.output_text = output_text
