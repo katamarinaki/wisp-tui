@@ -67,7 +67,6 @@ ApprovalModal, SessionPicker, ModelPicker { background: transparent; }
 #selection-summary { width: 1fr; }
 #session-info, #usage-info { width: 1fr; height: auto; max-height: 2; }
 #session-info { text-align: right; }
-#usage-info { color: ansi_bright_cyan; }
 #status { height: auto; max-height: 2; display: none; padding: 0 1; }
 /* Pi's copy flash: top right, over the chat, in reverse video. */
 #flash {
@@ -80,24 +79,25 @@ ApprovalModal, SessionPicker, ModelPicker { background: transparent; }
 }
 #bottom.narrow #summary { layout: vertical; }
 #bottom.narrow #session-info { text-align: left; }
-#approval-dialog {
-    align: center middle; width: 80%; max-height: 80%;
-    border: round $accent; padding: 0 1;
+/* Pickers and approvals: Pi-style panels in the editor's place, as tall as
+   their content (screens.BottomPanel sets the margin and height limits). */
+.panel {
+    dock: bottom; width: 1fr; height: auto; padding: 0;
+    border-top: solid $wisp-accent; border-bottom: solid $wisp-accent;
+    border-left: none; border-right: none;
+    background: transparent; color: ansi_default;
 }
-#approval-title { text-style: bold; color: $accent; margin-bottom: 1; }
+#approval-title { text-style: bold; color: $wisp-accent; }
 #approval-details {
-    height: 1fr; min-height: 1; background: transparent; scrollbar-size: 0 0;
+    height: auto; background: transparent; scrollbar-size: 0 0;
 }
 #approval-tool { text-style: bold; }
-#approval-args { margin: 1 0; }
-#approval-hint { color: $text-muted; }
-#picker-dialog {
-    align: center middle; width: 90%; height: 80%;
-    border: round $accent; padding: 1 2;
-}
-#picker-title { text-style: bold; margin-bottom: 1; }
+#approval-args { margin: 1 0 0 0; }
+#approval-hint, #picker-hint { text-style: dim; }
+#panel-status { height: auto; max-height: 2; }
+#picker-title { text-style: bold; }
 #picker-dialog ListView, #picker-dialog ListView:focus {
-    height: 1fr; background: transparent; background-tint: transparent;
+    height: auto; background: transparent; background-tint: transparent;
     color: ansi_default; scrollbar-size: 0 0;
 }
 #picker-dialog ListItem, #picker-dialog ListItem.-hovered,
@@ -105,6 +105,5 @@ ApprovalModal, SessionPicker, ModelPicker { background: transparent; }
     background: transparent; background-tint: transparent; color: ansi_default;
     text-style: none;
 }
-#picker-dialog ListItem.-hovered { text-style: underline; }
 #picker-dialog ListItem.-highlight,
-#picker-dialog ListView:focus > ListItem.-highlight { text-style: bold underline; }
+#picker-dialog ListView:focus > ListItem.-highlight { text-style: bold; color: $wisp-accent; }

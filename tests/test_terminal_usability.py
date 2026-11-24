@@ -114,14 +114,13 @@ async def test_picker_navigation_resize_and_highlight_keep_default_background(
             )
         )
         await pilot.hover(item)
-        await eventually(
-            lambda: bool(item.styles.text_style.bold and item.styles.text_style.underline)
-        )
+        await pilot.pause()
         for widget in [listing, *listing.query(ListItem)]:
             assert widget.styles.background.a == 0
             assert widget.styles.background_tint.a == 0
             assert widget.rich_style.bgcolor is None or widget.rich_style.bgcolor.is_default
-        assert item.styles.text_style.bold and item.styles.text_style.underline
+        # The highlight is bold in the accent color, not underlined like a link.
+        assert item.styles.text_style.bold and not item.styles.text_style.underline
         await pilot.press("ctrl+j", "ctrl+p", "ctrl+n", "f1", "f2", "f3", "f4")
         modal.post_message(events.Paste("/new\ny"))
         await pilot.pause()

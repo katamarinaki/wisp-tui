@@ -7,6 +7,7 @@ from typing import Any
 
 from .app_submission import SubmissionLayer
 from .client import UUID_RE, ClientError, session_path, valid_project_root
+from .config import ConfigError, default_selection_path, save_default_selection
 from .runs import SessionState, load_session
 from .screens import AUTO_MODES, ModelPicker, SessionPicker, server_session_label
 from .sessions import RESUME_QUERY_RE
@@ -77,13 +78,8 @@ class SessionLayer(SubmissionLayer):
         self._show_session(session_id, root, safe_text(session.get("title"), 80))
         self._selection_updated(session, session_id)
         self._draft_follows_session()
-        self._show_selection_status()
-
-    def _show_selection_status(self) -> None:
-        if self.session_id is not None:
-            self._set_status(
-                f"session {self.session_id[:8]} · {model_label(self._model_selection)}"
-            )
+        # The footer shows the session and its selection.
+        self._set_status("")
 
     def _session_loaded(self, state: SessionState, project_root: str | None) -> None:
         self._enter_session(state.session, project_root)
@@ -149,7 +145,33 @@ class SessionLayer(SubmissionLayer):
                 "error",
             )
             return
+        selection = self._defaulted_selection()
+        if selection is not None:
+            self._model_answered(
+                selection, self.session_id or "", on_ready, self._defaults_not_applied
+            )
+            return
         on_ready()
+
+    def _defaults_not_applied(self, code: str) -> None:
+        self._show_line(f"Saved defaults not applied ({code}); Wisp chooses.", "error")
+
+    def _defaulted_selection(self) -> dict[str, Any] | None:
+        """The new session's selection with the saved defaults applied; None if none saved."""
+        saved = self._default_selection
+        if saved is None:
+            return None
+        source = saved if "mode" in saved else self._model_selection
+        mode, model = source.get("mode"), source.get("model")
+        if mode not in (*AUTO_MODES, "model") or (mode == "model" and not isinstance(model, str)):
+            return None
+        selection: dict[str, Any] = {"mode": mode}
+        if mode == "model":
+            selection["model"] = model
+        thinking = saved.get("thinking", source.get("thinking"))
+        if isinstance(thinking, bool):
+            selection["thinking"] = thinking
+        return selection
 
     def _session_create_failed(self, code: str) -> None:
         self._release_session_change()
@@ -194,7 +216,7 @@ class SessionLayer(SubmissionLayer):
             self._show_line("No saved sessions yet — sessions are saved as you chat.")
             return
         heading = f"Saved sessions matching '{query}'" if query else "Saved sessions (newest first)"
-        self.push_screen(
+        self._push_panel(
             SessionPicker([(item.id, item.label()) for item in summaries], heading),
             self._picker_answered,
         )
@@ -220,7 +242,7 @@ class SessionLayer(SubmissionLayer):
         if not entries:
             self._show_line("No Wisp sessions yet — your first message starts one.")
             return
-        self.push_screen(
+        self._push_panel(
             SessionPicker(entries, "Wisp sessions, all clients (newest first)"),
             self._picker_answered,
         )
@@ -258,10 +280,35 @@ class SessionLayer(SubmissionLayer):
             or self._approval_modal is not None
         ):
             return
-        self.push_screen(
-            ModelPicker(models, current),
+        self._push_panel(
+            ModelPicker(models, current, self._save_default_selection),
             lambda selection: self._model_answered(selection, session_id),
         )
+
+    def _save_default_selection(self, selection: dict[str, Any]) -> None:
+        """Merge ``selection``'s keys into the saved defaults for new sessions."""
+        saved = dict(self._default_selection or {})
+        if "mode" in selection:
+            saved.pop("model", None)
+        saved.update(
+            (key, selection[key]) for key in ("mode", "model", "thinking") if key in selection
+        )
+        try:
+            save_default_selection(default_selection_path(self.client.url), saved)
+        except ConfigError as error:
+            self._show_line(f"Could not save the default ({error}).", "error")
+            return
+        self._default_selection = saved
+        self._show_line(f"New sessions will use {self._defaults_label()}.")
+
+    def _defaults_label(self) -> str:
+        saved = self._default_selection
+        if not saved:
+            return "Wisp's defaults"
+        parts = [model_label(saved)] if "mode" in saved else []
+        if "thinking" in saved:
+            parts.append(f"thinking {'on' if saved['thinking'] else 'off'}")
+        return " · ".join(parts)
 
     def action_thinking(self, argument: str = "") -> None:
         """/thinking [on|off]: set thinking for the current mode/model; no argument toggles."""
@@ -282,14 +329,16 @@ class SessionLayer(SubmissionLayer):
             argument == "on" if argument else self._model_selection.get("thinking") is not True
         )
         selection: dict[str, Any] = {"mode": mode, "thinking": thinking}
+        session_id = self.session_id
+        # Like Ctrl+S for the model, a thinking choice is kept for new sessions.
+        then = lambda: self._thinking_set(session_id, thinking)  # noqa: E731
         if mode != "model":
-            self._model_answered(selection, self.session_id)
+            self._model_answered(selection, session_id, then)
             return
         selection["model"] = model
         if not thinking:
-            self._model_answered(selection, self.session_id)
+            self._model_answered(selection, session_id, then)
             return
-        session_id = self.session_id
 
         # The runtime answers 400 to thinking on a model without reasoning.
         def work() -> None:
@@ -300,7 +349,7 @@ class SessionLayer(SubmissionLayer):
                 isinstance(item, dict) and item.get("id") == model and item.get("reasoning") is True
                 for item in data
             ):
-                self.call_from_thread(self._model_answered, selection, session_id)
+                self.call_from_thread(self._model_answered, selection, session_id, then)
             else:
                 self.call_from_thread(
                     self._show_line,
@@ -311,6 +360,10 @@ class SessionLayer(SubmissionLayer):
 
         self._run_threaded(work, group="load")
 
+    def _thinking_set(self, session_id: str, thinking: bool) -> None:
+        if self.session_id == session_id and self._model_selection.get("thinking") is thinking:
+            self._save_default_selection({"thinking": thinking})
+
     def _fetch_models(self) -> list[Any] | None:
         """The runtime's model list, read on a worker thread; None after reporting it invalid."""
         models = self.client.request("GET", "/v1/models")
@@ -320,7 +373,14 @@ class SessionLayer(SubmissionLayer):
         self.call_from_thread(self._show_line, "invalid models response", "error")
         return None
 
-    def _model_answered(self, selection: dict[str, Any] | None, session_id: str) -> None:
+    def _model_answered(
+        self,
+        selection: dict[str, Any] | None,
+        session_id: str,
+        then: Callable[[], None] | None = None,
+        on_error: Callable[[str], None] | None = None,
+    ) -> None:
+        """Set the session's selection; once the request ends, failed or not, run ``then``."""
         if selection is None or self.session_id != session_id:
             return
         if not self._reserve_session_change():
@@ -334,9 +394,14 @@ class SessionLayer(SubmissionLayer):
             else:
                 self.call_from_thread(self._show_line, "could not set selection", "error")
 
-        self._run_threaded(work, group="load", on_done=self._release_session_change)
+        def done() -> None:
+            self._release_session_change()
+            if then is not None:
+                then()
+
+        self._run_threaded(work, group="load", on_done=done, on_error=on_error)
 
     def _selection_changed(self, session: dict[str, Any], session_id: str) -> None:
         if self.session_id == session_id:
             self._selection_updated(session, session_id)
-            self._show_selection_status()
+            self._set_status("")
