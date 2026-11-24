@@ -211,6 +211,7 @@ class WispTuiApp(SessionLayer):
             f"max turns: {self.config.max_turns}",
             f"session {session} · {model_label(self._model_selection)}",
             f"thinking: {thinking_label} · context: unavailable",
+            f"new sessions use: {self._defaults_label()}",
             f"last run tokens: {self._last_run_tokens or 'unavailable'}",
             f"launch dir: {metadata_text(self._launch_dir, 1000)}",
             f"Wisp project folder: {folder}",

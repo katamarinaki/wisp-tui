@@ -78,6 +78,7 @@ ApprovalModal, SessionPicker, ModelPicker { background: transparent; }
 #approval-tool { text-style: bold; }
 #approval-args { margin: 1 0 0 0; }
 #approval-hint, #picker-hint { text-style: dim; }
+#panel-status { height: auto; max-height: 2; }
 #picker-title { text-style: bold; }
 #picker-dialog ListView, #picker-dialog ListView:focus {
     height: auto; background: transparent; background-tint: transparent;

@@ -101,17 +101,20 @@ def read_private_json(path: Path, maximum: int) -> dict[str, Any]:
 
 
 def default_selection_path(url: str) -> Path:
-    """The model selection Ctrl+S in the model picker saved for this runtime's new sessions."""
+    """This runtime's defaults for new sessions: Ctrl+S in the model picker, /thinking."""
     return STATE_DIR / f"default-selection-{runtime_fingerprint(url)}.json"
 
 
 def _valid_selection(data: dict[str, Any]) -> bool:
-    if set(data) - {"mode", "model", "thinking"} or not isinstance(data.get("thinking"), bool):
+    """Mode (and model) and thinking are each optional; at least one is set."""
+    if not data or set(data) - {"mode", "model", "thinking"}:
+        return False
+    if "thinking" in data and not isinstance(data["thinking"], bool):
         return False
     if data.get("mode") == "model":
         model = data.get("model")
         return isinstance(model, str) and 0 < len(model) <= 200
-    return data.get("mode") in ("advanced", "balanced") and "model" not in data
+    return data.get("mode", "advanced") in ("advanced", "balanced") and "model" not in data
 
 
 def load_default_selection(path: Path) -> dict[str, Any] | None:

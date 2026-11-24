@@ -184,7 +184,12 @@ class AppBase(App[None]):
         self, panel: BottomPanel[ResultT], answered: Callable[[ResultT | None], None]
     ) -> None:
         panel.placement = self._panel_placement
+        panel.status_text = self._panel_status()
         self.push_screen(panel, answered)
+
+    def _panel_status(self) -> str:
+        # Waiting for approval is what the approval panel itself says.
+        return "" if self._status_kind is TabStatus.WAITING else self._status_text
 
     def _panel_placement(self) -> Region | None:
         return self._prompt_input.region if self._prompt_input.is_attached else None
@@ -235,6 +240,8 @@ class AppBase(App[None]):
         status = self.query_one("#status", Static)
         status.update(self._status_text)
         status.display = bool(self._status_text)
+        if isinstance(self.screen, BottomPanel):
+            self.screen.show_status(self._panel_status())
         self._render_activity()
 
     def on_resize(self, event: events.Resize) -> None:

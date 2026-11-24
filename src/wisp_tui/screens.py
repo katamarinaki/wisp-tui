@@ -38,16 +38,32 @@ class BottomPanel(ModalScreen[ResultT]):
 
     # The editor's region on the screen underneath, which the panel covers; set by the app.
     placement: Callable[[], Region | None] | None = None
+    # The app's status line, which the panel covers on the screen underneath.
+    status_text = ""
 
     def on_mount(self) -> None:
+        status = Static(self.status_text, id="panel-status", markup=False)
+        status.display = bool(self.status_text)
+        self.query_one(".panel").mount(status, before=0)
         self.call_after_refresh(self.fit)
+
+    def show_status(self, text: str) -> None:
+        self.status_text = text
+        # Absent before mount and while the panel is being dismissed.
+        status = self.query_one_optional("#panel-status", Static)
+        if status is not None:
+            status.update(text)
+            status.display = bool(text)
+            self.call_after_refresh(self.fit)
 
     def on_resize(self) -> None:
         self.call_after_refresh(self.fit)
 
     def fit(self) -> None:
-        panel = self.query_one(".panel")
-        scroller = self.query_one(".panel-scroll")
+        panel = self.query_one_optional(".panel")
+        scroller = self.query_one_optional(".panel-scroll")
+        if panel is None or scroller is None:
+            return
         height = self.size.height
         editor = (self.placement() if self.placement else None) or Region(0, height, 0, 0)
         below = min(max(0, height - editor.bottom), height - 3)
@@ -130,7 +146,6 @@ class ApprovalModal(BottomPanel[str | None]):
         return f"↑↓/PgUp/PgDn scroll · y approve · n/Esc deny{rules}"
 
     def on_mount(self) -> None:
-        super().on_mount()
         self.query_one("#approval-details", VerticalScroll).focus()
         self._start_arming()
 
@@ -202,7 +217,6 @@ class _ListPicker(BottomPanel[ValueT | None], Generic[ValueT]):
             yield Static("", id="picker-hint", markup=False)
 
     def on_mount(self) -> None:
-        super().on_mount()
         self._show()
 
     def on_key(self, event: events.Key) -> None:
@@ -229,6 +243,14 @@ class _ListPicker(BottomPanel[ValueT | None], Generic[ValueT]):
                 (i for i, item in enumerate(listing.children) if not item.disabled), None
             )
         self._show()
+        # Rows above the cursor may have come back: scroll once the new layout exists.
+        self.refresh(layout=True)
+        self.call_after_refresh(self._scroll_to_cursor)
+
+    def _scroll_to_cursor(self) -> None:
+        listing = self.query_one(ListView)
+        if listing.highlighted_child is not None:
+            listing.scroll_to_widget(listing.highlighted_child, animate=False)
 
     def on_list_view_highlighted(self) -> None:
         self._show()
@@ -276,24 +298,32 @@ class ModelPicker(_ListPicker[dict[str, Any]]):
         current: dict[str, Any] | None,
         on_default: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
-        options: list[dict[str, Any]] = [{"mode": mode, "thinking": False} for mode in AUTO_MODES]
+        selected = current or {}
+        # Thinking stays as the session has it, where the choice supports it.
+        thinking = selected.get("thinking")
+        options: list[dict[str, Any]] = [
+            {"mode": mode, "thinking": thinking is True} for mode in AUTO_MODES
+        ]
+        capable = [True] * len(options)
         for model in models:
             model_id = model.get("id")
             if isinstance(model_id, str):
                 reasoning = model.get("reasoning") is True
-                options.append({"mode": "model", "model": model_id, "thinking": reasoning})
-        selected = current or {}
+                wanted = thinking if isinstance(thinking, bool) else True
+                options.append(
+                    {"mode": "model", "model": model_id, "thinking": reasoning and wanted}
+                )
+                capable.append(reasoning)
         index = next((i for i, option in enumerate(options) if _same(option, selected)), None)
-        super().__init__(
-            "Select model", options, [self._label(option) for option in options], index
-        )
+        labels = [self._label(option, can) for option, can in zip(options, capable, strict=True)]
+        super().__init__("Select model", options, labels, index)
         self.options = options
         self.on_default = on_default
 
-    def _label(self, option: dict[str, Any]) -> str:
+    def _label(self, option: dict[str, Any], reasoning: bool = True) -> str:
         if option.get("mode") == "model":
             name = metadata_text(str(option.get("model")), 200)
-            return name if option.get("thinking") else f"{name} · no thinking"
+            return name if reasoning else f"{name} · no thinking"
         return f"{option.get('mode')} (auto)"
 
     def action_set_default(self) -> None:
