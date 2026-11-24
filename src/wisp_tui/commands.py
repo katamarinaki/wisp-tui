@@ -85,6 +85,9 @@ HELP_TEXT = f"""**wisp-tui** — chat with the local Wisp runtime.
 | Ctrl+J | Insert a newline (SSH-safe) |
 | Shift+Enter | Insert a newline if your terminal distinguishes it |
 | Ctrl+P / Ctrl+N | Previous / next submitted prompt; return to your draft |
+| Ctrl+Shift+F | Search the chat (Enter: next · Shift+Enter: previous · Esc: close) |
+| Ctrl+Shift+Up / Ctrl+Shift+Down | Jump to the previous / next prompt |
+| Ctrl+O | Expand or collapse the newest tool output |
 | Ctrl+Shift+P | Command palette, where the terminal distinguishes it |
 | F1 | This help |
 | F2 | Session picker |

@@ -10,10 +10,10 @@ from collections.abc import Callable
 from typing import Any
 
 from rich.text import Text
-from textual.widgets import Static
+from textual.widgets import Input, Static
 
 from .app_base import AppBase
-from .chat_view import ChatItem, ChatScroll, StreamView
+from .chat_view import ChatItem, ChatScroll, ScrollOverlay, SearchBar, StreamView
 from .client import safe_code
 from .history import ChatMessage, tool_history_results
 from .runs import load_history
@@ -46,6 +46,38 @@ def _pbcopy(text: str) -> bool:
 class ChatLayer(AppBase):
     def action_chat_page(self, direction: int) -> None:
         self.query_one("#chat", ChatScroll).page(direction)
+
+    def action_chat_search(self) -> None:
+        """Open (or refocus) the transcript search bar."""
+        bar = self.query_one("#search-bar", SearchBar)
+        bar.display = True
+        bar.query_one("#search-input", Input).focus()
+
+    def _close_search(self) -> None:
+        bar = self.query_one("#search-bar", SearchBar)
+        if bar.display:
+            bar.clear()
+            bar.display = False
+        self.query_one("#chat", ChatScroll).clear_search()
+        self._prompt_input.focus()
+
+    def on_search_bar_closed(self, message: SearchBar.Closed) -> None:
+        self._close_search()
+
+    def action_chat_jump_prompt(self, direction: int) -> None:
+        self.query_one("#chat", ChatScroll).jump_prompt(direction)
+
+    def action_chat_expand_tool(self) -> None:
+        """Toggle the full output of the newest tool entry, like Pi's ctrl+o."""
+        chat = self.query_one("#chat", ChatScroll)
+        for child in reversed(chat.children):
+            if isinstance(child, ToolCallView):
+                if child.output_text is not None:
+                    child.set_expanded(not child.expanded)
+                    return
+            elif isinstance(child, ChatItem) and child.kind.startswith("tool-call"):
+                child.set_expanded(not child.expanded)
+                return
 
     def on_chat_scroll_selected(self, message: ChatScroll.Selected) -> None:
         """Like Pi: the native clipboard locally, OSC 52 over SSH."""
@@ -87,6 +119,8 @@ class ChatLayer(AppBase):
     def _update_jump_latest(self) -> None:
         chat = self.query_one("#chat", ChatScroll)
         self.query_one("#jump-latest").display = chat.scroll_y < chat.max_scroll_y
+        for overlay in self.screen.query(ScrollOverlay).results(ScrollOverlay):
+            overlay.refresh_thumb()
 
     def _mount_chat(self, widget: ChatEntry, before: ChatEntry | None = None) -> None:
         """Queue an item in display order; finished items move above live ones."""

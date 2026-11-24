@@ -76,39 +76,40 @@ class _AnswerMarkdown(Markdown):
 class _Tail:
     """The last rows of tool output, wrapped at the current width."""
 
-    def __init__(self, text: Text) -> None:
+    def __init__(self, text: Text, expanded: bool = False) -> None:
         self.text = text
+        self.expanded = expanded
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         rows = list(self.text.wrap(console, options.max_width))
         hidden = len(rows) - TOOL_TAIL_ROWS
-        if hidden > 0:
-            note = f"… ({hidden} earlier line{'s' if hidden != 1 else ''})"
+        if hidden > 0 and not self.expanded:
+            note = f"… ({hidden} earlier line{'s' if hidden != 1 else ''}, ctrl+o to expand)"
             yield Text(note, style="#8a8a8a")
             rows = rows[hidden:]
         yield from rows
 
 
-def _tool_entry(kind: str, text: str) -> RenderableType:
+def _tool_entry(kind: str, text: str, expanded: bool = False) -> RenderableType:
     # Tool entries are one title line, optional output tail, one status line.
     lines = text.split("\n")
     parts: list[RenderableType] = [Text(lines[0], style="bold")]
     if len(lines) > 2:
-        parts.append(_Tail(Text("\n".join(lines[1:-1]), style="#bcbcbc")))
+        parts.append(_Tail(Text("\n".join(lines[1:-1]), style="#bcbcbc"), expanded))
     if len(lines) > 1:
         parts.append(Text(lines[-1], style=TOOL_ACCENTS.get(kind, "#8a8a8a")))
     fill = TOOL_FILLS.get(kind, TOOL_FILL)
     return Padding(Group(*parts), (1, 2), style=fill, expand=True)
 
 
-def render_item(kind: str, text: str) -> RenderableType:
+def render_item(kind: str, text: str, *, expanded: bool = False) -> RenderableType:
     if kind == "user":
         return Padding(Text(text), (1, 2), style=USER_STYLE, expand=True)
     if kind == "assistant":
         markdown = _AnswerMarkdown(text, code_theme="ansi_dark", hyperlinks=False)
         return Padding(markdown, (0, 1), expand=False)
     if kind.startswith("tool-call"):
-        return _tool_entry(kind, text)
+        return _tool_entry(kind, text, expanded)
     style = "red" if kind == "error" else "dim"
     return Padding(Text(text, style=style), (0, 1), expand=False)
 

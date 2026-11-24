@@ -33,6 +33,22 @@ ApprovalModal, SessionPicker, ModelPicker { background: transparent; }
     display: none; height: 1; width: 1fr; text-align: center;
     background: transparent; color: $wisp-accent;
 }
+/* Pi's transcript search, above the jump row: input plus a no-matches note. */
+#search-bar { display: none; height: 3; margin: 0 1; }
+#search-bar Input {
+    width: 1fr; height: 3; border: tall $wisp-accent;
+    background: transparent; color: ansi_default; padding: 0 1;
+}
+#search-bar Input:focus, #search-bar Input:focus-within { background: transparent; }
+#search-note {
+    width: auto; height: 3; padding: 0 1; content-align: center middle;
+    background: transparent; color: $wisp-accent; text-style: none;
+}
+/* Pi's hover scrollbar: a right-edge overlay, no background painted. */
+#chat-scrollbar {
+    display: none; dock: right; layer: flash; width: 1; height: 1fr;
+    background: transparent; color: ansi_default;
+}
 #command-hints {
     display: none; height: auto; background: transparent; color: ansi_default;
     text-style: dim; padding: 0 1;
