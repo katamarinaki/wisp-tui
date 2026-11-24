@@ -45,6 +45,12 @@ change that affects a row. "Like Pi" means that table, not memory of Pi.
 - The client-side route allowlist in `src/wisp_tui/client.py` is deliberate:
   chat routes only. Extending it (e.g. DELETE sessions) needs a conscious
   decision — billing/tokens/update/connector/permission routes stay out.
+- `wi audit` (`src/wisp_tui/audit.py`) is a read-only drift check of the
+  system setup, owner-approved scope extension beyond the chat client. It
+  stays read-only: no setting changes, no inference; commands run as explicit
+  argv lists, never a shell; details are safe codes and facts (service names,
+  ports, versions), never the token or config contents. Unparsable CLI output
+  is a warning, never a silent pass.
 - Interactive approval is the only privileged action; it must stay explicit
   per prompt. No auto-approval paths.
 - New sessions are Project Sessions in the launch folder, like Pi

@@ -80,7 +80,39 @@ starting inference. Then it saves an owner-only config under
 ```sh
 wi --check        # check runtime health without starting inference
 wi                # open a new chat
+wi audit          # read-only drift check of the whole setup
 ```
+
+### Audit the setup
+
+`wi audit` compares the machine with the reference system setup for Wisp:
+a dedicated service account (nologin shell, owner-only home, lingering user
+services), a runtime listening on loopback only, live `serve` and optional
+`telegram` processes, and owner-only `wi` config and state files. It is
+strictly read-only, changes nothing, runs no inference, and never prints the
+token or config contents. Each line is `pass` / `fail` / `warn` / `skip` with a
+safe code; the exit code is 1 when anything failed, so it fits cron and
+scripts. `--skip GROUPS` drops groups, `--json` prints machine-readable output.
+
+The runtime-policy group (runtime version vs RUNTIME_CONTRACT.md, sandbox,
+auto-mode, permissions) needs the runtime CLI, which usually belongs to the
+service account. Pass the command you use to reach it:
+
+```sh
+wi audit --wisp-cli "sudo -u wisp -H /opt/wisp/bin/wisp"
+```
+
+To diff live permissions against the setup you intend, give it a profile
+file (`--profile FILE`), JSON with any of `sandbox` (`"enabled"`/`"disabled"`),
+`auto_mode` (bool) and `permissions` (tool → `"allow"`/`"ask"`/`"deny"`):
+
+```json
+{"sandbox": "enabled", "auto_mode": true,
+ "permissions": {"fs_write": "allow", "bash_run": "ask"}}
+```
+
+Rules the CLI prints in another format are reported as warnings, not silent
+passes; `wisp permissions get` output shapes vary between runtime releases.
 
 Each message you send starts a run on Wisp. The run keeps going if you quit
 `wi` or lose your connection. Back on the same machine (reconnect SSH first if
