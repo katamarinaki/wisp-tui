@@ -108,11 +108,12 @@ async def test_pickers_show_titles_and_model_ids_literally(monkeypatch: pytest.M
             )
         )
         await pilot.pause()
-        assert any(plain(w).startswith(title) for w in app.screen.query("ListItem Static"))
+        assert any(plain(w)[4:].startswith(title) for w in app.screen.query("ListItem Static"))
         app.pop_screen()
         app.push_screen(ModelPicker([{"id": "model[/]x"}], None))
         await pilot.pause()
-        assert "  Model: model[/]x" in [plain(w) for w in app.screen.query("ListItem Static")]
+        shown = [plain(w) for w in app.screen.query("ListItem Static")]
+        assert "    model[/]x · no thinking" in shown
 
 
 # OSC 52 clipboard write, cursor move, 8-bit CSI, DEL and a bidi override.

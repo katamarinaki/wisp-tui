@@ -119,7 +119,9 @@ work there and ask before going outside it. Launched from your home folder or
 `/`, sessions get no project folder. A resumed session keeps its own folder.
 
 Inside the app: **Enter** sends, **Ctrl+J** adds a newline, **F1** lists keys,
-**F2** opens sessions, **F3** picks a model. Commands: `/new`, `/resume`,
+**F2** opens sessions, **F3** picks a model. Type in a picker to filter it; in
+the model picker **Ctrl+S** also makes the choice the default for new sessions
+(saved under `~/.local/state/wisp-tui/`). Commands: `/new`, `/resume`,
 `/sessions`, `/model`, `/thinking [on|off]`, `/cancel`, `/retry`, `/reconnect`,
 `/status`, `/exit` (or `/quit`); typing `/` lists them and Tab completes. Any
 other `/name args` runs the Wisp skill `name`, as in Wisp's other clients; the

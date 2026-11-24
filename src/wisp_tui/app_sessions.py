@@ -7,6 +7,7 @@ from typing import Any
 
 from .app_submission import SubmissionLayer
 from .client import UUID_RE, ClientError, session_path, valid_project_root
+from .config import ConfigError, default_selection_path, save_default_selection
 from .runs import SessionState, load_session
 from .screens import AUTO_MODES, ModelPicker, SessionPicker, server_session_label
 from .sessions import RESUME_QUERY_RE
@@ -77,13 +78,8 @@ class SessionLayer(SubmissionLayer):
         self._show_session(session_id, root, safe_text(session.get("title"), 80))
         self._selection_updated(session, session_id)
         self._draft_follows_session()
-        self._show_selection_status()
-
-    def _show_selection_status(self) -> None:
-        if self.session_id is not None:
-            self._set_status(
-                f"session {self.session_id[:8]} · {model_label(self._model_selection)}"
-            )
+        # The footer shows the session and its selection.
+        self._set_status("")
 
     def _session_loaded(self, state: SessionState, project_root: str | None) -> None:
         self._enter_session(state.session, project_root)
@@ -149,6 +145,9 @@ class SessionLayer(SubmissionLayer):
                 "error",
             )
             return
+        if self._default_selection is not None:
+            self._model_answered(dict(self._default_selection), self.session_id or "", on_ready)
+            return
         on_ready()
 
     def _session_create_failed(self, code: str) -> None:
@@ -194,7 +193,7 @@ class SessionLayer(SubmissionLayer):
             self._show_line("No saved sessions yet — sessions are saved as you chat.")
             return
         heading = f"Saved sessions matching '{query}'" if query else "Saved sessions (newest first)"
-        self.push_screen(
+        self._push_panel(
             SessionPicker([(item.id, item.label()) for item in summaries], heading),
             self._picker_answered,
         )
@@ -220,7 +219,7 @@ class SessionLayer(SubmissionLayer):
         if not entries:
             self._show_line("No Wisp sessions yet — your first message starts one.")
             return
-        self.push_screen(
+        self._push_panel(
             SessionPicker(entries, "Wisp sessions, all clients (newest first)"),
             self._picker_answered,
         )
@@ -258,10 +257,19 @@ class SessionLayer(SubmissionLayer):
             or self._approval_modal is not None
         ):
             return
-        self.push_screen(
-            ModelPicker(models, current),
+        self._push_panel(
+            ModelPicker(models, current, self._save_default_selection),
             lambda selection: self._model_answered(selection, session_id),
         )
+
+    def _save_default_selection(self, selection: dict[str, Any]) -> None:
+        try:
+            save_default_selection(default_selection_path(self.client.url), selection)
+        except ConfigError as error:
+            self._show_line(f"Could not save the default ({error}).", "error")
+            return
+        self._default_selection = selection
+        self._show_line(f"New sessions will use {model_label(selection)}.")
 
     def action_thinking(self, argument: str = "") -> None:
         """/thinking [on|off]: set thinking for the current mode/model; no argument toggles."""
@@ -320,7 +328,13 @@ class SessionLayer(SubmissionLayer):
         self.call_from_thread(self._show_line, "invalid models response", "error")
         return None
 
-    def _model_answered(self, selection: dict[str, Any] | None, session_id: str) -> None:
+    def _model_answered(
+        self,
+        selection: dict[str, Any] | None,
+        session_id: str,
+        then: Callable[[], None] | None = None,
+    ) -> None:
+        """Set the session's selection; ``then`` runs afterwards even if that failed."""
         if selection is None or self.session_id != session_id:
             return
         if not self._reserve_session_change():
@@ -334,9 +348,19 @@ class SessionLayer(SubmissionLayer):
             else:
                 self.call_from_thread(self._show_line, "could not set selection", "error")
 
-        self._run_threaded(work, group="load", on_done=self._release_session_change)
+        def done() -> None:
+            self._release_session_change()
+            if then is not None:
+                then()
+
+        def failed(code: str) -> None:
+            self._show_line(f"Default model not applied ({code}); Wisp chooses.", "error")
+
+        self._run_threaded(
+            work, group="load", on_done=done, on_error=None if then is None else failed
+        )
 
     def _selection_changed(self, session: dict[str, Any], session_id: str) -> None:
         if self.session_id == session_id:
             self._selection_updated(session, session_id)
-            self._show_selection_status()
+            self._set_status("")

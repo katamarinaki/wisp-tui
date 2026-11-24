@@ -179,7 +179,7 @@ class RunLayer(ComposerLayer):
         modal = ApprovalModal(tool, args, note, allow_rules=not self._rule_decisions_refused)
         self._approval_modal = modal
         self._approval_prompt_id = prompt_id
-        self.push_screen(
+        self._push_panel(
             modal, lambda decision: self._approval_answered(run_id, prompt_id, decision)
         )
         self._render_activity()

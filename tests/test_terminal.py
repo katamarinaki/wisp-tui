@@ -109,7 +109,7 @@ def test_terminal_keeps_default_background(width: int) -> None:
     assert b"session new" not in startup
     assert b"model: runtime default" not in startup
     assert b"your first message starts it" not in startup
-    assert b"T: 0" in startup
+    assert "↑0 ↓0".encode() in startup
     assert f"wisp-tui v{__version__}".encode() in startup
     assert "▟█▙▟███▙".encode() in startup
     assert b"/help commands" not in startup

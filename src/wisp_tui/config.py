@@ -20,6 +20,7 @@ import json
 import os
 import stat
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -97,6 +98,48 @@ def read_private_json(path: Path, maximum: int) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ConfigError("invalid_private_json")
     return data
+
+
+def default_selection_path(url: str) -> Path:
+    """The model selection Ctrl+S in the model picker saved for this runtime's new sessions."""
+    return STATE_DIR / f"default-selection-{runtime_fingerprint(url)}.json"
+
+
+def _valid_selection(data: dict[str, Any]) -> bool:
+    if set(data) - {"mode", "model", "thinking"} or not isinstance(data.get("thinking"), bool):
+        return False
+    if data.get("mode") == "model":
+        model = data.get("model")
+        return isinstance(model, str) and 0 < len(model) <= 200
+    return data.get("mode") in ("advanced", "balanced") and "model" not in data
+
+
+def load_default_selection(path: Path) -> dict[str, Any] | None:
+    """None when unset, unreadable or invalid: new sessions then keep Wisp's default."""
+    try:
+        data = read_private_json(path, 1024)
+    except ConfigError:
+        return None
+    return data if _valid_selection(data) else None
+
+
+def save_default_selection(path: Path, selection: dict[str, Any]) -> None:
+    data: dict[str, Any] = {
+        k: selection[k] for k in ("mode", "model", "thinking") if k in selection
+    }
+    if not _valid_selection(data):
+        raise ConfigError("invalid_selection")
+    try:
+        ensure_private_directory(path.parent)
+        fd, name = tempfile.mkstemp(prefix=".default-selection-", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w") as target:
+                json.dump(data, target)
+            os.replace(name, path)
+        finally:
+            Path(name).unlink(missing_ok=True)
+    except OSError:
+        raise ConfigError("default_selection_unavailable") from None
 
 
 @dataclass(frozen=True)
