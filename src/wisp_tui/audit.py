@@ -366,17 +366,18 @@ def _sandbox_check(runner: CommandRunner, cli: list[str], profile: Profile) -> C
     return Check("policy", FAIL, f"sandbox_{profile.sandbox}_expected")
 
 
+AUTO_MODE_LINE = re.compile(r"\s*auto[- ]mode\s*[:=]?\s*(on|off)\s*$")
+
+
 def _auto_mode_check(runner: CommandRunner, cli: list[str], profile: Profile) -> Check:
     auto_output = _policy_output(runner, cli, ["auto-mode", "status"])
     auto: bool | None = None
     for line in (auto_output or "").lower().splitlines():
-        words = line.split()
-        if not words:
-            continue
-        if words[-1] == "on":
-            auto = True
-        elif words[-1] == "off":
-            auto = False
+        # Only a dedicated status line counts; help text mentioning "on"/"off"
+        # must never decide the check, and anything else is a warning.
+        match = AUTO_MODE_LINE.match(line)
+        if match is not None and auto is None:
+            auto = match.group(1) == "on"
     if auto is None:
         return Check("policy", WARN, "auto_mode_status_unparsed")
     if auto == profile.auto_mode:
@@ -384,26 +385,53 @@ def _auto_mode_check(runner: CommandRunner, cli: list[str], profile: Profile) ->
     return Check("policy", FAIL, f"auto_mode_{'on' if profile.auto_mode else 'off'}_expected")
 
 
+def parse_permission_line(line: str) -> tuple[str, str] | None:
+    """A structured (tool, rule) pair, or None for any other shape.
+
+    `wisp permissions get` prints `TOOL RULE` lines; only that exact two-token
+    shape parses, so a line like `bash allow (default ask)` stays unparsed
+    instead of counting as a match for `bash: ask`.
+    """
+    tokens = line.split()
+    if (
+        len(tokens) == 2
+        and tokens[1] in PERMISSION_RULES
+        and re.fullmatch(r"[\w.-]{1,64}", tokens[0])
+    ):
+        return tokens[0], tokens[1]
+    return None
+
+
 def _permissions_check(runner: CommandRunner, cli: list[str], profile: Profile) -> Check:
     permissions_output = _policy_output(runner, cli, ["permissions", "get"])
     if permissions_output is None:
         return Check("policy", WARN, "permissions_query_failed")
-    if not profile.permissions:
-        rules = [
-            line
-            for line in permissions_output.lower().splitlines()
-            if any(rule in line.split() for rule in PERMISSION_RULES)
+    pairs: set[tuple[str, str]] = set()
+    unparsed = 0
+    for line in permissions_output.lower().splitlines():
+        if not line.strip():
+            continue
+        pair = parse_permission_line(line)
+        if pair is None:
+            unparsed += 1
+        else:
+            pairs.add(pair)
+    if not pairs:
+        # Never a silent pass: output we cannot structure is a warning.
+        return Check("policy", WARN, "permissions_unparsed")
+    if profile.permissions:
+        mismatched = [
+            tool for tool, rule in sorted(profile.permissions.items()) if (tool, rule) not in pairs
         ]
-        return Check("policy", PASS, f"permissions_listed ({len(rules)} rules)")
-    lines = permissions_output.lower().splitlines()
-    mismatched = [
-        tool
-        for tool, rule in sorted(profile.permissions.items())
-        if not any(tool in line.split() and rule in line.split() for line in lines)
-    ]
-    if mismatched:
-        return Check("policy", FAIL, f"permission_mismatch ({', '.join(mismatched)})")
-    return Check("policy", PASS, "permissions_match_profile")
+        if mismatched:
+            return Check("policy", FAIL, f"permission_mismatch ({', '.join(mismatched)})")
+        detail = "permissions_match_profile"
+    else:
+        detail = f"permissions_listed ({len(pairs)} rules)"
+    if unparsed:
+        # Unparsable lines are never a silent pass either.
+        return Check("policy", WARN, f"{detail}, {unparsed} unparsed line(s)")
+    return Check("policy", PASS, detail)
 
 
 def check_policy(runner: CommandRunner, cli: list[str] | None, profile: Profile) -> list[Check]:

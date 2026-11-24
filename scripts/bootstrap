@@ -31,9 +31,11 @@ import json
 import os
 import pwd
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 from pathlib import Path
 
 PACKAGES = ("git", "curl", "minisign", "bubblewrap", "python3", "python3-venv")
@@ -128,14 +130,31 @@ def extract_runtime(tarball: Path, home: Path, user: str) -> None:
     """Extract the runtime archive into home/.wisp as root, then hand it over.
 
     Refuses path escapes, links and special files: only plain files and
-    directories are extracted.
+    directories are extracted. The home directory itself must be a real
+    directory owned by root or the service user — never a symlink or someone
+    else's path — before root writes below it. All existence checks and mode
+    fixes use lstat, so nothing follows a link planted in the interim.
     """
+    try:
+        home_info = os.lstat(home)
+        service_uid = pwd.getpwnam(user).pw_uid
+    except (OSError, KeyError):
+        raise BootstrapError("home_unavailable") from None
+    if stat.S_ISLNK(home_info.st_mode) or not stat.S_ISDIR(home_info.st_mode):
+        raise BootstrapError("home_unsafe")
+    if home_info.st_uid not in (0, service_uid):
+        raise BootstrapError("home_unsafe")
     target = home / ".wisp"
-    if target.exists():
+    if os.path.lexists(target):
         raise BootstrapError("runtime_dir_exists")
     if not tarball.is_file():
         raise BootstrapError("runtime_tarball_missing")
-    target.mkdir(mode=0o700)
+    try:
+        os.mkdir(target, 0o700)  # fails if anything (incl. a symlink) appears first
+    except FileExistsError:
+        raise BootstrapError("runtime_dir_exists") from None
+    except OSError:
+        raise BootstrapError("runtime_extract_failed") from None
     try:
         with tarfile.open(tarball, "r:*") as archive:
             members = archive.getmembers()
@@ -149,14 +168,21 @@ def extract_runtime(tarball: Path, home: Path, user: str) -> None:
     except (tarfile.TarError, OSError):
         shutil.rmtree(target, ignore_errors=True)
         raise BootstrapError("runtime_extract_failed") from None
-    checked(["chown", "-R", f"{user}:{user}", str(target)])
+    checked(["chown", "-R", "--no-dereference", f"{user}:{user}", str(target)])
     for path in sorted(target.rglob("*")):
-        if path.is_file() and (path.stat().st_mode & 0o111):
+        try:
+            info = path.lstat()
+        except OSError:
+            continue
+        if stat.S_ISREG(info.st_mode) and info.st_mode & 0o111:
             path.chmod(0o750)
     # bin/wisp must be executable no matter how the archive stored modes.
     wisp_bin = target / "bin" / "wisp"
-    if wisp_bin.is_file():
-        wisp_bin.chmod(0o750)
+    try:
+        if stat.S_ISREG(wisp_bin.lstat().st_mode):
+            wisp_bin.chmod(0o750)
+    except OSError:
+        pass
 
 
 def step_policy(user: str, home: Path, model: str) -> list[list[str]]:
@@ -193,22 +219,56 @@ def start_units(user: str, with_telegram: bool) -> None:
 
 
 def install_units(user: str, home: Path, with_telegram: bool) -> None:
+    """Install the shipped user units — writing into the home only as the user.
+
+    Root never writes below the service account's home (a planted .config or
+    systemd symlink would be followed as root and then handed over by chown).
+    The destination is lstat-checked first; the copy itself runs via
+    runuser/install(1) as the service user, which owns its own tree.
+    """
     names = ["wisp.service"] + (["wisp-telegram.service"] if with_telegram else [])
     unit_dir = home / ".config/systemd/user"
-    unit_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     for name in names:
         source = SYSTEMD_DIR / name
         if not source.is_file():
             raise BootstrapError("unit_file_missing")
         destination = unit_dir / name
-        if destination.exists():
-            if destination.read_text() != source.read_text():
-                raise BootstrapError("unit_file_exists")
+        try:
+            info = os.lstat(destination)
+        except FileNotFoundError:
+            info = None
+        except OSError:
+            raise BootstrapError("unit_path_unavailable") from None
+        if info is not None:
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+                raise BootstrapError("unit_path_unsafe")
+            try:
+                if destination.read_text() != source.read_text():
+                    raise BootstrapError("unit_file_exists")
+            except OSError:
+                raise BootstrapError("unit_path_unavailable") from None
             print(f"skip: {destination} is already the shipped unit")
             continue
-        shutil.copyfile(source, destination)
-        destination.chmod(0o600)
-    checked(["chown", "-R", f"{user}:{user}", str(home / ".config")])
+        # Stage the unit where the service user can read it, then let the
+        # user install it below its own home; install -D makes the dirs.
+        with tempfile.NamedTemporaryFile("w", suffix=".unit") as staged:
+            staged.write(source.read_text())
+            staged.flush()
+            os.chmod(staged.name, 0o644)
+            checked(
+                [
+                    "runuser",
+                    "-u",
+                    user,
+                    "--",
+                    "install",
+                    "-D",
+                    "-m",
+                    "0600",
+                    staged.name,
+                    str(destination),
+                ]
+            )
 
 
 def build_plan(args: argparse.Namespace, home: Path) -> list[str | list[str]]:

@@ -497,3 +497,66 @@ def test_main_json_output(
     assert payload
     assert all(set(item) == {"group", "status", "detail"} for item in payload)
     assert SECRET not in json.dumps(payload)
+
+
+# --- strict policy parsers (never a silent pass) ---
+
+
+def test_policy_auto_mode_ignores_help_text() -> None:
+    runner = FakeRunner(
+        {
+            ("auto-mode", "status"): (
+                0,
+                "auto-mode: on\nusage: wisp auto-mode on|off\nturn auto-mode off to disable\n",
+            )
+        }
+    )
+    checks = audit.check_policy(runner, ["wisp"], audit.Profile())
+    statuses = {c.detail: c.status for c in checks}
+    assert statuses["auto_mode_on"] == audit.PASS
+
+
+def test_policy_auto_mode_unparsed_without_a_status_line() -> None:
+    runner = FakeRunner({("auto-mode", "status"): (0, "usage: wisp auto-mode on|off\n")})
+    checks = audit.check_policy(runner, ["wisp"], audit.Profile())
+    assert "auto_mode_status_unparsed" in detail(checks, "policy")
+
+
+def test_policy_permissions_ambiguous_line_is_not_a_match() -> None:
+    runner = FakeRunner({("permissions", "get"): (0, "bash allow (default ask)\n")})
+    profile = audit.Profile(permissions={"bash": "ask"})
+    checks = audit.check_policy(runner, ["wisp"], profile)
+    # A line that is not `TOOL RULE` can never satisfy a profile entry.
+    assert "permissions_unparsed" in detail(checks, "policy")
+    assert not any(check.status == audit.PASS for check in checks)
+    # A structured pair with the wrong rule is an explicit failure.
+    runner = FakeRunner({("permissions", "get"): (0, "bash ask\n")})
+    profile = audit.Profile(permissions={"bash": "allow"})
+    checks = audit.check_policy(runner, ["wisp"], profile)
+    mismatch = next(c for c in checks if c.detail.startswith("permission_mismatch"))
+    assert mismatch.status == audit.FAIL
+
+
+def test_policy_permissions_warn_when_nothing_parses() -> None:
+    runner = FakeRunner({("permissions", "get"): (0, "bash allow (default ask)\nother text\n")})
+    checks = audit.check_policy(runner, ["wisp"], audit.Profile())
+    assert "permissions_unparsed" in detail(checks, "policy")
+
+
+def test_policy_permissions_warn_on_unparsed_lines() -> None:
+    runner = FakeRunner({("permissions", "get"): (0, "fs_write allow\nbash allow (default ask)\n")})
+    checks = audit.check_policy(runner, ["wisp"], audit.Profile())
+    assert "permissions_listed (1 rules), 1 unparsed line(s)" in detail(checks, "policy")
+    profile = audit.Profile(permissions={"fs_write": "allow"})
+    checks = audit.check_policy(runner, ["wisp"], profile)
+    assert (
+        "permissions_match_profile, 1 unparsed line(s)" in detail(checks, "policy")
+        and checks[3].status == audit.WARN
+    )
+
+
+def test_parse_permission_line_pairs_and_rejects() -> None:
+    assert audit.parse_permission_line("fs_write allow") == ("fs_write", "allow")
+    assert audit.parse_permission_line("bash allow (default ask)") is None
+    assert audit.parse_permission_line("fs_write maybe") is None
+    assert audit.parse_permission_line("fs_write") is None
