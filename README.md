@@ -75,6 +75,40 @@ At the prompts:
 starting inference. Then it saves an owner-only config under
 `~/.config/wisp-tui/`.
 
+For scripts and agents, `wi setup` also runs non-interactively:
+
+```sh
+wi setup --url http://127.0.0.1:3008 --token-stdin          # token on stdin, one line
+wi setup --url http://127.0.0.1:3008 --token-command '["pass", "show", "wisp/wi"]'
+```
+
+`--token-command` stores the argv list (JSON, run without a shell on every
+load) instead of the secret itself. See BOOTSTRAP.md for the full agent
+procedure.
+
+### Set up a whole machine
+
+On the machine that runs Wisp, `scripts/bootstrap` installs the reference
+system setup of `docs/SYSTEM_SETUP.md`: dedicated nologin service account,
+loopback-only runtime, systemd user units, sandbox and a permission profile.
+It is owner-run, two-stage (print the plan and its digest, then confirm the
+digest with `--activate`), idempotent where safe and refuses existing paths
+otherwise — it never repairs blindly and never creates sudoers entries.
+
+```sh
+sudo scripts/bootstrap --runtime-tarball wisp.tar.gz --profile safe
+sudo scripts/bootstrap --runtime-tarball wisp.tar.gz --profile safe \
+    --expected-sha256 <printed-digest> --activate
+```
+
+Permission profiles (`profiles/pi-like.json`, `profiles/safe.json`) are the
+same JSON `wi audit --profile` diffs against. `scripts/permissions` prints
+(or with `--apply` runs) the `wisp permissions set` commands for one:
+
+```sh
+scripts/permissions --profile safe --wisp-cli "sudo -u wisp -H /home/wisp/.wisp/bin/wisp"
+```
+
 ### Check and start
 
 ```sh
@@ -156,7 +190,11 @@ Inside the app: **Enter** sends, **Ctrl+J** adds a newline, **F1** lists keys,
 `/status`, `/exit` (or `/quit`); typing `/` lists them and Tab completes. Any
 other `/name args` runs the Wisp skill `name`, as in Wisp's other clients; the
 commands above take priority, and a lone word that looks like a mistyped
-command is not sent. The app runs full screen:
+command is not sent. Porting a Pi skill is mostly mechanical: a Pi skill is a
+folder with `SKILL.md` (name + description + instructions); give Wisp the same
+`SKILL.md` content as a skill, keep the description line (that is what the
+model routes on), and replace Pi-only tooling references with Wisp's file and
+shell tools. The app runs full screen:
 the mouse wheel or PageUp/PageDown scrolls the chat while the editor and footer
 stay put. Drag over the chat to select text; releasing the mouse copies it,
 through `pbcopy` on a local Mac and through your terminal (OSC 52) otherwise,

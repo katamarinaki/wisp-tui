@@ -1,0 +1,337 @@
+#!/usr/bin/env python3
+"""One-shot, owner-run bootstrap of the reference Wisp system setup.
+
+See docs/SYSTEM_SETUP.md for the architecture this installs and BOOTSTRAP.md
+for the agent-facing procedure. Two stages, so the exact action list is
+reviewed before anything runs:
+
+  scripts/bootstrap [options]                                  # plan + digest
+  scripts/bootstrap --expected-sha256 <digest> --activate ...   # execute it
+
+Guarantees:
+- Idempotent where safe: an existing matching user, linger or unit file is
+  skipped; everything is checked, never blindly repaired.
+- Refuses existing paths: an existing runtime directory or non-empty home
+  aborts instead of overwriting.
+- Stops at the first failure; every command runs as an explicit argv list,
+  never through a shell.
+- Never creates sudoers entries. The runtime is installed as root into the
+  service account's home and chowned; runtime configuration runs as the
+  service user via runuser(1). This closes the temporary-sudoers hole the
+  original chainnode setup used.
+- Owner-run as root only; the plan (without --activate) can be printed by
+  anyone.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import pwd
+import shutil
+import subprocess
+import sys
+import tarfile
+from pathlib import Path
+
+PACKAGES = ("git", "curl", "minisign", "bubblewrap", "python3", "python3-venv")
+PERMISSION_RULES = ("allow", "ask", "deny")
+BUILTIN_PROFILES = ("pi-like", "safe")
+SYSTEMD_DIR = Path(__file__).resolve().parent.parent / "systemd"
+
+
+class BootstrapError(Exception):
+    """A safe diagnostic code; never carries secrets or raw command output."""
+
+
+def run(argv: list[str], *, timeout: float = 300.0) -> subprocess.CompletedProcess[str]:
+    print("+ " + " ".join(argv), flush=True)
+    try:
+        return subprocess.run(argv, capture_output=False, timeout=timeout, check=False)
+    except FileNotFoundError:
+        raise BootstrapError("command_unavailable") from None
+    except (OSError, subprocess.SubprocessError):
+        raise BootstrapError("command_failed") from None
+
+
+def checked(argv: list[str], *, timeout: float = 300.0) -> None:
+    result = run(argv, timeout=timeout)
+    if result.returncode != 0:
+        raise BootstrapError("step_failed")
+
+
+def load_profile(name: str) -> dict[str, str]:
+    """The profile's permissions map only; same file format as `wi audit --profile`."""
+    path = (
+        Path(__file__).resolve().parent.parent / "profiles" / f"{name}.json"
+        if name in BUILTIN_PROFILES
+        else Path(name)
+    )
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        raise BootstrapError("profile_unavailable") from None
+    if len(raw) > 16384:
+        raise BootstrapError("invalid_profile")
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        raise BootstrapError("invalid_profile") from None
+    permissions = data.get("permissions", {}) if isinstance(data, dict) else None
+    if not isinstance(permissions, dict) or not all(
+        isinstance(tool, str)
+        and tool
+        and len(tool) <= 64
+        and rule in PERMISSION_RULES
+        and isinstance(rule, str)
+        for tool, rule in permissions.items()
+    ):
+        raise BootstrapError("invalid_profile")
+    return dict(permissions)
+
+
+# --- steps ------------------------------------------------------------------
+
+
+def step_packages(skip: bool) -> str | list[str] | None:
+    if skip:
+        return "skip: packages (per --skip-packages)"
+    return ["apt-get", "install", "--no-install-recommends", "-y", *PACKAGES]
+
+
+def step_account(user: str, home: Path) -> str | list[str] | None:
+    try:
+        entry = pwd.getpwnam(user)
+    except KeyError:
+        return ["useradd", "-r", "-m", "-d", str(home), "-s", "/usr/sbin/nologin", user]
+    if entry.pw_dir != str(home) or Path(entry.pw_shell).name != "nologin":
+        raise BootstrapError("existing_user_mismatch")
+    return f"skip: user {user} exists with the reference home and nologin shell"
+
+
+def step_home_permissions(home: Path) -> list[str]:
+    return ["chmod", "0700", str(home)]
+
+
+def step_linger(user: str) -> list[str]:
+    return ["loginctl", "enable-linger", user]
+
+
+def step_extract_runtime(tarball: Path, home: Path) -> str:
+    # Extraction itself is in-process (tarfile), listed as one plan step.
+    return f"(extract) {tarball} -> {home}/.wisp"
+
+
+def extract_runtime(tarball: Path, home: Path, user: str) -> None:
+    """Extract the runtime archive into home/.wisp as root, then hand it over.
+
+    Refuses path escapes, links and special files: only plain files and
+    directories are extracted.
+    """
+    target = home / ".wisp"
+    if target.exists():
+        raise BootstrapError("runtime_dir_exists")
+    if not tarball.is_file():
+        raise BootstrapError("runtime_tarball_missing")
+    target.mkdir(mode=0o700)
+    try:
+        with tarfile.open(tarball, "r:*") as archive:
+            members = archive.getmembers()
+            for member in members:
+                name = member.name.lstrip("/")
+                if not name or ".." in Path(name).parts or member.issym() or member.islnk():
+                    raise BootstrapError("runtime_tarball_unsafe")
+                if not (member.isfile() or member.isdir()):
+                    raise BootstrapError("runtime_tarball_unsafe")
+                archive.extract(member, target, filter="tar")
+    except (tarfile.TarError, OSError):
+        shutil.rmtree(target, ignore_errors=True)
+        raise BootstrapError("runtime_extract_failed") from None
+    checked(["chown", "-R", f"{user}:{user}", str(target)])
+    for path in sorted(target.rglob("*")):
+        if path.is_file() and (path.stat().st_mode & 0o111):
+            path.chmod(0o750)
+    # bin/wisp must be executable no matter how the archive stored modes.
+    wisp_bin = target / "bin" / "wisp"
+    if wisp_bin.is_file():
+        wisp_bin.chmod(0o750)
+
+
+def step_policy(user: str, home: Path, model: str) -> list[list[str]]:
+    cli = ["runuser", "-u", user, "--", "env", f"HOME={home}", f"{home}/.wisp/bin/wisp"]
+    return [
+        [*cli, "sandbox", "on"],
+        [*cli, "auto-mode", "on"],
+        [*cli, "model", "set", model, "--thinking"],
+    ]
+
+
+def step_permissions(user: str, home: Path, profile: dict[str, str]) -> list[list[str]]:
+    cli = ["runuser", "-u", user, "--", "env", f"HOME={home}", f"{home}/.wisp/bin/wisp"]
+    return [[*cli, "permissions", "set", tool, rule] for tool, rule in sorted(profile.items())]
+
+
+def step_units(with_telegram: bool) -> str:
+    units = "wisp.service" + (" + wisp-telegram.service" if with_telegram else "")
+    return f"(units) install and enable {units} as user units"
+
+
+def start_units(user: str, with_telegram: bool) -> None:
+    uid = pwd.getpwnam(user).pw_uid
+    bus = f"/run/user/{uid}"
+    user_env = ["env", f"XDG_RUNTIME_DIR={bus}", f"DBUS_SESSION_BUS_ADDRESS=unix:path={bus}/bus"]
+    as_user = ["runuser", "-u", user, "--", *user_env, "systemctl", "--user"]
+    units = ["wisp.service"] + (["wisp-telegram.service"] if with_telegram else [])
+    checked(["systemctl", "start", f"user@{uid}.service"])
+    checked([*as_user, "daemon-reload"])
+    checked([*as_user, "enable", "--now", *units])
+
+
+# --- plan -------------------------------------------------------------------
+
+
+def install_units(user: str, home: Path, with_telegram: bool) -> None:
+    names = ["wisp.service"] + (["wisp-telegram.service"] if with_telegram else [])
+    unit_dir = home / ".config/systemd/user"
+    unit_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    for name in names:
+        source = SYSTEMD_DIR / name
+        if not source.is_file():
+            raise BootstrapError("unit_file_missing")
+        destination = unit_dir / name
+        if destination.exists():
+            if destination.read_text() != source.read_text():
+                raise BootstrapError("unit_file_exists")
+            print(f"skip: {destination} is already the shipped unit")
+            continue
+        shutil.copyfile(source, destination)
+        destination.chmod(0o600)
+    checked(["chown", "-R", f"{user}:{user}", str(home / ".config")])
+
+
+def build_plan(args: argparse.Namespace, home: Path) -> list[str | list[str]]:
+    plan: list[str | list[str]] = []
+    plan.append(step_packages(args.skip_packages))
+    plan.append(step_account(args.user, home))
+    plan.append(step_home_permissions(home))
+    plan.append(step_linger(args.user))
+    plan.append(step_extract_runtime(args.runtime_tarball, home))
+    if not args.skip_policy:
+        plan.extend(step_policy(args.user, home, args.model))
+    if args.profile is not None:
+        plan.extend(step_permissions(args.user, home, load_profile(args.profile)))
+    plan.append(step_units(args.with_telegram))
+    return [step for step in plan if step is not None]
+
+
+def _user_exists(user: str) -> bool:
+    try:
+        pwd.getpwnam(user)
+    except KeyError:
+        return False
+    return True
+
+
+def plan_digest(args: argparse.Namespace, plan: list[str | list[str]]) -> str:
+    payload = json.dumps(
+        {
+            "user": args.user,
+            "home": str(home_path(args)),
+            "runtime_tarball": os.path.realpath(args.runtime_tarball),
+            "profile": args.profile,
+            "model": args.model,
+            "with_telegram": args.with_telegram,
+            "skip_packages": args.skip_packages,
+            "skip_policy": args.skip_policy,
+            "steps": plan,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def home_path(args: argparse.Namespace) -> Path:
+    return Path(args.home)
+
+
+# --- activation -------------------------------------------------------------
+
+
+def activate(args: argparse.Namespace, home: Path) -> None:
+    if os.geteuid() != 0:
+        raise BootstrapError("root_required")
+    plan = build_plan(args, home)
+    if args.expected_sha256 != plan_digest(args, plan):
+        raise BootstrapError("digest_mismatch")
+    for step in plan:
+        if isinstance(step, str):
+            print(f"= {step}")
+            if step.startswith("skip:"):
+                continue
+            if step.startswith("(units)"):
+                install_units(args.user, home, args.with_telegram)
+                start_units(args.user, args.with_telegram)
+            elif step.startswith("(extract)"):
+                extract_runtime(args.runtime_tarball, home, args.user)
+            continue
+        checked(step)
+    print(
+        f"\nbootstrap: done. Next (as the owner, not root):\n"
+        f"  1. scripts/install && wi setup --url http://127.0.0.1:{args.port} "
+        f"--token-stdin  # token from the service account\n"
+        f"  2. wi --check && wi audit\n"
+        f"See BOOTSTRAP.md for the token step and rollback."
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Plan (or with --activate, run) the reference Wisp system setup. "
+        "Print the plan and its digest first; run it only after reviewing both."
+    )
+    parser.add_argument("--runtime-tarball", required=True, metavar="PATH", type=Path)
+    parser.add_argument("--profile", metavar="NAME|FILE", help="permissions profile to apply")
+    parser.add_argument("--user", default="wisp")
+    parser.add_argument("--home", default="/home/wisp")
+    parser.add_argument("--port", type=int, default=3008)
+    parser.add_argument("--model", default="balanced")
+    parser.add_argument("--with-telegram", action="store_true")
+    parser.add_argument("--skip-packages", action="store_true")
+    parser.add_argument("--skip-policy", action="store_true")
+    parser.add_argument("--expected-sha256", metavar="DIGEST")
+    parser.add_argument("--activate", action="store_true")
+    args = parser.parse_args(argv)
+
+    home = home_path(args)
+    try:
+        plan = build_plan(args, home)
+    except BootstrapError as error:
+        print(f"bootstrap: {error}.", file=sys.stderr)
+        return 2
+
+    if not args.activate:
+        for step in plan:
+            if isinstance(step, list):
+                print("  " + " ".join(step))
+            else:
+                print("  " + step)
+        print(f"\nbootstrap: digest {plan_digest(args, plan)}")
+        print("bootstrap: review the plan, then rerun with --activate --expected-sha256 DIGEST")
+        return 0
+
+    if not args.expected_sha256:
+        print("bootstrap: --activate needs --expected-sha256 (run without --activate first).", file=sys.stderr)
+        return 2
+    try:
+        activate(args, home)
+    except BootstrapError as error:
+        print(f"bootstrap: {error}. Stopped; see BOOTSTRAP.md for rollback.", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

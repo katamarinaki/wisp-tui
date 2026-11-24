@@ -117,7 +117,7 @@ ACCENT_COLORS = frozenset(
 )
 
 
-def _token_from_command(command: object) -> str:
+def token_from_command(command: object) -> str:
     if (
         not isinstance(command, list)
         or not 1 <= len(command) <= 32
@@ -161,7 +161,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     if not isinstance(accent, str) or accent not in ACCENT_COLORS:
         raise ConfigError("invalid_accent_color")
     # Last, so a typo elsewhere never triggers a password prompt first.
-    secret = token if isinstance(token, str) else _token_from_command(command)
+    secret = token if isinstance(token, str) else token_from_command(command)
     return Config(
         url=url,
         token=secret,

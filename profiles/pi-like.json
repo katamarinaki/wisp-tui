@@ -1,0 +1,10 @@
+{
+  "sandbox": "enabled",
+  "auto_mode": true,
+  "model": "balanced",
+  "permissions": {
+    "fs_write": "allow",
+    "fs_edit": "allow",
+    "bash_run": "allow"
+  }
+}
