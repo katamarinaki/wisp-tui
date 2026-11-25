@@ -42,6 +42,8 @@ class ToolCallView(SelectableStatic):
         self.completed = completed
         self.source = source
         self.unreported = False
+        # Tool output can expand to its full text (ctrl+o).
+        self.expanded = False
         self._ok: bool | None = None
         self._duration_ms: float | None = None
         self.update_event(event, completed=completed)
@@ -107,7 +109,7 @@ class ToolCallView(SelectableStatic):
         if self.output_text is not None:
             # Bounded by detail_text; render_item shows only its last rows.
             self.tail_text = self.output_text.rstrip("\n")
-        self.update(render_item(*self.entry()))
+        self.update(render_item(*self.entry(), expanded=self.expanded))
 
     def apply_history(
         self, output_text: str | None = None, status: str = "", summary: str = ""
@@ -118,6 +120,11 @@ class ToolCallView(SelectableStatic):
             self.completed = True
             if self._ok is None and status in ("success", "error"):
                 self._ok = status == "success"
+        self.refresh_entry()
+
+    def set_expanded(self, expanded: bool) -> None:
+        """Show (or collapse) the full stored output."""
+        self.expanded = expanded
         self.refresh_entry()
 
     def mark_unreported(self) -> None:

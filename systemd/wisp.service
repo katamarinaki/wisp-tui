@@ -1,0 +1,14 @@
+[Unit]
+Description=Wisp runtime (serve, loopback only)
+Documentation=https://docs.usewisp.io
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/wisp/.wisp/bin/wisp serve
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

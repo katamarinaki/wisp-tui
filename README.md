@@ -75,12 +75,78 @@ At the prompts:
 starting inference. Then it saves an owner-only config under
 `~/.config/wisp-tui/`.
 
+For scripts and agents, `wi setup` also runs non-interactively:
+
+```sh
+wi setup --url http://127.0.0.1:3008 --token-stdin          # token on stdin, one line
+wi setup --url http://127.0.0.1:3008 --token-command '["pass", "show", "wisp/wi"]'
+```
+
+`--token-command` stores the argv list (JSON, run without a shell on every
+load) instead of the secret itself. See BOOTSTRAP.md for the full agent
+procedure.
+
+### Set up a whole machine
+
+On the machine that runs Wisp, `scripts/bootstrap` installs the reference
+system setup of `docs/SYSTEM_SETUP.md`: dedicated nologin service account,
+loopback-only runtime, systemd user units, sandbox and a permission profile.
+It is owner-run, two-stage (print the plan and its digest, then confirm the
+digest with `--activate`), idempotent where safe and refuses existing paths
+otherwise — it never repairs blindly and never creates sudoers entries.
+
+```sh
+sudo scripts/bootstrap --runtime-tarball wisp.tar.gz --profile safe
+sudo scripts/bootstrap --runtime-tarball wisp.tar.gz --profile safe \
+    --expected-sha256 <printed-digest> --activate
+```
+
+Permission profiles (`profiles/pi-like.json`, `profiles/safe.json`) are the
+same JSON `wi audit --profile` diffs against. `scripts/permissions` prints
+(or with `--apply` runs) the `wisp permissions set` commands for one:
+
+```sh
+scripts/permissions --profile safe --wisp-cli "sudo -u wisp -H /home/wisp/.wisp/bin/wisp"
+```
+
 ### Check and start
 
 ```sh
 wi --check        # check runtime health without starting inference
 wi                # open a new chat
+wi audit          # read-only drift check of the whole setup
 ```
+
+### Audit the setup
+
+`wi audit` compares the machine with the reference system setup for Wisp:
+a dedicated service account (nologin shell, owner-only home, lingering user
+services), a runtime listening on loopback only, live `serve` and optional
+`telegram` processes, and owner-only `wi` config and state files. It is
+strictly read-only, changes nothing, runs no inference, and never prints the
+token or config contents. Each line is `pass` / `fail` / `warn` / `skip` with a
+safe code; the exit code is 1 when anything failed, so it fits cron and
+scripts. `--skip GROUPS` drops groups, `--json` prints machine-readable output.
+
+The runtime-policy group (runtime version vs RUNTIME_CONTRACT.md, sandbox,
+auto-mode, permissions) needs the runtime CLI, which usually belongs to the
+service account. Pass the command you use to reach it:
+
+```sh
+wi audit --wisp-cli "sudo -u wisp -H /opt/wisp/bin/wisp"
+```
+
+To diff live permissions against the setup you intend, give it a profile
+file (`--profile FILE`), JSON with any of `sandbox` (`"enabled"`/`"disabled"`),
+`auto_mode` (bool) and `permissions` (tool → `"allow"`/`"ask"`/`"deny"`):
+
+```json
+{"sandbox": "enabled", "auto_mode": true,
+ "permissions": {"fs_write": "allow", "bash_run": "ask"}}
+```
+
+Rules the CLI prints in another format are reported as warnings, not silent
+passes; `wisp permissions get` output shapes vary between runtime releases.
 
 Each message you send starts a run on Wisp. The run keeps going if you quit
 `wi` or lose your connection. Back on the same machine (reconnect SSH first if
@@ -128,7 +194,11 @@ them. Commands: `/new`, `/resume`,
 `/status`, `/exit` (or `/quit`); typing `/` lists them and Tab completes. Any
 other `/name args` runs the Wisp skill `name`, as in Wisp's other clients; the
 commands above take priority, and a lone word that looks like a mistyped
-command is not sent. The app runs full screen:
+command is not sent. Porting a Pi skill is mostly mechanical: a Pi skill is a
+folder with `SKILL.md` (name + description + instructions); give Wisp the same
+`SKILL.md` content as a skill, keep the description line (that is what the
+model routes on), and replace Pi-only tooling references with Wisp's file and
+shell tools. The app runs full screen:
 the mouse wheel or PageUp/PageDown scrolls the chat while the editor and footer
 stay put. Drag over the chat to select text; releasing the mouse copies it,
 through `pbcopy` on a local Mac and through your terminal (OSC 52) otherwise,

@@ -1,0 +1,7 @@
+#!/bin/sh
+# wisp-tui permissions: apply a repo profile (profiles/*.json) through the
+# runtime CLI. Plan-only unless --apply. Runs without importing Textual.
+set -eu
+ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+exec env PYTHONPATH="$ROOT/src" WISP_TUI_PROG="$(basename "$0")" \
+    "$ROOT/.venv/bin/python" -P -m wisp_tui.permissions "$@"

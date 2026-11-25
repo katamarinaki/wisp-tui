@@ -14,15 +14,16 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
 
+from textual import events
 from textual.app import ComposeResult
-from textual.binding import BindingType
+from textual.binding import Binding, BindingType
 from textual.containers import Container, Horizontal
 from textual.widgets import Static
 
 from . import __version__
 from .app_base import ReleaseCheck
 from .app_sessions import SessionLayer
-from .chat_view import ChatItem, ChatScroll, JumpToLatest
+from .chat_view import ChatItem, ChatScroll, JumpToLatest, ScrollOverlay, SearchBar
 from .client import ClientError
 from .commands import HELP_TEXT, NAMES, mistyped_command, parse_command
 from .editor import PromptInput
@@ -42,6 +43,10 @@ class WispTuiApp(SessionLayer):
         ("f2", "sessions", "Sessions"),
         ("f3", "model", "Model"),
         ("ctrl+c", "cancel", "Cancel/exit"),
+        Binding("ctrl+shift+f", "chat_search", "Search chat", show=False),
+        Binding("ctrl+shift+up", "chat_jump_prompt(-1)", "Previous prompt", show=False),
+        Binding("ctrl+shift+down", "chat_jump_prompt(1)", "Next prompt", show=False),
+        Binding("ctrl+o", "chat_expand_tool", "Expand tool output", show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -49,6 +54,7 @@ class WispTuiApp(SessionLayer):
         yield ChatScroll(id="chat")
         # Above the docked bottom, so showing them shortens the chat instead of
         # moving the composer and footer.
+        yield SearchBar()
         yield JumpToLatest("\u2193 Jump to latest message", id="jump-latest", markup=False)
         yield Static("", id="status", markup=False)
         yield Static("", id="command-hints", markup=False)
@@ -64,6 +70,12 @@ class WispTuiApp(SessionLayer):
                     yield Static("", id="thinking-info", markup=False)
             yield Static("", id="release-notice", markup=False)
         yield Static("", id="flash", markup=False)
+        yield ScrollOverlay(id="chat-scrollbar")
+
+    def on_resize(self, event: events.Resize) -> None:
+        # The hover scrollbar's thumb follows the chat's new geometry.
+        for overlay in self.screen.query(ScrollOverlay).results(ScrollOverlay):
+            overlay.refresh_thumb()
 
     def on_mount(self) -> None:
         self._activity_timer = self.set_interval(0.1, self._tick_activity, pause=True)

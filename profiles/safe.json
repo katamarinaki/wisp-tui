@@ -1,0 +1,9 @@
+{
+  "sandbox": "enabled",
+  "auto_mode": false,
+  "permissions": {
+    "fs_write": "ask",
+    "fs_edit": "ask",
+    "bash_run": "ask"
+  }
+}
