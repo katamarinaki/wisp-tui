@@ -12,28 +12,31 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple, TypeVar
 
 from textual import events
 from textual.app import App
+from textual.geometry import Region
 from textual.timer import Timer
 from textual.widgets import Static
 
 from .chat_view import ChatItem, StreamView
 from .client import ClientError, WispClient
 from .composer import ComposerState, ComposerStore
-from .config import Config
+from .config import Config, default_selection_path, load_default_selection
 from .editor import PromptInput
 from .runs import Confirmation, RunFollower
-from .screens import ApprovalModal
+from .screens import ApprovalModal, BottomPanel
+from .scrollback import THEME
 from .sessions import SessionStore
 from .submissions import PendingSubmission, SubmissionError, SubmissionStore
 from .terminal_status import TabStatus, tab_status_sequence
-from .text import display_path, metadata_text, safe_text
+from .text import compact_usage, display_path, metadata_text, safe_text
 from .tool_view import ToolCallView
 from .welcome import Welcome
 
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+ResultT = TypeVar("ResultT")
 
 
 class ReleaseCheck(NamedTuple):
@@ -82,6 +85,7 @@ class AppBase(App[None]):
         # Read by get_theme_variable_defaults, which App.__init__ calls.
         self._accent = config.accent_color
         super().__init__(ansi_color=True)
+        self.console.push_theme(THEME)
         self.client = client
         self.config = config
         self.startup = startup or Startup()
@@ -110,6 +114,8 @@ class AppBase(App[None]):
         self._project_root: str | None = None
         self.session_title: str = ""
         self._model_selection: dict[str, Any] = {}
+        # Applied to each new session; saved by Ctrl+S in the model picker.
+        self._default_selection = load_default_selection(default_selection_path(client.url))
         self._last_run_tokens = ""
         try:
             self._launch_dir = display_path(Path.cwd())
@@ -174,6 +180,20 @@ class AppBase(App[None]):
     def get_theme_variable_defaults(self) -> dict[str, str]:
         return {"wisp-accent": f"ansi_{self._accent}"}
 
+    def _push_panel(
+        self, panel: BottomPanel[ResultT], answered: Callable[[ResultT | None], None]
+    ) -> None:
+        panel.placement = self._panel_placement
+        panel.status_text = self._panel_status()
+        self.push_screen(panel, answered)
+
+    def _panel_status(self) -> str:
+        # Waiting for approval is what the approval panel itself says.
+        return "" if self._status_kind is TabStatus.WAITING else self._status_text
+
+    def _panel_placement(self) -> Region | None:
+        return self._prompt_input.region if self._prompt_input.is_attached else None
+
     def _run_threaded(
         self,
         work: Callable[[], Callable[[], None] | None],
@@ -220,6 +240,8 @@ class AppBase(App[None]):
         status = self.query_one("#status", Static)
         status.update(self._status_text)
         status.display = bool(self._status_text)
+        if isinstance(self.screen, BottomPanel):
+            self.screen.show_status(self._panel_status())
         self._render_activity()
 
     def on_resize(self, event: events.Resize) -> None:
@@ -301,7 +323,7 @@ class AppBase(App[None]):
         self.query_one("#session-id").display = self.session_id is not None
         session = self.session_id[:8] if self.session_id else "new"
         self.query_one("#location", Static).update(metadata_text(self._launch_dir, 1000))
-        session_text = f" · session {session}"
+        session_text = f"  session {session}"
         self.query_one("#session-id", Static).update(session_text)
         mode = metadata_text(self._model_selection.get("mode"))
         model = metadata_text(self._model_selection.get("model"))
@@ -325,14 +347,9 @@ class AppBase(App[None]):
         thinking_info.display = isinstance(thinking, bool)
         self.query_one("#selection-summary").display = bool(label) or thinking_info.display
         usage = self.query_one("#usage-info", Static)
-        # These are exact counts from the last finished run, never context use.
-        compact = (
-            self._last_run_tokens.replace("input: ", "↑")
-            .replace("output: ", "↓")
-            .replace("total: ", "Σ")
-            .replace(", ", " ")
-        )
-        fallback = "T: 0" if self.session_id is None else "T: unavailable"
+        # Counts from the last finished run, never context use; unknown shows nothing.
+        compact = compact_usage(self._last_run_tokens)
+        fallback = "↑0 ↓0" if self.session_id is None else ""
         usage_text = f"last run {compact}" if compact else fallback
         usage.update(usage_text)
         self.footer_rows = [

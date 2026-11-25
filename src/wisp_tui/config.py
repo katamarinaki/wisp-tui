@@ -20,6 +20,7 @@ import json
 import os
 import stat
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -99,6 +100,51 @@ def read_private_json(path: Path, maximum: int) -> dict[str, Any]:
     return data
 
 
+def default_selection_path(url: str) -> Path:
+    """This runtime's defaults for new sessions: Ctrl+S in the model picker, /thinking."""
+    return STATE_DIR / f"default-selection-{runtime_fingerprint(url)}.json"
+
+
+def _valid_selection(data: dict[str, Any]) -> bool:
+    """Mode (and model) and thinking are each optional; at least one is set."""
+    if not data or set(data) - {"mode", "model", "thinking"}:
+        return False
+    if "thinking" in data and not isinstance(data["thinking"], bool):
+        return False
+    if data.get("mode") == "model":
+        model = data.get("model")
+        return isinstance(model, str) and 0 < len(model) <= 200
+    return data.get("mode", "advanced") in ("advanced", "balanced") and "model" not in data
+
+
+def load_default_selection(path: Path) -> dict[str, Any] | None:
+    """None when unset, unreadable or invalid: new sessions then keep Wisp's default."""
+    try:
+        data = read_private_json(path, 1024)
+    except ConfigError:
+        return None
+    return data if _valid_selection(data) else None
+
+
+def save_default_selection(path: Path, selection: dict[str, Any]) -> None:
+    data: dict[str, Any] = {
+        k: selection[k] for k in ("mode", "model", "thinking") if k in selection
+    }
+    if not _valid_selection(data):
+        raise ConfigError("invalid_selection")
+    try:
+        ensure_private_directory(path.parent)
+        fd, name = tempfile.mkstemp(prefix=".default-selection-", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w") as target:
+                json.dump(data, target)
+            os.replace(name, path)
+        finally:
+            Path(name).unlink(missing_ok=True)
+    except OSError:
+        raise ConfigError("default_selection_unavailable") from None
+
+
 @dataclass(frozen=True)
 class Config:
     url: str
@@ -117,7 +163,7 @@ ACCENT_COLORS = frozenset(
 )
 
 
-def _token_from_command(command: object) -> str:
+def token_from_command(command: object) -> str:
     if (
         not isinstance(command, list)
         or not 1 <= len(command) <= 32
@@ -161,7 +207,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     if not isinstance(accent, str) or accent not in ACCENT_COLORS:
         raise ConfigError("invalid_accent_color")
     # Last, so a typo elsewhere never triggers a password prompt first.
-    secret = token if isinstance(token, str) else _token_from_command(command)
+    secret = token if isinstance(token, str) else token_from_command(command)
     return Config(
         url=url,
         token=secret,

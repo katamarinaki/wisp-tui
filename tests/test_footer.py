@@ -43,7 +43,7 @@ async def test_fresh_footer_and_full_status_explain_unavailable_data(
         assert not app.query_one("#selection-summary").display
         assert not app.query_one("#session-info").display
         assert not app.query_one("#thinking-info").display
-        assert footer(app, "usage-info") == "T: 0"
+        assert footer(app, "usage-info") == "↑0 ↓0"
         assert app.query_one("#usage-info").display
         assert footer(app, "location") == str(launch)
         # A later chdir must not relabel the original launch directory.
@@ -56,7 +56,7 @@ async def test_fresh_footer_and_full_status_explain_unavailable_data(
         assert app.query_one("#selection-summary").display
         assert footer(app, "session-info") == "model: example-model"
         assert footer(app, "thinking-info") == " · thinking: off"
-        assert footer(app, "usage-info") == "T: 0"
+        assert footer(app, "usage-info") == "↑0 ↓0"
         app._model_selection = {"thinking": True}
         app._render_metadata()
         assert not app.query_one("#session-info").display
@@ -212,7 +212,7 @@ async def test_session_change_and_new_clear_usage_and_model_metadata(
         app._session_loaded(SessionState(session, [], ""), None)
         assert "↑100" in footer(app, "usage-info")
         app._session_loaded(SessionState({"id": OTHER_SID}, [], ""), None)
-        assert footer(app, "usage-info") == "T: unavailable"
+        assert footer(app, "usage-info") == ""
         assert app.query_one("#usage-info").display
         assert "balanced" not in footer(app, "session-info")
         app._start_fresh("")
@@ -221,7 +221,7 @@ async def test_session_change_and_new_clear_usage_and_model_metadata(
         assert not app.query_one("#session-id").display
         assert app.query_one("#summary").display
         assert "session new" in footer(app, "session-id")
-        assert footer(app, "usage-info") == "T: 0"
+        assert footer(app, "usage-info") == "↑0 ↓0"
         assert app.query_one("#usage-info").display
         assert not app.query_one("#thinking-info").display
 
@@ -239,7 +239,7 @@ async def test_missing_usage_does_not_show_previous_run_tokens(
         app._begin_run(RID)
         assert "↑100" in footer(app, "usage-info")  # last finished run, not live
         app._finalize_run(kind, {})
-        assert footer(app, "usage-info") == "T: unavailable"
+        assert footer(app, "usage-info") == ""
         assert app.query_one("#usage-info").display
 
 
@@ -332,7 +332,7 @@ async def test_footer_contrast_and_summary_reflow(
             usage = app.query_one("#usage-info", Static)
             selection = app.query_one("#session-info", Static)
             status = app.query_one("#status", Static)
-            assert footer(app, "usage-info") == "last run ↑28,606 ↓127 Σ28,733"
+            assert footer(app, "usage-info") == "last run ↑29k ↓127 Σ29k"
             assert footer(app, "session-info") == "mode: balanced (auto)"
             assert footer(app, "thinking-info") == " · thinking: off"
             for widget in (
@@ -386,7 +386,7 @@ async def test_session_and_thinking_stay_visible_with_long_metadata(
                 session = app.query_one("#session-id", Static)
                 model = app.query_one("#session-info", Static)
                 setting = app.query_one("#thinking-info", Static)
-                assert session.render_line(0).text.strip() == f"· session {SID[:8]}"
+                assert session.render_line(0).text.strip() == f"session {SID[:8]}"
                 assert setting.render_line(0).text.strip() == (
                     f"· thinking: {'on' if thinking else 'off'}"
                 )

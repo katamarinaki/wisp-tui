@@ -59,6 +59,8 @@ def title_from(draft: str, limit: int = 60) -> str:
 def display_path(path: Path) -> str:
     home = str(Path.home())
     text = str(path)
+    if text == home:
+        return "~"
     return "~" + text[len(home) :] if text.startswith(home + "/") else text
 
 
@@ -71,6 +73,25 @@ def usage_line(usage: Any) -> str:
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             parts.append(f"{key.replace('Tokens', '')}: {value:,}")
     return ", ".join(parts)
+
+
+def compact_count(count: int) -> str:
+    if count < 1000:
+        return str(count)
+    for limit, suffix in ((1_000_000, "k"), (1_000_000_000, "M")):
+        if count < limit:
+            scaled = count / (limit // 1000)
+            return f"{scaled:.1f}{suffix}" if scaled < 9.95 else f"{scaled:.0f}{suffix}"
+    return f"{count / 1_000_000_000:.0f}G"
+
+
+def compact_usage(line: str) -> str:
+    """``usage_line`` as the footer shows it: ``↑56k ↓1.8k Σ58k``."""
+    marks = {"input": "↑", "output": "↓", "total": "Σ"}
+    parts = (part.split(": ") for part in line.split(", ") if ": " in part)
+    return " ".join(
+        f"{marks.get(key, key)}{compact_count(int(value.replace(',', '')))}" for key, value in parts
+    )
 
 
 def model_label(selection: dict[str, Any]) -> str:

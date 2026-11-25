@@ -1,0 +1,14 @@
+[Unit]
+Description=Wisp Telegram bot
+Documentation=https://docs.usewisp.io
+Requires=wisp.service
+After=wisp.service
+
+[Service]
+Type=simple
+ExecStart=/home/wisp/.wisp/bin/wisp telegram
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

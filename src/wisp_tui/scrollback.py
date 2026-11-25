@@ -18,8 +18,9 @@ from rich.console import (
     RenderableType,
     RenderResult,
 )
-from rich.markdown import CodeBlock, Heading, Markdown
+from rich.markdown import CodeBlock, Heading, ListItem, Markdown
 from rich.padding import Padding
+from rich.segment import Segment
 from rich.style import Style
 from rich.syntax import Syntax
 from rich.table import Table
@@ -27,6 +28,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 # Match app.tcss: default foreground, bold headings, no filled code spans.
+# The app pushes it onto its own console too (AppBase.__init__).
 THEME = Theme(
     {
         "markdown.code": "bold",
@@ -55,13 +57,29 @@ class _LeftHeading(Heading):
 
 class _PlainCodeBlock(CodeBlock):
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        yield Syntax(
+        code = Syntax(
             str(self.text).rstrip(),
             self.lexer_name,
             theme="ansi_dark",
             word_wrap=True,
             background_color="default",
         )
+        yield Padding(code, (0, 0, 0, 2))
+
+
+class _NumberedItem(ListItem):
+    def render_number(
+        self, console: Console, options: ConsoleOptions, number: int, last_number: int
+    ) -> RenderResult:
+        width = len(str(last_number)) + 3
+        lines = console.render_lines(
+            self.elements, options.update(width=options.max_width - width), style=self.style
+        )
+        numeral = Segment(f"{number}.".rjust(width - 1) + " ")
+        for index, line in enumerate(lines):
+            yield Segment(" " * width) if index else numeral
+            yield from line
+            yield Segment.line()
 
 
 class _AnswerMarkdown(Markdown):
@@ -70,45 +88,56 @@ class _AnswerMarkdown(Markdown):
         "heading_open": _LeftHeading,
         "fence": _PlainCodeBlock,
         "code_block": _PlainCodeBlock,
+        "list_item_open": _NumberedItem,
     }
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        # Rich starts a leading list with a blank line; the chat's margin spaces items.
+        segments = iter(super().__rich_console__(console, options))
+        for segment in segments:
+            if not (isinstance(segment, Segment) and segment.text == "\n"):
+                yield segment
+                break
+        yield from segments
 
 
 class _Tail:
     """The last rows of tool output, wrapped at the current width."""
 
-    def __init__(self, text: Text) -> None:
+    def __init__(self, text: Text, expanded: bool = False) -> None:
         self.text = text
+        self.expanded = expanded
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         rows = list(self.text.wrap(console, options.max_width))
         hidden = len(rows) - TOOL_TAIL_ROWS
-        if hidden > 0:
-            note = f"… ({hidden} earlier line{'s' if hidden != 1 else ''})"
+        if hidden > 0 and not self.expanded:
+            note = f"… ({hidden} earlier line{'s' if hidden != 1 else ''}, ctrl+o to expand)"
             yield Text(note, style="#8a8a8a")
             rows = rows[hidden:]
         yield from rows
 
 
-def _tool_entry(kind: str, text: str) -> RenderableType:
+def _tool_entry(kind: str, text: str, expanded: bool = False) -> RenderableType:
     # Tool entries are one title line, optional output tail, one status line.
     lines = text.split("\n")
     parts: list[RenderableType] = [Text(lines[0], style="bold")]
     if len(lines) > 2:
-        parts.append(_Tail(Text("\n".join(lines[1:-1]), style="#bcbcbc")))
+        parts.append(_Tail(Text("\n".join(lines[1:-1]), style="#bcbcbc"), expanded))
     if len(lines) > 1:
         parts.append(Text(lines[-1], style=TOOL_ACCENTS.get(kind, "#8a8a8a")))
     fill = TOOL_FILLS.get(kind, TOOL_FILL)
     return Padding(Group(*parts), (1, 2), style=fill, expand=True)
 
 
-def render_item(kind: str, text: str) -> RenderableType:
+def render_item(kind: str, text: str, *, expanded: bool = False) -> RenderableType:
     if kind == "user":
         return Padding(Text(text), (1, 2), style=USER_STYLE, expand=True)
     if kind == "assistant":
         markdown = _AnswerMarkdown(text, code_theme="ansi_dark", hyperlinks=False)
         return Padding(markdown, (0, 1), expand=False)
     if kind.startswith("tool-call"):
-        return _tool_entry(kind, text)
+        return _tool_entry(kind, text, expanded)
     style = "red" if kind == "error" else "dim"
     return Padding(Text(text, style=style), (0, 1), expand=False)
 
@@ -186,13 +215,12 @@ def print_footer(rows: list[tuple[str, str]], accent: str) -> None:
     console = Console(highlight=False, theme=THEME)
     rule = Text("─" * max(1, console.width - 2), style=accent)
     parts: list[RenderableType] = [rule, Text(""), rule]
-    for index, (left, right) in enumerate(rows):
+    for left, right in rows:
         # Each row sizes its own columns, as in the app.
         grid = Table.grid(expand=True)
         grid.add_column()
         grid.add_column(justify="right")
-        # Row 1 is the usage line, bright cyan in the app (app.tcss).
-        grid.add_row(Text(left, style="bright_cyan" if index == 1 else ""), Text(right))
+        grid.add_row(Text(left), Text(right))
         parts.append(grid)
     with console.capture() as capture:
         console.print(Padding(Group(*parts), (0, 1)))

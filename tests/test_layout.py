@@ -119,7 +119,7 @@ def test_answers_use_terminal_foreground_without_fills(colors: str) -> None:
     lines = [line.rstrip() for line in printed_lines([("assistant", answer)], 100)]
     assert lines[0] == " Server status"
     assert " Readable answer with inline code." in lines
-    assert " plain code" in lines
+    assert "   plain code" in lines
 
 
 async def test_streamed_answer_keeps_the_printed_layout_after_resize(
