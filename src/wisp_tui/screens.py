@@ -68,9 +68,7 @@ class BottomPanel(ModalScreen[ResultT]):
         editor = (self.placement() if self.placement else None) or Region(0, height, 0, 0)
         below = min(max(0, height - editor.bottom), height - 3)
         available = height - below
-        panel.styles.margin = (0, 0, below, editor.x)
-        if editor.width:
-            panel.styles.width = editor.width
+        panel.styles.margin = (0, 0, below, 0)
         panel.styles.min_height = min(editor.height, available)
         panel.styles.max_height = available
         chrome = panel.styles.gutter.height + sum(
@@ -129,7 +127,8 @@ class ApprovalModal(BottomPanel[str | None]):
                 )
                 if self.note:
                     yield Static(self.note, id="approval-note", markup=False)
-                yield Static(self.args_text, id="approval-args", markup=False)
+                shown = self.args_text if self.args not in ({}, [], None, "") else "(no arguments)"
+                yield Static(shown, id="approval-args", markup=False)
             yield Static(self._hint(), id="approval-hint", markup=False)
 
     def _hint(self) -> str:

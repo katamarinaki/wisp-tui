@@ -262,12 +262,18 @@ def update(root: Path, prog: str) -> int:
             if not _confirm():
                 print(f"{prog}: update declined. Nothing changed.", file=sys.stderr)
                 return 1
+        branch = git(
+            "symbolic-ref", "--quiet", "--short", "HEAD", allowed_returncodes=(0, 1)
+        ).stdout.strip()
+        current = head == target and branch == "main"
         if has_main:
             git("switch", "--no-guess", "main", error_code="update_switch_failed")
             git("merge", "--ff-only", target, error_code="update_fast_forward_failed")
         else:
             git("switch", "--create", "main", target, error_code="update_switch_failed")
-        print(f"{prog}: refreshing project dependencies…", flush=True)
+        # Refreshed even when current: a rerun must finish an update whose install failed.
+        step = f"already on {release}; checking" if current else "refreshing"
+        print(f"{prog}: {step} project dependencies…", flush=True)
         _run_checked(
             root,
             [str(python), "-m", "pip", "install", "-r", "requirements.txt"],
@@ -280,7 +286,11 @@ def update(root: Path, prog: str) -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"{prog}: updated to {release} ({target[:12]}). Launch {prog} again to use it.")
+    print(
+        f"{prog}: already up to date ({release}, {target[:12]})."
+        if current
+        else f"{prog}: updated to {release} ({target[:12]}). Launch {prog} again to use it."
+    )
     return 0
 
 

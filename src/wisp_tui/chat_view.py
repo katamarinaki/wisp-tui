@@ -17,6 +17,7 @@ from textual.geometry import Offset, Region, Size
 from textual.message import Message
 from textual.strip import Strip
 from textual.timer import Timer
+from textual.widget import Widget
 from textual.widgets import Input, Static
 
 from .scrollback import render_item, settled_length
@@ -39,6 +40,13 @@ class ChatScroll(VerticalScroll):
         def __init__(self, text: str) -> None:
             super().__init__()
             self.text = text
+
+    class Clicked(Message):
+        """A click without a drag landed on ``item``."""
+
+        def __init__(self, item: Widget) -> None:
+            super().__init__()
+            self.item = item
 
     def __init__(self, *, id: str | None = None) -> None:
         super().__init__(id=id)
@@ -259,7 +267,13 @@ class ChatScroll(VerticalScroll):
             self.post_message(self.Selected(text))
         else:
             # A click clears the selection, as in Pi.
+            click = self.selection
             self._set_selection(None)
+            if click is not None and click[0] == click[1]:
+                for child in self.children:
+                    if child.display and child.virtual_region.contains_point(click[0]):
+                        self.post_message(self.Clicked(child))
+                        break
 
     def page(self, direction: int) -> None:
         if direction < 0:

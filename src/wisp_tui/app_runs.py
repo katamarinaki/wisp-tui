@@ -25,6 +25,7 @@ class RunLayer(ComposerLayer):
         self._tool_calls.clear()
         self._saw_live_tool_events = False
         self._tool_history_post_run_reads = 0
+        self._tool_history_poll_delay = 0.0
         self._replay_note_due = reattached
         self._cancel_requested = False
         self._queue_sync()

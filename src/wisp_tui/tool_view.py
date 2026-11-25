@@ -38,7 +38,6 @@ class ToolCallView(SelectableStatic):
         self.result_notice = ""
         # A stored-result read has finished (matched or not) for this entry.
         self.result_checked = False
-        self.result_retried = False
         self.completed = completed
         self.source = source
         self.unreported = False

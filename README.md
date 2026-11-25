@@ -208,9 +208,9 @@ scrollback.
 Wisp stores your sessions. wisp-tui keeps a private log under
 `~/.local/state/wisp-tui/` so `-c` and `-r` know which ones you used.
 
-When a newer release exists, a line under the editor says so. `wi update`
-installs it only if the release tag carries a valid signature from the pinned
-key.
+When a newer release exists, the chat and a line under the editor say so at
+startup. `wi update` installs it only if the release tag carries a valid
+signature from the pinned key.
 
 ### Optional settings
 
