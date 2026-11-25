@@ -87,7 +87,7 @@ HELP_TEXT = f"""**wisp-tui** — chat with the local Wisp runtime.
 | Ctrl+P / Ctrl+N | Previous / next submitted prompt; return to your draft |
 | Ctrl+Shift+F | Search the chat (Enter: next · Shift+Enter: previous · Esc: close) |
 | Ctrl+Shift+Up / Ctrl+Shift+Down | Jump to the previous / next prompt |
-| Ctrl+O | Expand or collapse the newest tool output |
+| Ctrl+O | Expand or collapse all tool entries (click one to toggle it) |
 | Ctrl+Shift+P | Command palette, where the terminal distinguishes it |
 | F1 | This help |
 | F2 | Session picker |
@@ -146,7 +146,7 @@ scrolled up, "Jump to latest message" returns to new output. Drag over the chat
 to select text; releasing the mouse copies it. On quit, the conversation is
 printed to the terminal's scrollback. Tool entries show the command, the
 last {TOOL_TAIL_ROWS} output lines (read from stored session history when a unique call ID is
-available) and the status; full output stays in Wisp's history.
+available) and the status; expanded, they show the full command and output.
 
 While a run is active you will see tool calls as they happen. When Wisp needs
 approval for a tool, a dialog appears: **y** approve, **n** deny, **p** allow

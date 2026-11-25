@@ -27,6 +27,8 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
+from .tool_data import MAX_SUMMARY_CHARS, TITLE_BREAK
+
 # Match app.tcss: default foreground, bold headings, no filled code spans.
 # The app pushes it onto its own console too (AppBase.__init__).
 THEME = Theme(
@@ -119,9 +121,17 @@ class _Tail:
 
 
 def _tool_entry(kind: str, text: str, expanded: bool = False) -> RenderableType:
-    # Tool entries are one title line, optional output tail, one status line.
+    # Tool entries are a title line (TITLE_BREAK joins a multi-line one),
+    # an optional output tail and one status line.
     lines = text.split("\n")
-    parts: list[RenderableType] = [Text(lines[0], style="bold")]
+    first, *more = lines[0].split(TITLE_BREAK)
+    if expanded:
+        title = "\n".join((first, *more))
+    elif more or len(first) > MAX_SUMMARY_CHARS:
+        title = first[: MAX_SUMMARY_CHARS - 1] + "…"
+    else:
+        title = first
+    parts: list[RenderableType] = [Text(title, style="bold")]
     if len(lines) > 2:
         parts.append(_Tail(Text("\n".join(lines[1:-1]), style="#bcbcbc"), expanded))
     if len(lines) > 1:
@@ -138,7 +148,7 @@ def render_item(kind: str, text: str, *, expanded: bool = False) -> RenderableTy
         return Padding(markdown, (0, 1), expand=False)
     if kind.startswith("tool-call"):
         return _tool_entry(kind, text, expanded)
-    style = "red" if kind == "error" else "dim"
+    style = {"error": "red", "notice": "bold yellow"}.get(kind, "dim")
     return Padding(Text(text, style=style), (0, 1), expand=False)
 
 

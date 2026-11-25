@@ -11,6 +11,9 @@ MAX_DETAIL_CHARS = 12 * 1024
 MAX_DETAIL_LINES = 200
 MAX_SUMMARY_CHARS = 200
 MAX_NAME_CHARS = 200
+# Joins a multi-line title so the entry's first line holds all of it; tool text
+# can't contain it (printable() replaces it), so it can't forge a title row.
+TITLE_BREAK = "\u2028"
 
 
 def _json_prefix(value: Any, limit: int, indent: int | None = None) -> str:
@@ -133,7 +136,10 @@ def output_text(text: str) -> str:
 
 
 def command_summary(args: Any) -> str:
-    """One title line: a shell command verbatim, else compact JSON arguments.
+    """The title: a shell command verbatim, else compact JSON arguments.
+
+    Bounded like tool output; lines are joined by TITLE_BREAK and the entry
+    shows only the first one (clipped) until expanded.
 
     MCP calls wrap their input as {"name", "arguments"}: show the quoted inner
     name (ToolCallView drops it when it repeats the tool name) and arguments.
@@ -151,9 +157,9 @@ def command_summary(args: Any) -> str:
         if not command:
             return ""
         args = None
-        prefix = "$ " + command[: MAX_SUMMARY_CHARS + 1]
+        prefix = "$ " + command[: MAX_DETAIL_CHARS + 1]
     try:
-        text = "" if args is None else _json_prefix(args, MAX_SUMMARY_CHARS + 1)
+        text = "" if args is None else _json_prefix(args, MAX_DETAIL_CHARS + 1)
     except (TypeError, ValueError, RecursionError):
         return ""
     if text in ("{}", "[]", "null", '""'):
@@ -161,11 +167,10 @@ def command_summary(args: Any) -> str:
     text = (prefix + text).strip()
     if not text:
         return ""
-    lines = text.strip().splitlines() or [""]
-    line = printable(lines[0])
-    if len(lines) > 1 or len(line) > MAX_SUMMARY_CHARS:
-        line = line[: MAX_SUMMARY_CHARS - 1] + "…"
-    return line
+    lines = [printable(line) for line in text[:MAX_DETAIL_CHARS].splitlines()]
+    if len(text) > MAX_DETAIL_CHARS or len(lines) > MAX_DETAIL_LINES:
+        lines = [*lines[:MAX_DETAIL_LINES], "… command truncated"]
+    return TITLE_BREAK.join(lines)
 
 
 def call_id_of(value: Any) -> str:

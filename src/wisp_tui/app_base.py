@@ -163,6 +163,11 @@ class AppBase(App[None]):
         self._tool_history_targets: tuple[ToolCallView, ...] = ()
         self._tool_history_again = False
         self._tool_history_post_run_reads = 0
+        self._tool_history_poll: Timer | None = None
+        # The next live poll's wait; 0 starts over (app_chat.TOOL_HISTORY_LIVE_POLL).
+        self._tool_history_poll_delay = 0.0
+        # Ctrl+O's state: new tool entries open expanded while it is on.
+        self._tools_expanded = False
         self._status_text = "connecting…"
         # What the status means for the terminal tab while nothing is running.
         self._status_kind = TabStatus.CONNECTING

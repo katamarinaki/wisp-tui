@@ -96,6 +96,14 @@ class WispTuiApp(SessionLayer):
             notice = self.query_one("#release-notice", Static)
             notice.update(f"wisp-tui {tag} is available · run {check.update_command}")
             notice.display = True
+            # Like Pi, also announce it in the chat, below the welcome if shown.
+            welcome = self._welcome.display
+            self._show_line(
+                f"Update available: wisp-tui {tag} (installed v{__version__}). "
+                f"Run {check.update_command}, then launch again.",
+                "notice",
+            )
+            self._welcome.display = welcome
 
     def _bootstrap_worker(self) -> None:
         try:

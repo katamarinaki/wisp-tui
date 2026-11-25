@@ -26,6 +26,10 @@ ChatEntry = ChatItem | ToolCallView
 # A finished run's final checkpoint can commit moments after the run.completed
 # event; retry the stored-result read before reporting it as missing.
 TOOL_HISTORY_POST_RUN_DELAYS = (1.0, 3.0, 6.0)
+# Wisp may store results only at its next checkpoint, so poll during a run,
+# doubling the wait up to the cap; each read fetches the whole history.
+TOOL_HISTORY_LIVE_POLL = 2.0
+TOOL_HISTORY_LIVE_POLL_MAX = 30.0
 
 
 def hidden_note(hidden: int) -> str:
@@ -68,16 +72,17 @@ class ChatLayer(AppBase):
         self.query_one("#chat", ChatScroll).jump_prompt(direction)
 
     def action_chat_expand_tool(self) -> None:
-        """Toggle the full output of the newest tool entry, like Pi's ctrl+o."""
-        chat = self.query_one("#chat", ChatScroll)
-        for child in reversed(chat.children):
-            if isinstance(child, ToolCallView):
-                if child.output_text is not None:
-                    child.set_expanded(not child.expanded)
-                    return
-            elif isinstance(child, ChatItem) and child.kind.startswith("tool-call"):
-                child.set_expanded(not child.expanded)
-                return
+        """Expand or collapse every tool entry, like Pi's ctrl+o."""
+        self._tools_expanded = not self._tools_expanded
+        for child in self.query_one("#chat", ChatScroll).children:
+            if isinstance(child, (ChatItem, ToolCallView)):
+                child.set_expanded(self._tools_expanded)
+
+    def on_chat_scroll_clicked(self, message: ChatScroll.Clicked) -> None:
+        """A click on a tool entry expands or collapses just that one, like Pi."""
+        item = message.item
+        if isinstance(item, (ChatItem, ToolCallView)):
+            item.set_expanded(not item.expanded)
 
     def on_chat_scroll_selected(self, message: ChatScroll.Selected) -> None:
         """Like Pi: the native clipboard locally, OSC 52 over SSH."""
@@ -156,7 +161,7 @@ class ChatLayer(AppBase):
                     self._commit((item.kind, item.take_settled()))
                 break
             self._chat_items.popleft()
-            self._commit(item.entry())
+            self._commit(item.entry(), item.expanded)
             if item.parent is not None:
                 item.remove()
         self._tool_calls = {
@@ -176,7 +181,7 @@ class ChatLayer(AppBase):
                             chat.mount(item)
                 previous = item
 
-    def _commit(self, entry: tuple[str, str]) -> None:
+    def _commit(self, entry: tuple[str, str], expanded: bool | None = None) -> None:
         if not entry[1].strip():
             return
         if len(self._printed) == self.SHOWN_ITEMS:
@@ -184,6 +189,7 @@ class ChatLayer(AppBase):
         self._printed.append(entry)
         for chat in self.query("#chat").results(ChatScroll):
             widget = ChatItem(*entry)
+            widget.set_expanded(self._tools_expanded if expanded is None else expanded)
             live = next((item for item in self._chat_items if item.parent is chat), None)
             if live is not None:
                 chat.mount(widget, before=live)
@@ -261,6 +267,7 @@ class ChatLayer(AppBase):
             view = ToolCallView(
                 event, completed=completed, source=source, session_id=self.session_id
             )
+            view.set_expanded(self._tools_expanded)
             before = None
             if self._stream_view is not None:
                 if source != "live":
@@ -334,17 +341,15 @@ class ChatLayer(AppBase):
             elif view.call_id in matched:
                 details = matched[view.call_id]
                 view.apply_history(details.output_text, details.status, details.summary)
+                self._tool_history_poll_delay = 0.0
             elif self._tool_history_again or not view.finished:
                 # A queued read, or the call's own completion read, may still find it.
                 view.set_result_notice("")
                 continue
             elif self.active_run is not None:
-                # Wisp may store the result after reporting the completion, and
-                # the run-end read is still coming: a miss is never final while
-                # the run is live, so the entry stays available to that read.
-                if not view.result_retried:
-                    view.result_retried = retry = True
-                view.set_result_notice("")
+                # Wisp may store the result after reporting the completion: a
+                # miss is never final while the run is live, so keep polling.
+                retry = True
                 continue
             elif self._tool_history_post_run_reads < len(TOOL_HISTORY_POST_RUN_DELAYS):
                 # The final checkpoint may commit just after run.completed;
@@ -356,13 +361,19 @@ class ChatLayer(AppBase):
                 view.set_result_notice("Result not in stored history.")
             view.result_checked = True
             view.refresh_entry()
-        if retry:
-            self.set_timer(1.0, self._request_tool_history)
+        if retry and self._tool_history_poll is None:
+            delay = max(self._tool_history_poll_delay, TOOL_HISTORY_LIVE_POLL)
+            self._tool_history_poll_delay = min(delay * 2, TOOL_HISTORY_LIVE_POLL_MAX)
+            self._tool_history_poll = self.set_timer(delay, self._poll_tool_history)
         if post_run_retry:
             delay = TOOL_HISTORY_POST_RUN_DELAYS[self._tool_history_post_run_reads]
             self._tool_history_post_run_reads += 1
             self.set_timer(delay, self._request_tool_history)
         self._queue_sync()
+
+    def _poll_tool_history(self) -> None:
+        self._tool_history_poll = None
+        self._request_tool_history()
 
     def _request_tool_history(self, *, force_after_current: bool = False) -> None:
         targets = self._tool_targets()
@@ -379,7 +390,8 @@ class ChatLayer(AppBase):
         self._tool_history_token = token
         self._tool_history_targets = targets
         for view in targets:
-            view.set_result_notice("Loading stored result…")
+            if view.finished:
+                view.set_result_notice("Loading stored result…")
 
         def work() -> Callable[[], None]:
             messages = load_history(self.client, session_id, timeout=5.0)

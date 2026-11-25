@@ -82,7 +82,7 @@ ApprovalModal, SessionPicker, ModelPicker { background: transparent; }
 /* Pickers and approvals: Pi-style panels in the editor's place, as tall as
    their content (screens.BottomPanel sets the margin and height limits). */
 .panel {
-    dock: bottom; width: 1fr; height: auto; padding: 0;
+    dock: bottom; width: 1fr; height: auto; padding: 0 1;
     border-top: solid $wisp-accent; border-bottom: solid $wisp-accent;
     border-left: none; border-right: none;
     background: transparent; color: ansi_default;
